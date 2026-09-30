@@ -30,6 +30,12 @@ struct CardView: View {
     var onMoveToFolder: () -> Void = {}
     var enabledAssistants: [CodingAssistant] = []
     var onMigrateAssistant: (CodingAssistant) -> Void = { _ in }
+    @Environment(\.configuredProjects) private var configuredProjects
+
+    private var projectTint: Color? {
+        guard let path = card.link.projectPath ?? card.session?.projectPath else { return nil }
+        return ProjectColor.resolve(path: path, in: configuredProjects).color
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -44,9 +50,14 @@ struct CardView: View {
             // Project + branch + link icons
             HStack(spacing: 4) {
                 if let projectName = card.projectName {
-                    Label(projectName, systemImage: "folder")
-                        .font(.app(.caption))
-                        .foregroundStyle(.secondary)
+                    Label {
+                        Text(projectName)
+                    } icon: {
+                        Image(systemName: "folder.fill")
+                            .foregroundStyle(projectTint ?? .secondary)
+                    }
+                    .font(.app(.caption))
+                    .foregroundStyle(.secondary)
                 }
                 if let branch = card.link.worktreeLink?.branch {
                     Label(branch, systemImage: "arrow.triangle.branch")
@@ -108,9 +119,16 @@ struct CardView: View {
             .padding(6)
         }
         .background(
-            isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
+            isSelected ? Color.accentColor.opacity(0.12) : (projectTint?.opacity(0.07) ?? Color.primary.opacity(0.04)),
             in: RoundedRectangle(cornerRadius: 8)
         )
+        .overlay(alignment: .leading) {
+            if let projectTint {
+                UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 8)
+                    .fill(projectTint.opacity(0.75))
+                    .frame(width: 3)
+            }
+        }
         .background {
             if card.activityState == .awaitingPermission {
                 PermissionPromptPulse()
