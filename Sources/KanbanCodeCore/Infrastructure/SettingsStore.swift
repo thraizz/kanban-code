@@ -348,9 +348,22 @@ public struct AssistantCommandTemplate: Codable, Sendable, Equatable {
 
 public struct GlobalViewSettings: Codable, Sendable {
     public var excludedPaths: [String]
+    /// Sessions hidden from the board by what their prompt says.
+    public var sessionExclusion: SessionExclusion
 
-    public init(excludedPaths: [String] = []) {
+    public init(excludedPaths: [String] = [], sessionExclusion: SessionExclusion = SessionExclusion()) {
         self.excludedPaths = excludedPaths
+        self.sessionExclusion = sessionExclusion
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        excludedPaths = (try? c.decodeIfPresent([String].self, forKey: .excludedPaths)) ?? []
+        sessionExclusion = (try? c.decodeIfPresent(SessionExclusion.self, forKey: .sessionExclusion)) ?? SessionExclusion()
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case excludedPaths, sessionExclusion
     }
 }
 
