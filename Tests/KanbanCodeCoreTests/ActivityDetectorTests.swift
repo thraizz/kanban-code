@@ -277,6 +277,66 @@ struct ActivityDetectorTests {
         #expect(state == .needsAttention)
     }
 
+    @Test("Permission prompt + transcript untouched since → awaitingPermission")
+    func permissionPromptUnanswered() async {
+        let dir = NSTemporaryDirectory() + "kanban-code-perm-open-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+        try? "data".write(toFile: path, atomically: true, encoding: .utf8)
+        // Tool call written 30s ago, prompt shown right after.
+        let written = Date.now.addingTimeInterval(-30)
+        try? FileManager.default.setAttributes([.modificationDate: written], ofItemAtPath: path)
+
+        let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "Notification", transcriptPath: path,
+            notificationType: "permission_prompt", timestamp: written))
+        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .awaitingPermission)
+    }
+
+    @Test("Permission prompt answered (transcript written after) → not awaitingPermission")
+    func permissionPromptAnswered() async {
+        let dir = NSTemporaryDirectory() + "kanban-code-perm-done-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+        try? "data".write(toFile: path, atomically: true, encoding: .utf8)
+        let resultWritten = Date.now.addingTimeInterval(-20)
+        try? FileManager.default.setAttributes([.modificationDate: resultWritten], ofItemAtPath: path)
+
+        let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "Notification", transcriptPath: path,
+            notificationType: "permission_prompt", timestamp: Date.now.addingTimeInterval(-60)))
+        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .activelyWorking)
+    }
+
+    @Test("Idle-prompt notification is not a permission prompt")
+    func idlePromptNotification() async {
+        let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "Notification", notificationType: "idle_prompt"))
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention)
+    }
+
+    @Test("Permission prompt outranks running subagents")
+    func permissionPromptOutranksSubagents() async {
+        let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStart"))
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "Notification", notificationType: "permission_prompt"))
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .awaitingPermission)
+    }
+
     @Test("Stop grace window then new UserPromptSubmit → activelyWorking (ralph loop flow)")
     func stopResumedByNewPrompt() async {
         let detector = ClaudeCodeActivityDetector(stopDelay: 5)

@@ -64,7 +64,7 @@ public enum AssignColumn {
         // PR exists and session not actively working → inReview
         // This skips Waiting when addressing review feedback: Claude stops → goes directly to In Review
         if hasPR, let state = activityState,
-           state == .needsAttention || state == .idleWaiting || state == .ended || state == .stale {
+           state == .needsAttention || state == .awaitingPermission || state == .idleWaiting || state == .ended || state == .stale {
             return .inReview
         }
 
@@ -73,7 +73,7 @@ public enum AssignColumn {
             switch state {
             case .activelyWorking:
                 return .inProgress // Already handled above, but keep for exhaustive switch
-            case .needsAttention:
+            case .needsAttention, .awaitingPermission:
                 return .waiting
             case .idleWaiting:
                 // Claude is idle/waiting for user — that's Waiting, not In Progress.

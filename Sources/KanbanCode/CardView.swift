@@ -111,6 +111,11 @@ struct CardView: View {
             isSelected ? Color.accentColor.opacity(0.12) : Color.primary.opacity(0.04),
             in: RoundedRectangle(cornerRadius: 8)
         )
+        .background {
+            if card.activityState == .awaitingPermission {
+                PermissionPromptPulse()
+            }
+        }
         .contentShape(Rectangle())
         .onTapGesture { onSelect() }
         .contextMenu {
@@ -488,5 +493,20 @@ struct SubagentDisclosureCaret: View {
         .help(isExpanded
             ? "Hide \(childCount) subagent\(childCount == 1 ? "" : "s")"
             : "Show \(childCount) subagent\(childCount == 1 ? "" : "s")")
+    }
+}
+
+/// Flashing red fill and border for a card whose session is blocked on a
+/// permission prompt, so it stands out among cards that are merely waiting.
+private struct PermissionPromptPulse: View {
+    var body: some View {
+        RoundedRectangle(cornerRadius: 8)
+            .fill(Color.red)
+            .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.red, lineWidth: 1.5))
+            .phaseAnimator([0.12, 0.35]) { shape, opacity in
+                shape.opacity(opacity)
+            } animation: { _ in
+                .easeInOut(duration: 0.8)
+            }
     }
 }
