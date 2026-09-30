@@ -124,6 +124,8 @@ public final class AppState: @unchecked Sendable {
     public var configuredProjects: [Project] = []
     /// Cached excluded paths for global view.
     public var excludedPaths: [String] = []
+    /// Rules that hide discovered sessions by their prompt, on every view.
+    public var sessionExclusion = SessionExclusion()
     /// Project paths discovered from sessions but not yet configured.
     public var discoveredProjectPaths: [String] = []
 
@@ -397,7 +399,9 @@ public final class AppState: @unchecked Sendable {
         let newSelected = selectedCardId.flatMap { id in cards.first { $0.id == id } }
         if newSelected != selectedCard { selectedCard = newSelected }
 
-        let newFiltered = cards.filter { cardMatchesProjectFilter($0) }
+        let newFiltered = cards.filter {
+            cardMatchesProjectFilter($0) && !sessionExclusion.excludes(link: $0.link, session: $0.session)
+        }
         if newFiltered != filteredCards { filteredCards = newFiltered }
 
         let newPinned = newFiltered.filter { $0.link.isPinned && $0.link.parentCardId == nil }.sorted {
@@ -635,7 +639,7 @@ public enum Action: Sendable {
     case peerCardRead(cardId: String, state: PeerCardState?)
 
     // Settings / misc
-    case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?, remoteMode: RemoteMode = .boxd, boxd: BoxdSettings? = nil)
+    case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?, remoteMode: RemoteMode = .boxd, boxd: BoxdSettings? = nil, sessionExclusion: SessionExclusion = SessionExclusion())
     case setError(String?)
     /// Same banner as `setError`, but says what kind of news it is.
     case setNotice(String?, kind: NoticeKind)
@@ -2517,12 +2521,15 @@ public enum Reducer {
 
         // MARK: Settings / Misc
 
-        case .settingsLoaded(let projects, let excludedPaths, let remote, let remoteMode, let boxd):
+        case .settingsLoaded(let projects, let excludedPaths, let remote, let remoteMode, let boxd, let sessionExclusion):
+            let filterChanged = state.excludedPaths != excludedPaths || state.sessionExclusion != sessionExclusion
             state.configuredProjects = projects
             state.excludedPaths = excludedPaths
+            state.sessionExclusion = sessionExclusion
             state.globalRemoteSettings = remote
             state.remoteMode = remoteMode
             state.boxdSettings = boxd
+            if filterChanged { state.rebuildCards() }
             return []
 
         // MARK: Remote machines
@@ -2979,7 +2986,8 @@ public final class BoardStore: @unchecked Sendable {
                     excludedPaths: settings.globalView.excludedPaths,
                     remote: settings.remote,
                     remoteMode: settings.remoteMode,
-                    boxd: settings.boxd
+                    boxd: settings.boxd,
+                    sessionExclusion: settings.globalView.sessionExclusion
                 ))
             }
         }
@@ -3029,7 +3037,8 @@ public final class BoardStore: @unchecked Sendable {
                         excludedPaths: excludedPaths,
                         remote: globalRemoteSettings,
                         remoteMode: settings.remoteMode,
-                        boxd: settings.boxd
+                        boxd: settings.boxd,
+                        sessionExclusion: settings.globalView.sessionExclusion
                     ))
                 }
             }

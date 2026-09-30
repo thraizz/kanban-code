@@ -1441,6 +1441,8 @@ struct ProjectsSettingsView: View {
     @State private var projects: [Project] = []
     @State private var excludedPaths: [String] = []
     @State private var newExcludedPath = ""
+    @State private var sessionExclusion = SessionExclusion()
+    @State private var newTitlePattern = ""
     @State private var error: String?
     @State private var editingProject: Project?
     @State private var isEditingNew = false
@@ -1508,6 +1510,47 @@ struct ProjectsSettingsView: View {
                 }
 
                 Text("Sessions from excluded paths won't appear in All Projects view. Wildcards supported (e.g. langwatch-skill-*)")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+            }
+
+            Section("Hidden Sessions") {
+                Toggle("Hide scheduled tasks", isOn: Binding(
+                    get: { sessionExclusion.hideScheduledTasks },
+                    set: {
+                        sessionExclusion.hideScheduledTasks = $0
+                        saveSessionExclusion()
+                    }
+                ))
+                .font(.caption)
+
+                ForEach(sessionExclusion.titlePatterns, id: \.self) { pattern in
+                    HStack {
+                        Text(pattern)
+                            .font(.caption.monospaced())
+                        Spacer()
+                        Button {
+                            sessionExclusion.titlePatterns.removeAll { $0 == pattern }
+                            saveSessionExclusion()
+                        } label: {
+                            Image(systemName: "xmark.circle")
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+
+                HStack {
+                    TextField("Prompt or title pattern to hide", text: $newTitlePattern)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                        .onSubmit(addTitlePattern)
+                    Button("Add", action: addTitlePattern)
+                        .controlSize(.small)
+                        .disabled(newTitlePattern.trimmingCharacters(in: .whitespaces).isEmpty)
+                }
+
+                Text("Discovered sessions whose prompt matches are hidden from every view. Plain text matches anywhere; wildcards match the whole prompt (e.g. *nightly-report*). Case-insensitive. Cards you launched, named or pinned always stay.")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
@@ -1631,11 +1674,32 @@ struct ProjectsSettingsView: View {
         }
     }
 
+    private func addTitlePattern() {
+        let pattern = newTitlePattern.trimmingCharacters(in: .whitespaces)
+        guard !pattern.isEmpty else { return }
+        if !sessionExclusion.titlePatterns.contains(pattern) {
+            sessionExclusion.titlePatterns.append(pattern)
+        }
+        newTitlePattern = ""
+        saveSessionExclusion()
+    }
+
+    private func saveSessionExclusion() {
+        let exclusion = sessionExclusion
+        Task {
+            var settings = try await settingsStore.read()
+            settings.globalView.sessionExclusion = exclusion
+            try await settingsStore.write(settings)
+            NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
+        }
+    }
+
     private func loadSettings() async {
         do {
             let settings = try await settingsStore.read()
             projects = settings.projects
             excludedPaths = settings.globalView.excludedPaths
+            sessionExclusion = settings.globalView.sessionExclusion
         } catch {
             self.error = error.localizedDescription
         }
