@@ -35,6 +35,11 @@ public enum TranscriptNotificationReader {
                 return nil
             }
             turns = parsed
+        case .opencode:
+            guard let parsed = try? await OpenCodeSessionStore().readTranscript(sessionPath: transcriptPath) else {
+                return nil
+            }
+            turns = parsed
         }
         return lastAssistantText(from: turns)
     }

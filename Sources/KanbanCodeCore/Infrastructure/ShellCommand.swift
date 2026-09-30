@@ -229,6 +229,7 @@ public enum ShellCommand {
             "\(home)/.claude/local",   // Claude Code managed install
             "\(home)/.local/bin",      // XDG local bin / claude installer
             "\(home)/go/bin",          // go install (agtop)
+            "\(home)/.opencode/bin",   // OpenCode install script
             "/opt/homebrew/bin",       // Homebrew (Apple Silicon)
             "/usr/local/bin",          // Homebrew (Intel) / npm global
             "/usr/bin",                // System binaries

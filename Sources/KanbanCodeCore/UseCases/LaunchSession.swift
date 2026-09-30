@@ -80,12 +80,12 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
     ) async throws -> String {
         // Kill stale tmux session if one exists — we always want a fresh resume
         let existing = try await tmux.listSessions()
-        if let match = existing.first(where: { $0.name.contains(String(sessionId.prefix(8))) }) {
+        if let match = existing.first(where: { $0.name.contains(CodingAssistant.shortSessionId(sessionId)) }) {
             try? await tmux.killSession(name: match.name)
         }
 
         // Create new tmux session with resume command
-        let sessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
+        let sessionName = assistant.resumeSessionName(sessionId: sessionId)
         let cmd: String
         if let commandOverride, !commandOverride.isEmpty {
             cmd = commandOverride

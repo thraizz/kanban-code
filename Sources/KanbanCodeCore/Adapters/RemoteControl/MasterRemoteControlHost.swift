@@ -76,7 +76,8 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             let card = try card(cardId)
             return (card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath, card.link.effectiveAssistant)
         }
-        guard let path, FileManager.default.fileExists(atPath: path) else {
+        guard let path,
+              OpenCodeDatabase.isVirtualSessionPath(path) || FileManager.default.fileExists(atPath: path) else {
             return RemoteTranscript(cardId: cardId, messages: [])
         }
         return try await RemoteTranscriptMapper.page(cardId: cardId, limit: limit, before: before) { maxTurns in
@@ -87,6 +88,9 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             case .codex:
                 let r = try await CodexSessionParser.readTail(from: path, maxTurns: maxTurns)
                 return (r.turns, r.hasMore)
+            case .opencode:
+                let all = try await OpenCodeSessionStore().readTranscript(sessionPath: path)
+                return (Array(all.suffix(maxTurns)), all.count > maxTurns)
             default:
                 let all = try await GeminiSessionStore().readTranscript(sessionPath: path)
                 return (Array(all.suffix(maxTurns)), all.count > maxTurns)

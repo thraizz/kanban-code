@@ -7,6 +7,7 @@ public enum DependencyChecker {
         public let claudeAvailable: Bool
         public let geminiAvailable: Bool
         public let codexAvailable: Bool
+        public let opencodeAvailable: Bool
         public let hooksInstalled: Bool
         public let pandocAvailable: Bool
         public let wkhtmltoimageAvailable: Bool
@@ -22,6 +23,7 @@ public enum DependencyChecker {
 
         public init(
             claudeAvailable: Bool, geminiAvailable: Bool = false, codexAvailable: Bool = false,
+            opencodeAvailable: Bool = false,
             hooksInstalled: Bool,
             assistantHooks: [CodingAssistant: Bool] = [:],
             pandocAvailable: Bool,
@@ -33,6 +35,7 @@ public enum DependencyChecker {
             self.claudeAvailable = claudeAvailable
             self.geminiAvailable = geminiAvailable
             self.codexAvailable = codexAvailable
+            self.opencodeAvailable = opencodeAvailable
             self.hooksInstalled = hooksInstalled
             self.pandocAvailable = pandocAvailable
             self.wkhtmltoimageAvailable = wkhtmltoimageAvailable
@@ -46,6 +49,16 @@ public enum DependencyChecker {
                 ? [.claude: hooksInstalled]
                 : assistantHooks
         }
+
+        /// Whether the assistant's CLI was found.
+        public func isAvailable(_ assistant: CodingAssistant) -> Bool {
+            switch assistant {
+            case .claude: claudeAvailable
+            case .gemini: geminiAvailable
+            case .codex: codexAvailable
+            case .opencode: opencodeAvailable
+            }
+        }
     }
 
     /// Check all dependencies concurrently.
@@ -53,6 +66,7 @@ public enum DependencyChecker {
         async let claude = ShellCommand.isAvailable("claude")
         async let gemini = ShellCommand.isAvailable("gemini")
         async let codex = ShellCommand.isAvailable("codex")
+        async let opencode = ShellCommand.isAvailable("opencode")
         async let pandoc = ShellCommand.isAvailable("pandoc")
         async let wkhtmltoimage = ShellCommand.isAvailable("wkhtmltoimage")
         async let gh = ShellCommand.isAvailable("gh")
@@ -80,6 +94,7 @@ public enum DependencyChecker {
             claudeAvailable: claude,
             geminiAvailable: gemini,
             codexAvailable: codex,
+            opencodeAvailable: opencode,
             hooksInstalled: hooks[.claude] ?? false,
             assistantHooks: hooks,
             pandocAvailable: pandoc,

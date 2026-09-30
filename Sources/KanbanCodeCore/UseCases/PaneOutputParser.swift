@@ -44,6 +44,21 @@ public enum PaneOutputParser {
             return footerLines.contains { line in
                 line.contains(" · ") && line.localizedCaseInsensitiveContains("gpt-")
             }
+        case .opencode:
+            // OpenCode's full-screen TUI draws its footer ("ctrl+p commands",
+            // wrapped or not) only once the input box takes keys; before that
+            // the pane is blank or the logo, and a prompt sent then is lost.
+            // While it works the footer shows "esc interrupt", and a
+            // permission request replaces the input with its own dialog.
+            let lines = paneOutput
+                .components(separatedBy: .newlines)
+                .map { stripAnsi($0).trimmingCharacters(in: .whitespaces) }
+                .filter { !$0.isEmpty }
+                .suffix(16)
+            if lines.contains(where: { $0.contains("esc interrupt") || $0.contains("Permission required") }) {
+                return false
+            }
+            return lines.contains { $0.contains("ctrl+p") || $0.contains("Ask anything") }
         }
     }
 
@@ -90,6 +105,8 @@ public enum PaneOutputParser {
         case .gemini, .codex:
             guard !tail.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return false }
             return !isReady(tail, assistant: assistant)
+        case .opencode:
+            return paneOutput.contains("esc interrupt")
         }
     }
 

@@ -132,7 +132,7 @@ enum RemoteOpenAPI {
           "projectName": {"type": ["string", "null"]},
           "branch": {"type": ["string", "null"]},
           "worktreePath": {"type": ["string", "null"]},
-          "assistant": {"type": "string", "description": "claude, codex or gemini"},
+          "assistant": {"type": "string", "description": "claude, codex, gemini or opencode"},
           "runtime": {"type": "string", "enum": ["tmux", "agtop", "machine", "none"]},
           "isLive": {"type": "boolean"},
           "isBusy": {"type": "boolean"},
@@ -162,7 +162,7 @@ enum RemoteOpenAPI {
           "prompt": {"type": "string"},
           "name": {"type": "string"},
           "worktree": {"type": "string", "description": "worktree name, empty for a random one; omit to run in the project checkout"},
-          "assistant": {"type": "string", "description": "claude, codex or gemini"},
+          "assistant": {"type": "string", "description": "claude, codex, gemini or opencode"},
           "model": {"type": "string"},
           "launch": {"type": "boolean", "description": "false only creates the card in the backlog"},
           "images": {"type": "array", "maxItems": 6, "items": {"$ref": "#/components/schemas/Image"}}

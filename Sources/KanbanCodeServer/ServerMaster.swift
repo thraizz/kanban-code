@@ -156,7 +156,9 @@ final class ServerMaster {
     /// The assistants' hooks drive the busy state, the queue and the
     /// notifications; the statusline feeds context usage.
     private func installHooks() {
-        for assistant in CodingAssistant.allCases where assistant.supportsHooks {
+        // OpenCode sessions live in a SQLite database the Linux build does
+        // not read, so the server leaves OpenCode to the Mac master.
+        for assistant in CodingAssistant.allCases where assistant.supportsHooks && assistant != .opencode {
             guard (try? FileManager.default.contentsOfDirectory(atPath: NSHomeDirectory() + "/" + assistant.configDirName)) != nil else { continue }
             if !HookManager.isInstalled(for: assistant) {
                 do {

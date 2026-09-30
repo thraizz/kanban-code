@@ -257,6 +257,9 @@ public final class MasterEngine {
                 let existingCodexFiles = assistant == .codex
                     ? Set(CodexSessionDiscovery.sessionFiles())
                     : []
+                // OpenCode writes no file: its new session is a new row, and
+                // only appears once the first prompt is in.
+                let openCodeLaunchStart = Date.now
 
                 // When worktree is enabled, also snapshot worktree-related directories
                 // (worktrees create sessions in dirs like <encodedProject>-.claude-worktrees-<name>)
@@ -268,8 +271,9 @@ public final class MasterEngine {
                     dirsToSnapshot = slugDirs.map { slug in
                         (tmpDir as NSString).appendingPathComponent(slug).appending("/chats")
                     }
-                } else if assistant == .codex {
-                    // Codex stores sessions recursively under ~/.codex/sessions.
+                } else if assistant == .codex || assistant == .opencode {
+                    // Codex stores sessions recursively under ~/.codex/sessions;
+                    // OpenCode stores them in its database.
                     dirsToSnapshot = []
                 } else if worktreeName != nil {
                     let allDirs = (try? FileManager.default.contentsOfDirectory(atPath: claudeProjectsDir)) ?? []
@@ -366,10 +370,22 @@ public final class MasterEngine {
                 // A remote session shows up after the bridge streams its first
                 // lines, so it gets the longest window.
                 let maxAttempts = boxdPreparation != nil ? 30
-                    : (worktreeName != nil || assistant == .gemini || assistant == .codex) ? 12 : 6
+                    : (worktreeName != nil || assistant == .gemini || assistant == .codex || assistant == .opencode) ? 12 : 6
                 var sessionLink: SessionLink?
                 for attempt in 0..<maxAttempts {
                     try? await Task.sleep(for: .milliseconds(500))
+
+                    if assistant == .opencode {
+                        if let sessionId = OpenCodeDatabase().newSessionId(directory: launchPath, createdSince: openCodeLaunchStart) {
+                            KanbanCodeLog.info("launch", "Detected OpenCode session after \(attempt+1) attempts: \(sessionId.prefix(12))")
+                            sessionLink = SessionLink(
+                                sessionId: sessionId,
+                                sessionPath: OpenCodeDatabase.virtualSessionPath(sessionId: sessionId)
+                            )
+                            break
+                        }
+                        continue
+                    }
 
                     if assistant == .codex {
                         let currentFiles = Set(CodexSessionDiscovery.sessionFiles())
@@ -645,7 +661,7 @@ public final class MasterEngine {
         // resumes, so a card that leaves its machine routes its names
         // locally first; otherwise the terminal would connect to the machine.
         if !runRemotely {
-            let names = (card.link.tmuxLink?.allSessionNames ?? []) + ["\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"]
+            let names = (card.link.tmuxLink?.allSessionNames ?? []) + [assistant.resumeSessionName(sessionId: sessionId)]
             for name in names { platform.unassignRemoteSession(name) }
         }
 
@@ -677,7 +693,7 @@ public final class MasterEngine {
                 let preamble: String?
                 var resumePath = projectPath
                 var boxdPreparation: BoxdPreparation?
-                let resumeSessionName = "\(assistant.cliCommand)-\(String(sessionId.prefix(8)))"
+                let resumeSessionName = assistant.resumeSessionName(sessionId: sessionId)
                 platform.clearRemoteSessionReady(resumeSessionName)
                 if runRemotely, store.state.remoteMode.runsOnMachines, boxdSupervisor != nil {
                     platform.expectRemoteSession(resumeSessionName)
@@ -1008,7 +1024,7 @@ public final class MasterEngine {
     /// Stops the tmux sessions of `sessionId` so its agtop host is the only
     /// process writing the transcript.
     public func killTmuxSessions(of sessionId: String) async {
-        let sid8 = String(sessionId.prefix(8))
+        let sid8 = CodingAssistant.shortSessionId(sessionId)
         guard let sessions = try? await tmux.listSessions() else { return }
         for session in sessions where session.name.contains(sid8) && !AgtopSessionName.isAgtop(session.name) {
             try? await tmux.killSession(name: session.name)

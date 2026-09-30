@@ -209,7 +209,7 @@ extension MasterEngine {
         // transcript here is complete.
         if let remote = link.remote, link.isRemote, let boxdSupervisor {
             let sid = link.sessionLink?.sessionId ?? link.id
-            let names = (link.tmuxLink?.allSessionNames ?? []) + ["\(link.effectiveAssistant.cliCommand)-\(sid.prefix(8))"]
+            let names = (link.tmuxLink?.allSessionNames ?? []) + [link.effectiveAssistant.resumeSessionName(sessionId: sid)]
             await boxdSupervisor.leave(
                 machineName: remote.machineName,
                 sessionNames: Array(Set(names)),
