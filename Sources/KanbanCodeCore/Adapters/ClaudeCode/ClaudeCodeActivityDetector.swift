@@ -161,6 +161,12 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     }
 
     public func activityState(for sessionId: String) async -> ActivityState {
+        // A permission prompt blocks the main agent until the user answers,
+        // whatever its subagents are doing.
+        if isAwaitingPermission(sessionId) {
+            return .awaitingPermission
+        }
+
         // Subagents still running keep the session at work, whatever its own
         // last event says. The main agent can be back at the prompt with the
         // Stop hook already fired while they carry on.
@@ -307,6 +313,22 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             return content.contains { $0["type"] as? String == "tool_use" }
         }
         return false
+    }
+
+    /// Whether the session's last event is a permission prompt nobody has answered yet.
+    ///
+    /// Answering it, either way, writes the tool result to the transcript, so a
+    /// transcript untouched since the prompt means the prompt is still up. The
+    /// hook timestamp has whole-second resolution and the tool call is written
+    /// just before the prompt shows, hence the tolerance.
+    private func isAwaitingPermission(_ sessionId: String) -> Bool {
+        guard let event = lastEvents[sessionId],
+              event.eventName == "Notification",
+              event.notificationType == "permission_prompt" else { return false }
+        guard let path = sessionPaths[sessionId] ?? event.transcriptPath,
+              let fileAge = Self.fileAge(path) else { return true }
+        let fileMtime = Date.now.addingTimeInterval(-fileAge)
+        return fileMtime.timeIntervalSince(event.timestamp) < 2.0
     }
 
     /// Quick mtime check — returns seconds since file was last modified, or nil on error.

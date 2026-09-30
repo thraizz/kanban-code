@@ -195,6 +195,24 @@ struct HookManagerTests {
         #expect(events[1].source == nil)
     }
 
+    @Test("HookEventStore parses the Notification type")
+    func hookEventStoreParsesNotificationType() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let eventsPath = (dir as NSString).appendingPathComponent("hook-events.jsonl")
+        let lines = """
+            {"sessionId":"s1","event":"Notification","timestamp":"2026-06-03T16:12:47Z","transcriptPath":"/tmp/a.jsonl","notificationType":"permission_prompt"}
+            {"sessionId":"s1","event":"Notification","timestamp":"2026-06-03T16:12:48Z","transcriptPath":"/tmp/a.jsonl"}
+            """
+        try lines.write(toFile: eventsPath, atomically: true, encoding: .utf8)
+
+        let events = try await HookEventStore(basePath: dir).readNewEvents()
+        #expect(events.count == 2)
+        #expect(events[0].notificationType == "permission_prompt")
+        #expect(events[1].notificationType == nil)
+    }
+
     /// Runs the deployed bash script the way the CLIs do: payload on stdin,
     /// HOME pointed at the temp dir it writes its event file under.
     private func runHookScript(_ scriptPath: String, home: String, payload: String) throws {
@@ -246,6 +264,34 @@ struct HookManagerTests {
         #expect(lines[0].contains(#""source":"compact""#))
         #expect(!lines[1].contains(#""source""#))
         #expect(!lines[2].contains(#""source""#))
+    }
+
+    @Test("deployed script records the Notification type, and only there")
+    func scriptRecordsNotificationType() throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let scriptPath = (dir as NSString).appendingPathComponent(".kanban-code/hook.sh")
+        let settingsPath = (dir as NSString).appendingPathComponent("settings.json")
+        try HookManager.install(claudeSettingsPath: settingsPath, hookScriptPath: scriptPath)
+
+        try runHookScript(
+            scriptPath, home: dir,
+            payload:
+                #"{"session_id":"s1","hook_event_name":"Notification","transcript_path":"/tmp/a.jsonl","message":"Claude needs your permission to use Bash","notification_type":"permission_prompt"}"#
+        )
+        try runHookScript(
+            scriptPath, home: dir,
+            payload:
+                #"{"session_id":"s1","hook_event_name":"UserPromptSubmit","transcript_path":"/tmp/a.jsonl","prompt":"\"notification_type\":\"sneaky\""}"#
+        )
+
+        let eventsPath = (dir as NSString).appendingPathComponent(".kanban-code/hook-events.jsonl")
+        let content = try String(contentsOfFile: eventsPath, encoding: .utf8)
+        let lines = content.split(separator: "\n")
+        #expect(lines.count == 2)
+        #expect(lines[0].contains(#""notificationType":"permission_prompt""#))
+        #expect(!lines[1].contains(#""notificationType""#))
     }
 
     @Test("refreshHookScript rewrites a stale script and skips a missing one")

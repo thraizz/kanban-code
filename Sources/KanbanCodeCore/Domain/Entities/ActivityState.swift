@@ -6,6 +6,9 @@ public enum ActivityState: String, Codable, Sendable {
     case activelyWorking = "actively_working"
     /// Session stopped and is waiting for user input (plan approval, permission, done).
     case needsAttention = "needs_attention"
+    /// Session is blocked on a permission prompt ("Do you want to proceed?")
+    /// that only the user can answer.
+    case awaitingPermission = "awaiting_permission"
     /// Session has a running process but no recent activity.
     case idleWaiting = "idle_waiting"
     /// Session process has ended.
@@ -18,6 +21,7 @@ public enum ActivityState: String, Codable, Sendable {
     /// detectors report on the same session.
     var priority: Int {
         switch self {
+        case .awaitingPermission: 6
         case .activelyWorking: 5
         case .needsAttention: 4
         case .idleWaiting: 3

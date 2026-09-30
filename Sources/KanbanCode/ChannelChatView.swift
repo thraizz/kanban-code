@@ -1331,6 +1331,8 @@ struct ChannelChatView: View {
             return ActivityGlyph(name: "waveform", color: .orange, label: "working")
         case .needsAttention:
             return ActivityGlyph(name: "exclamationmark.circle.fill", color: .yellow, label: "needs attention")
+        case .awaitingPermission:
+            return ActivityGlyph(name: "hand.raised.fill", color: .red, label: "awaiting permission")
         case .idleWaiting:
             return ActivityGlyph(name: "moon.zzz", color: .secondary, label: "idle")
         case .ended, .stale:

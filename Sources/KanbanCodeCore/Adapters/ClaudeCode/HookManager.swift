@@ -306,6 +306,15 @@ public enum HookManager {
         fi
     fi
 
+    # Notification carries a type (permission_prompt, idle_prompt, ...) that
+    # tells a blocking permission prompt apart from an idle reminder.
+    if [ "$hook_event" = "Notification" ]; then
+        notification_type=$(echo "$input" | grep -o '"notification_type":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+        if [ -n "$notification_type" ]; then
+            extra=",\\"notificationType\\":\\"$notification_type\\""
+        fi
+    fi
+
     # Append event line
     printf '{"sessionId":"%s","event":"%s","timestamp":"%s","transcriptPath":"%s"%s}\\n' \\
         "$session_id" "$hook_event" "$timestamp" "$transcript" "$extra" >> "$EVENTS_FILE"
