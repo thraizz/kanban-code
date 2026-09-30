@@ -80,6 +80,7 @@ struct CodingAssistantTests {
         #expect(CodingAssistant.claude.resumeFlag == "--resume")
         #expect(CodingAssistant.gemini.resumeFlag == "--resume")
         #expect(CodingAssistant.codex.resumeFlag == "resume")
+        #expect(CodingAssistant.opencode.resumeFlag == "--session")
     }
 
     // MARK: - Capabilities
@@ -381,6 +382,68 @@ struct CodingAssistantTests {
         #expect(all.contains(.claude))
         #expect(all.contains(.gemini))
         #expect(all.contains(.codex))
-        #expect(all.count == 3)
+        #expect(all.contains(.opencode))
+        #expect(all.count == 4)
+    }
+
+    // MARK: - OpenCode
+
+    @Test("OpenCode basics")
+    func opencodeBasics() {
+        let opencode = CodingAssistant.opencode
+        #expect(opencode.displayName == "OpenCode")
+        #expect(opencode.cliCommand == "opencode")
+        #expect(opencode.installCommand == "npm install -g opencode-ai")
+        #expect(opencode.resumeFlag == "--session")
+        #expect(opencode.supportsHooks)
+        #expect(opencode.submitsPromptWithPaste)
+        #expect(!opencode.supportsWorktree)
+        #expect(!opencode.supportsImageUpload)
+        #expect(!opencode.supportsContextThresholdSelfCompact)
+        #expect(opencode.baseURLEnvKey == nil)
+    }
+
+    @Test("OpenCode auto-approves through its permission environment, not a flag")
+    func opencodeLaunchSkipPermissions() {
+        let cmd = CodingAssistant.opencode.launchCommand(skipPermissions: true, worktreeName: nil)
+        #expect(cmd == #"env OPENCODE_PERMISSION='{"*":"allow"}' opencode"#)
+        #expect(CodingAssistant.opencode.launchCommand(skipPermissions: false, worktreeName: "ignored") == "opencode")
+    }
+
+    @Test("OpenCode resumes with --session")
+    func opencodeResume() {
+        let cmd = CodingAssistant.opencode.resumeCommand(sessionId: "ses_abc", skipPermissions: true)
+        #expect(cmd == #"env OPENCODE_PERMISSION='{"*":"allow"}' opencode --session ses_abc"#)
+    }
+
+    @Test("OpenCode takes a provider/model without a -- separator")
+    func opencodeModelNoSeparator() {
+        let service = APIService(name: "OpenRouter", assistant: .opencode, modelFlag: "openrouter/anthropic/claude-sonnet-4.5")
+        let cmd = CodingAssistant.opencode.resumeCommand(sessionId: "ses_abc", skipPermissions: false, service: service)
+        #expect(cmd == "opencode --model openrouter/anthropic/claude-sonnet-4.5 --session ses_abc")
+    }
+
+    @Test("OpenCode behind a launcher keeps the separator and the environment in front")
+    func opencodeLauncher() {
+        let service = APIService(name: "Ollama", assistant: .opencode, launcherPrefix: "ollama launch", modelFlag: "qwen3")
+        let cmd = CodingAssistant.opencode.launchCommand(skipPermissions: true, worktreeName: nil, service: service)
+        #expect(cmd == #"env OPENCODE_PERMISSION='{"*":"allow"}' ollama launch opencode --model qwen3 --"#)
+    }
+
+    @Test("Resume tmux names use the random tail of an OpenCode id")
+    func opencodeResumeSessionName() {
+        // Two sessions started seconds apart share their first 8 characters.
+        let a = CodingAssistant.opencode.resumeSessionName(sessionId: "ses_f0f05e9cbffeuUlK5flVEb10mL")
+        let b = CodingAssistant.opencode.resumeSessionName(sessionId: "ses_f0f04d857ffe89pU9QjzR1Tt5I")
+        #expect(a == "opencode-lVEb10mL")
+        #expect(a != b)
+        #expect(CodingAssistant.claude.resumeSessionName(sessionId: "0f0e1d2c-aaaa-bbbb") == "claude-0f0e1d2c")
+    }
+
+    @Test("A command template wraps the whole OpenCode command, environment included")
+    func opencodeTemplate() {
+        let cmd = CodingAssistant.opencode.launchCommand(skipPermissions: true, worktreeName: nil)
+        let wrapped = CodingAssistant.applyCommandTemplate(cmd, template: "langwatch ${cli_command}")
+        #expect(wrapped == #"langwatch env OPENCODE_PERMISSION='{"*":"allow"}' opencode"#)
     }
 }

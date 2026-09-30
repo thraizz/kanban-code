@@ -20,7 +20,7 @@ public enum ConversationMarkdownExporter {
             turns = streamed
         case .codex:
             turns = try await CodexSessionParser.readTurns(from: sessionPath)
-        case .gemini:
+        case .gemini, .opencode:
             turns = try await sessionStore.readTranscript(sessionPath: sessionPath)
         }
 

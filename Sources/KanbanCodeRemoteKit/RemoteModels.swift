@@ -148,7 +148,7 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
     public var projectName: String?
     public var branch: String?
     public var worktreePath: String?
-    /// claude, codex or gemini.
+    /// claude, codex, gemini or opencode.
     public var assistant: String
     public var runtime: RemoteRuntime
     /// A live session is attached (the card can take prompts right away).

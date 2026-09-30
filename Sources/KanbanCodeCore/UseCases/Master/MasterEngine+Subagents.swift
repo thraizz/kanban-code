@@ -233,7 +233,12 @@ extension MasterEngine {
               !sessionPath.isEmpty else {
             throw SubagentCommandExecutionError.missingSessionTarget
         }
-        guard FileManager.default.fileExists(atPath: sessionPath) else {
+        // An OpenCode session has no file: its virtual path is checked
+        // against the database instead.
+        let exists = OpenCodeDatabase.sessionId(fromVirtualPath: sessionPath).map {
+            (try? OpenCodeDatabase().session(id: $0)) != nil
+        } ?? FileManager.default.fileExists(atPath: sessionPath)
+        guard exists else {
             throw SubagentCommandExecutionError.transcriptNotFound(sessionPath)
         }
         let targetId = request.cardId ?? request.parentCardId
@@ -434,6 +439,9 @@ extension MasterEngine {
                 in: directory,
                 prefix: "rollout-forked"
             )
+        case .opencode:
+            // OpenCode sessions live in its database; the path only routes.
+            return OpenCodeDatabase.virtualSessionPath(sessionId: sessionId)
         }
     }
 

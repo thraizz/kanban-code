@@ -2276,6 +2276,27 @@ struct CardDetailView: View {
         stopHistoryWatcher()
         guard let path = card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath else { return }
 
+        // An OpenCode session is rows in a database, not a file to watch:
+        // poll its last write instead.
+        if let openCodeSessionId = OpenCodeDatabase.sessionId(fromVirtualPath: path) {
+            historyPollTask = Task { @MainActor in
+                var lastWrite: Date = .distantPast
+                while !Task.isCancelled {
+                    try? await Task.sleep(for: .seconds(2))
+                    guard !Task.isCancelled else { break }
+                    guard selectedTab == .history || (selectedTab == .terminal && preferChatView) else { continue }
+                    let latest = await Task.detached {
+                        (try? OpenCodeDatabase().lastActivity(sessionIds: [openCodeSessionId]))?[openCodeSessionId]
+                    }.value
+                    if let latest, latest > lastWrite {
+                        lastWrite = latest
+                        await loadHistory()
+                    }
+                }
+            }
+            return
+        }
+
         let fd = open(path, O_EVTONLY)
         guard fd >= 0 else { return }
         historyWatcherFD = fd

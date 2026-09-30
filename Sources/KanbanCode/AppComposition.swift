@@ -37,6 +37,9 @@ final class AppComposition {
         let codexDiscovery = CodexSessionDiscovery()
         let codexDetector = CodexActivityDetector()
         let codexStore = CodexSessionStore()
+        let opencodeDiscovery = OpenCodeSessionDiscovery()
+        let opencodeDetector = OpenCodeActivityDetector()
+        let opencodeStore = OpenCodeSessionStore()
 
         let enabledAssistants = ContentView.loadEnabledAssistants()
         let registry = CodingAssistantRegistry()
@@ -48,6 +51,9 @@ final class AppComposition {
         }
         if enabledAssistants.contains(.codex) {
             registry.register(.codex, discovery: codexDiscovery, detector: codexDetector, store: codexStore)
+        }
+        if enabledAssistants.contains(.opencode) {
+            registry.register(.opencode, discovery: opencodeDiscovery, detector: opencodeDetector, store: opencodeStore)
         }
 
         let discovery = CompositeSessionDiscovery(registry: registry)

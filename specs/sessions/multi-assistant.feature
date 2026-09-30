@@ -1,5 +1,5 @@
 Feature: Multi-Coding-Assistant Support
-  As a developer using multiple AI coding assistants (Claude Code, Gemini CLI, Codex CLI)
+  As a developer using multiple AI coding assistants (Claude Code, Gemini CLI, Codex CLI, OpenCode)
   I want Kanban Code to manage sessions from any supported assistant
   So that I can use whichever tool fits each task
 
@@ -14,6 +14,7 @@ Feature: Multi-Coding-Assistant Support
       | claude  | Claude Code   | claude      | .claude    |
       | gemini  | Gemini CLI    | gemini      | .gemini    |
       | codex   | Codex CLI     | codex       | .codex     |
+      | opencode | OpenCode     | opencode    | .local/share/opencode |
 
   Scenario: Assistant capabilities
     Then each assistant should declare its capabilities:
@@ -21,6 +22,7 @@ Feature: Multi-Coding-Assistant Support
       | claude    | true             | true         | true          | --dangerously-skip-permissions            | --resume    |
       | gemini    | false            | false        | true          | --yolo                                    | --resume    |
       | codex     | false            | false        | false         | --dangerously-bypass-approvals-and-sandbox | resume      |
+      | opencode  | false            | false        | true (plugin) | (env OPENCODE_PERMISSION)                 | --session   |
 
   Scenario: Assistant prompt characters
     Then each assistant should have a known prompt character for ready detection:
@@ -28,6 +30,7 @@ Feature: Multi-Coding-Assistant Support
       | claude    | ❯                |
       | gemini    | Type your message |
       | codex     | ›                |
+      | opencode  | (footer "ctrl+p", no "esc interrupt") |
 
   # ── Card Assistant Identity ──
 

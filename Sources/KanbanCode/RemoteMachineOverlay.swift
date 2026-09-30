@@ -51,7 +51,7 @@ enum MachineResumeFollowUp: Equatable {
     /// The tmux session a resume of the card creates on its machine.
     static func sessionName(for link: Link) -> String {
         let sessionId = link.sessionLink?.sessionId ?? link.id
-        return "\(link.effectiveAssistant.cliCommand)-\(String(sessionId.prefix(8)))"
+        return link.effectiveAssistant.resumeSessionName(sessionId: sessionId)
     }
 }
 

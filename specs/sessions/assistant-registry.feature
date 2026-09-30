@@ -26,6 +26,12 @@ Feature: Coding Assistant Registry
     And registry.detector(for: .codex) should return CodexActivityDetector
     And registry.store(for: .codex) should return CodexSessionStore
 
+  Scenario: Register OpenCode adapters
+    When OpenCode adapters are registered
+    Then registry.discovery(for: .opencode) should return OpenCodeSessionDiscovery
+    And registry.detector(for: .opencode) should return OpenCodeActivityDetector
+    And registry.store(for: .opencode) should return OpenCodeSessionStore
+
   Scenario: Only installed assistants are registered
     Given Gemini CLI is not installed
     Then registry.available should only contain [.claude]

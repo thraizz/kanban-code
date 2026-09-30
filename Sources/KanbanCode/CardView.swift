@@ -205,6 +205,8 @@ struct AssistantIcon: View {
             GeminiSparkle()
         case .codex:
             CodexIcon()
+        case .opencode:
+            OpenCodeGlyph().fill(style: FillStyle(eoFill: true))
         }
     }
 
@@ -221,19 +223,42 @@ struct AssistantIcon: View {
         case .codex:
             guard let src = CodexIcon.menuImage else { return nil }
             return SessionIcon.resizedForMenu(src, to: size)
+        case .opencode:
+            return shapeMenuImage(OpenCodeGlyph(), size: size)
         }
     }
 
     private static func geminiMenuImage(size: CGFloat) -> NSImage {
+        shapeMenuImage(GeminiSparkle(), size: size)
+    }
+
+    private static func shapeMenuImage(_ shape: some Shape, size: CGFloat) -> NSImage {
         let img = NSImage(size: NSSize(width: size, height: size))
         img.lockFocus()
-        let path = GeminiSparkle().path(in: CGRect(origin: .zero, size: CGSize(width: size, height: size)))
+        let path = shape.path(in: CGRect(origin: .zero, size: CGSize(width: size, height: size)))
         let bezier = NSBezierPath(cgPath: path.cgPath)
+        bezier.windingRule = .evenOdd
         NSColor.black.setFill()
         bezier.fill()
         img.unlockFocus()
         img.isTemplate = true
         return img
+    }
+}
+
+/// A plain block glyph for OpenCode: a square frame with its lower half
+/// filled, drawn as a shape rather than a copy of the brand mark.
+struct OpenCodeGlyph: Shape {
+    func path(in rect: CGRect) -> Path {
+        let side = min(rect.width, rect.height) * 0.84
+        let outer = CGRect(x: rect.midX - side / 2, y: rect.midY - side / 2, width: side, height: side)
+        let stroke = side * 0.2
+        let inner = outer.insetBy(dx: stroke, dy: stroke)
+        var path = Path()
+        path.addRect(outer)
+        // Even-odd: the upper part of the inner square is the hole.
+        path.addRect(CGRect(x: inner.minX, y: inner.minY, width: inner.width, height: inner.height * 0.5))
+        return path
     }
 }
 

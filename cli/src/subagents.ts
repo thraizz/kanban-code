@@ -201,17 +201,19 @@ export function makeSubagentRequest(
 /**
  * Claude Code applies `/model <name>` directly. Codex's `/model` takes no
  * argument and opens a picker, so passing a name there just submits the whole
- * thing as an ordinary prompt.
+ * thing as an ordinary prompt. OpenCode's `/models` is a picker too.
  */
 export function modelSwitchCommand(model: string, assistant: CodingAssistant = "claude"): string {
   const name = model.trim().replace(/^\/?(model\s+)?/i, "");
   if (!name) throw new Error("A model name is required, for example opus or gpt-5.");
-  return assistant === "codex" ? "/model" : `/model ${name}`;
+  if (assistant === "codex") return "/model";
+  if (assistant === "opencode") return "/models";
+  return `/model ${name}`;
 }
 
 /** Whether the assistant applies a named model switch without further input. */
 export function appliesModelSwitchDirectly(assistant: CodingAssistant): boolean {
-  return assistant !== "codex";
+  return assistant !== "codex" && assistant !== "opencode";
 }
 
 /**

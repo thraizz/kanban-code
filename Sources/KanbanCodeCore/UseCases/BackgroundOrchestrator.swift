@@ -110,6 +110,8 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
             let scanned: [JsonlParser.DiscoveredBranch]
             if links[idx].effectiveAssistant == .codex {
                 scanned = (try? await CodexSessionParser.extractPushedBranches(from: sessionPath)) ?? []
+            } else if links[idx].effectiveAssistant == .opencode {
+                scanned = (try? OpenCodeSessionStore.extractPushedBranches(sessionPath: sessionPath)) ?? []
             } else {
                 scanned = (try? await JsonlParser.extractPushedBranches(from: sessionPath)) ?? []
             }
@@ -164,7 +166,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
             // session never pushed leaves no other trace of one, which is the
             // case for every pull request it reviewed or drove on a branch
             // that was pushed somewhere else.
-            if let prTracker, links[idx].effectiveAssistant != .codex {
+            if let prTracker, links[idx].effectiveAssistant != .codex, links[idx].effectiveAssistant != .opencode {
                 let linked = (try? await JsonlParser.extractLinkedPRs(from: sessionPath)) ?? []
                 var wanted: [String: [Int]] = [:]
                 for pr in linked {

@@ -270,6 +270,8 @@ struct ContentView: View {
                         assistantRegistry.register(.gemini, discovery: GeminiSessionDiscovery(), detector: GeminiActivityDetector(), store: GeminiSessionStore())
                     case .codex:
                         assistantRegistry.register(.codex, discovery: CodexSessionDiscovery(), detector: CodexActivityDetector(), store: CodexSessionStore())
+                    case .opencode:
+                        assistantRegistry.register(.opencode, discovery: OpenCodeSessionDiscovery(), detector: OpenCodeActivityDetector(), store: OpenCodeSessionStore())
                     }
                 }
             } else {

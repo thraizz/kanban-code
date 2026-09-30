@@ -954,7 +954,7 @@ public enum Reducer {
         case .resumeCard(let cardId):
             guard var link = state.links[cardId] else { return [] }
             let sid = link.sessionLink?.sessionId ?? link.id
-            let tmuxName = "\(link.effectiveAssistant.cliCommand)-\(String(sid.prefix(8)))"
+            let tmuxName = link.effectiveAssistant.resumeSessionName(sessionId: sid)
             // Preserve existing shell sessions as extras
             var extras = link.tmuxLink?.extraSessions ?? []
             if link.tmuxLink?.isShellOnly == true, let oldPrimary = link.tmuxLink?.sessionName {
@@ -3495,6 +3495,8 @@ public final class BoardStore: @unchecked Sendable {
                 }
             case .codex:
                 scanned = try await CodexSessionParser.extractPushedBranches(from: sessionPath)
+            case .opencode:
+                scanned = try OpenCodeSessionStore.extractPushedBranches(sessionPath: sessionPath)
             }
         } catch {
             lastAutoBranchDiscovery = now

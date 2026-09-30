@@ -22,6 +22,9 @@ public enum HookManager {
             ["AfterAgent", "Notification", "SessionStart", "SessionEnd", "BeforeAgent"]
         case .codex:
             []
+        case .opencode:
+            // Written by the OpenCode plugin, not registered in a settings file.
+            ["Stop", "Notification", "SessionStart", "SessionEnd", "UserPromptSubmit"]
         }
     }
 
@@ -40,8 +43,10 @@ public enum HookManager {
     // MARK: - Check
 
     /// Check if hooks are already installed for the given assistant.
+    /// For OpenCode, `settingsPath` is the plugin file (see `OpenCodePlugin`).
     public static func isInstalled(for assistant: CodingAssistant, settingsPath: String? = nil) -> Bool {
         guard assistant.supportsHooks else { return false }
+        if assistant == .opencode { return OpenCodePlugin.isInstalled(at: settingsPath) }
 
         let path = settingsPath ?? defaultSettingsPath(for: assistant)
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
@@ -74,6 +79,9 @@ public enum HookManager {
     public static func addMissingHooks(for assistant: CodingAssistant, settingsPath: String? = nil)
         -> Bool
     {
+        if assistant == .opencode {
+            return OpenCodePlugin.refresh(at: settingsPath)
+        }
         guard assistant.supportsHooks, !isInstalled(for: assistant, settingsPath: settingsPath),
             registeredHooks(for: assistant, settingsPath: settingsPath) > 0
         else { return false }
@@ -129,6 +137,10 @@ public enum HookManager {
     ) throws {
         guard assistant.supportsHooks else {
             throw HookManagerError.unsupportedAssistant(assistant.displayName)
+        }
+        if assistant == .opencode {
+            try OpenCodePlugin.install(at: settingsPath)
+            return
         }
 
         let resolvedSettingsPath = settingsPath ?? defaultSettingsPath(for: assistant)
@@ -206,6 +218,10 @@ public enum HookManager {
     /// Remove Kanban hooks from the given assistant's settings.
     public static func uninstall(for assistant: CodingAssistant, settingsPath: String? = nil) throws {
         guard assistant.supportsHooks else { return }
+        if assistant == .opencode {
+            try OpenCodePlugin.uninstall(at: settingsPath)
+            return
+        }
 
         let resolvedSettingsPath = settingsPath ?? defaultSettingsPath(for: assistant)
 
@@ -373,7 +389,8 @@ public enum HookManager {
 
     /// Settings file path per assistant.
     public static func defaultSettingsPath(for assistant: CodingAssistant) -> String {
-        (NSHomeDirectory() as NSString).appendingPathComponent("\(assistant.configDirName)/settings.json")
+        if assistant == .opencode { return OpenCodePlugin.defaultPath() }
+        return (NSHomeDirectory() as NSString).appendingPathComponent("\(assistant.configDirName)/settings.json")
     }
 
     private static func defaultSettingsPath() -> String {
