@@ -1567,6 +1567,10 @@ struct ProjectsSettingsView: View {
         .sheet(item: $editingProject) { project in
             ProjectEditSheet(
                 project: project,
+                automaticColor: ProjectColor.automatic(
+                    path: project.path,
+                    in: projects.contains { $0.path == project.path } ? projects : projects + [project]
+                ),
                 isNew: isEditingNew,
                 onSave: { updated in
                     Task {
@@ -1591,6 +1595,9 @@ struct ProjectsSettingsView: View {
 
     private func projectRow(_ project: Project) -> some View {
         HStack {
+            Circle()
+                .fill(ProjectColor.resolve(path: project.path, in: projects).color)
+                .frame(width: 10, height: 10)
             VStack(alignment: .leading, spacing: 2) {
                 Text(project.name)
                     .fontWeight(.medium)
@@ -1713,20 +1720,32 @@ struct ProjectEditSheet: View {
     @State private var repoRoot: String
     @State private var githubFilter: String
     @State private var visible: Bool
+    @State private var color: ProjectColor?
     @State private var testResultCount: Int?
     @State private var testRunning = false
+    let original: Project
+    let automaticColor: ProjectColor
     let path: String
     let isNew: Bool
     let onSave: (Project) -> Void
     let onCancel: () -> Void
 
-    init(project: Project, isNew: Bool = false, onSave: @escaping (Project) -> Void, onCancel: @escaping () -> Void) {
+    init(
+        project: Project,
+        automaticColor: ProjectColor,
+        isNew: Bool = false,
+        onSave: @escaping (Project) -> Void,
+        onCancel: @escaping () -> Void
+    ) {
+        self.original = project
+        self.automaticColor = automaticColor
         self.path = project.path
         self.isNew = isNew
         self._name = State(initialValue: project.name)
         self._repoRoot = State(initialValue: project.repoRoot ?? "")
         self._githubFilter = State(initialValue: project.githubFilter ?? "")
         self._visible = State(initialValue: project.visible)
+        self._color = State(initialValue: project.projectColor)
         self.onSave = onSave
         self.onCancel = onCancel
     }
@@ -1746,6 +1765,12 @@ struct ProjectEditSheet: View {
                     TextField("Repo root (if different from path)", text: $repoRoot)
                         .font(.caption)
                     Toggle("Visible in project selector", isOn: $visible)
+                    Picker("Card color", selection: $color) {
+                        colorOption("Automatic (\(automaticColor.displayName))", automaticColor).tag(ProjectColor?.none)
+                        ForEach(ProjectColor.allCases, id: \.self) { option in
+                            colorOption(option.displayName, option).tag(Optional(option))
+                        }
+                    }
                 }
 
                 Section("GitHub Issues") {
@@ -1788,13 +1813,12 @@ struct ProjectEditSheet: View {
                 Button("Cancel") { onCancel() }
                     .keyboardShortcut(.cancelAction)
                 Button(isNew ? "Add" : "Save") {
-                    let project = Project(
-                        path: path,
-                        name: name,
-                        repoRoot: repoRoot.isEmpty ? nil : repoRoot,
-                        visible: visible,
-                        githubFilter: githubFilter.isEmpty ? nil : githubFilter
-                    )
+                    var project = original
+                    project.name = name
+                    project.repoRoot = repoRoot.isEmpty ? nil : repoRoot
+                    project.visible = visible
+                    project.githubFilter = githubFilter.isEmpty ? nil : githubFilter
+                    project.projectColor = color
                     onSave(project)
                 }
                 .keyboardShortcut(.defaultAction)
@@ -1803,6 +1827,15 @@ struct ProjectEditSheet: View {
         }
         .padding(20)
         .frame(width: 460)
+    }
+
+    private func colorOption(_ title: String, _ color: ProjectColor) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: "circle.fill")
+                .foregroundStyle(color.color)
+        }
     }
 
     private func testFilter() {
