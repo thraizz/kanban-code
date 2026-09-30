@@ -33,10 +33,12 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     public init(
         stopDelay: TimeInterval = 3.0,
         activeTimeout: TimeInterval = 300,
+        toolCallTimeout: TimeInterval = 30 * 60,
         subagentTimeout: TimeInterval = 2 * 60 * 60
     ) {
         self.stopDelay = stopDelay
         self.activeTimeout = activeTimeout
+        self.toolCallTimeout = toolCallTimeout
         self.subagentTimeout = subagentTimeout
     }
 
@@ -104,6 +106,11 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     /// Timeout (seconds) before treating a hook-active session as timed out.
     /// Matches Claude Code's own ~5-minute timeout for long-running tool calls.
     private let activeTimeout: TimeInterval
+    /// How long a quiet transcript still counts as working while its last
+    /// entry is a tool call with no result yet: a long build or test run
+    /// writes nothing until it finishes. Capped so a session killed
+    /// mid-tool doesn't show work forever.
+    private let toolCallTimeout: TimeInterval
 
     public func pollActivity(sessionPaths: [String: String]) async -> [String: ActivityState] {
         // Drop session paths clearly owned by another assistant (Gemini, Codex).
@@ -190,9 +197,10 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
                 return .activelyWorking
             }
 
-            // Safety net: 5-minute timeout for killed processes / abandoned sessions
+            // Safety net: 5-minute timeout for killed processes / abandoned sessions,
+            // unless a tool call is still running
             if fileAge > activeTimeout {
-                return .needsAttention
+                return isRunningToolCall(path: path, fileAge: fileAge) ? .activelyWorking : .needsAttention
             }
 
             // Fast Ctrl+C detection: file stopped changing >3s ago, check last line
@@ -242,15 +250,63 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             // very recently — which indicates the user just auto-approved and
             // Claude is already resuming work.
             if let path = sessionPaths[sessionId],
-               let fileAge = Self.fileAge(path),
-               fileAge < 5 {
-                return .activelyWorking
+               let fileAge = Self.fileAge(path) {
+                if fileAge < 5 {
+                    return .activelyWorking
+                }
+                // Answering the prompt (a permission, an AskUserQuestion)
+                // fires no UserPromptSubmit, so this Notification stays the
+                // last event for the rest of the turn. A transcript written
+                // after it means the prompt was answered and Claude went on;
+                // without this, every tool call longer than 5s read as
+                // Waiting. The margin covers the hook timestamp's
+                // whole-second resolution.
+                let fileMtime = Date.now.addingTimeInterval(-fileAge)
+                if fileMtime.timeIntervalSince(lastEvent.timestamp) > 2.0,
+                   fileAge < activeTimeout || isRunningToolCall(path: path, fileAge: fileAge) {
+                    return .activelyWorking
+                }
             }
             return .needsAttention
         default:
             // Unknown hook events — use polled state, never promote to activelyWorking
             return polledStates[sessionId] ?? .idleWaiting
         }
+    }
+
+    /// Whether a quiet transcript is waiting on a tool call that is still
+    /// running, within `toolCallTimeout`.
+    private func isRunningToolCall(path: String, fileAge: TimeInterval) -> Bool {
+        fileAge < toolCallTimeout && Self.lastEntryIsPendingToolUse(path)
+    }
+
+    /// Whether the transcript's last conversation entry is an assistant
+    /// message calling a tool, i.e. no tool result has come back yet.
+    /// Bookkeeping lines (attachments, mode, titles) are skipped; a user
+    /// entry, whether a tool result, a prompt or an interrupt, means no.
+    static func lastEntryIsPendingToolUse(_ path: String) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return false }
+        defer { try? handle.close() }
+
+        // A tool call carries its input (a whole file for Write), so read
+        // more than one short line's worth.
+        let fileSize = handle.seekToEndOfFile()
+        let readSize: UInt64 = min(256 * 1024, fileSize)
+        handle.seek(toFileOffset: fileSize - readSize)
+        let data = handle.availableData
+        guard let tail = String(data: data, encoding: .utf8) else { return false }
+
+        for line in tail.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+            guard line.contains("\"type\":\"assistant\"") || line.contains("\"type\":\"user\""),
+                  let lineData = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let type = obj["type"] as? String else { continue }
+            if type == "user" { return false }
+            guard type == "assistant" else { continue }
+            let content = (obj["message"] as? [String: Any])?["content"] as? [[String: Any]] ?? []
+            return content.contains { $0["type"] as? String == "tool_use" }
+        }
+        return false
     }
 
     /// Quick mtime check — returns seconds since file was last modified, or nil on error.

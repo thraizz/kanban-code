@@ -286,8 +286,8 @@ public enum JsonlParser {
             handle.seek(toFileOffset: UInt64(offset))
         }
 
-        // Regex: git push [flags...] origin|upstream <branch>
-        let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*(?:origin|upstream)\s+(\S+)/
+        // Regex: git push [flags...] <remote> <branch>
+        let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*[A-Za-z0-9_][A-Za-z0-9_.\-]*\s+([^\s;&|]+)/
         // Regex: git checkout -b <branch> or git checkout -B <branch>
         let checkoutBranchRegex = /git\s+checkout\s+-[bB]\s+(\S+)/
         // Regex: git switch -c <branch> or git switch --create <branch>
@@ -372,7 +372,7 @@ public enum JsonlParser {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
         defer { try? handle.close() }
 
-        let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*(?:origin|upstream)\s+(\S+)/
+        let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*[A-Za-z0-9_][A-Za-z0-9_.\-]*\s+([^\s;&|]+)/
         let cdRegex = /cd\s+([^\s;&]+)\s*&&/
 
         let chunkSize = 256 * 1024
