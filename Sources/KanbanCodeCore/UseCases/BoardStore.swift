@@ -3470,7 +3470,9 @@ public final class BoardStore: @unchecked Sendable {
         var candidates: [(index: Int, activityDate: Date)] = []
         for i in links.indices {
             let link = links[i]
-            guard link.column == .inProgress,
+            // Waiting too: a PR opened in a turn's last seconds lands in
+            // the transcript after the card has already left In Progress.
+            guard link.column == .inProgress || link.column == .waiting,
                   let session = link.sessionLink,
                   let sessionPath = session.sessionPath,
                   !sessionPath.isEmpty else { continue }

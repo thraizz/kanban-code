@@ -321,7 +321,7 @@ public enum CodexSessionParser {
             handle.seek(toFileOffset: UInt64(startOffset))
         }
 
-        let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*(?:origin|upstream)\s+(\S+)/
+        let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*[A-Za-z0-9_][A-Za-z0-9_.\-]*\s+([^\s;&|]+)/
         let checkoutBranchRegex = /git\s+checkout\s+-[bB]\s+(\S+)/
         let switchCreateRegex = /git\s+switch\s+(?:-c|--create)\s+(\S+)/
         // -b can come before or after the worktree path: `add -b br path` / `add path -b br`

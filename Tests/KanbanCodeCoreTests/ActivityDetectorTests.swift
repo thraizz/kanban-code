@@ -174,6 +174,109 @@ struct ActivityDetectorTests {
         #expect(state == .needsAttention, "Notification + stale file means Claude needs attention")
     }
 
+    @Test("Notification answered + file written after it, now quiet during a tool call → activelyWorking")
+    func notificationAnsweredThenLongToolCall() async {
+        // Approving a permission or answering AskUserQuestion fires no
+        // UserPromptSubmit, so the Notification stays the last event while
+        // Claude carries on. A build running for 30s leaves the transcript
+        // quiet, but it was written well after the Notification.
+        let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1",
+            eventName: "Notification",
+            timestamp: Date.now.addingTimeInterval(-120)
+        ))
+
+        let dir = NSTemporaryDirectory() + "kanban-code-notif-answered-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+        try? "data".write(toFile: path, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes(
+            [.modificationDate: Date.now.addingTimeInterval(-30)], ofItemAtPath: path)
+        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .activelyWorking, "Writes after the Notification mean the prompt was answered")
+    }
+
+    @Test("Notification answered but transcript quiet past the active timeout → needsAttention")
+    func notificationAnsweredThenTimedOut() async {
+        let detector = ClaudeCodeActivityDetector(activeTimeout: 60)
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1",
+            eventName: "Notification",
+            timestamp: Date.now.addingTimeInterval(-600)
+        ))
+
+        let dir = NSTemporaryDirectory() + "kanban-code-notif-timeout-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+        try? "data".write(toFile: path, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes(
+            [.modificationDate: Date.now.addingTimeInterval(-120)], ofItemAtPath: path)
+        let _ = await detector.pollActivity(sessionPaths: ["s1": path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention)
+    }
+
+    private static func transcript(_ lines: [String], age: TimeInterval) -> (dir: String, path: String) {
+        let dir = NSTemporaryDirectory() + "kanban-code-tool-call-\(UUID().uuidString)"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = (dir as NSString).appendingPathComponent("test.jsonl")
+        try? (lines.joined(separator: "\n") + "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        try? FileManager.default.setAttributes(
+            [.modificationDate: Date.now.addingTimeInterval(-age)], ofItemAtPath: path)
+        return (dir, path)
+    }
+
+    private static let toolUseLine =
+        #"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"swift test"}}]}}"#
+    private static let toolResultLine =
+        #"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}}"#
+    private static let attachmentLine = #"{"type":"attachment","attachment":{}}"#
+
+    @Test("Tool call still running past the active timeout → activelyWorking")
+    func longToolCallKeepsWorking() async {
+        let detector = ClaudeCodeActivityDetector(activeTimeout: 60)
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "UserPromptSubmit", timestamp: Date.now.addingTimeInterval(-600)))
+        let t = Self.transcript([Self.toolUseLine, Self.attachmentLine], age: 120)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .activelyWorking, "A tool call with no result yet is still running")
+    }
+
+    @Test("Tool call answered, then quiet past the active timeout → needsAttention")
+    func answeredToolCallTimesOut() async {
+        let detector = ClaudeCodeActivityDetector(activeTimeout: 60)
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "UserPromptSubmit", timestamp: Date.now.addingTimeInterval(-600)))
+        let t = Self.transcript([Self.toolUseLine, Self.toolResultLine], age: 120)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention)
+    }
+
+    @Test("Tool call quiet past the tool call timeout → needsAttention (killed mid-tool)")
+    func toolCallTimesOut() async {
+        let detector = ClaudeCodeActivityDetector(activeTimeout: 60, toolCallTimeout: 300)
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "UserPromptSubmit", timestamp: Date.now.addingTimeInterval(-900)))
+        let t = Self.transcript([Self.toolUseLine], age: 600)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention)
+    }
+
     @Test("Stop grace window then new UserPromptSubmit → activelyWorking (ralph loop flow)")
     func stopResumedByNewPrompt() async {
         let detector = ClaudeCodeActivityDetector(stopDelay: 5)

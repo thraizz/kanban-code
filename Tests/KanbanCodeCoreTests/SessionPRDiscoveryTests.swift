@@ -94,6 +94,34 @@ struct SessionPRDiscoveryTests {
         #expect(latest?.repoPath == "/repos/langwatch")
     }
 
+    @Test("a push to a remote with any name is found, chained commands and all")
+    func pushToForkRemote() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = try write(dir, [
+            bash(
+                "git push -q --force-with-lease fork feat/on-fork && gh pr create --base main",
+                cwd: "/repos/langwatch"),
+        ])
+
+        let latest = try await JsonlParser.extractLatestPushedBranch(from: path)
+
+        #expect(latest?.branch == "feat/on-fork")
+    }
+
+    @Test("a push naming only the remote yields no branch")
+    func pushWithoutBranch() async throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let path = try write(dir, [
+            bash("git push fork && gh pr create", cwd: "/repos/langwatch"),
+        ])
+
+        let latest = try await JsonlParser.extractLatestPushedBranch(from: path)
+
+        #expect(latest == nil)
+    }
+
     // MARK: - Pull requests the session recorded
 
     @Test("a pull request the session worked on is found without any push")
