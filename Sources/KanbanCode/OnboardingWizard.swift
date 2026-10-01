@@ -37,6 +37,7 @@ struct OnboardingWizard: View {
             case .gemini: available = status?.geminiAvailable ?? false
             case .codex: available = status?.codexAvailable ?? false
             case .opencode: available = status?.opencodeAvailable ?? false
+            case .pi: available = status?.piAvailable ?? false
             }
             if available && enabledAssistants.contains(assistant) && assistant.supportsHooks {
                 result.append(.hooks(assistant))
@@ -192,6 +193,7 @@ struct OnboardingWizard: View {
                     case .gemini: status?.geminiAvailable ?? false
                     case .codex: status?.codexAvailable ?? false
                     case .opencode: status?.opencodeAvailable ?? false
+                    case .pi: status?.piAvailable ?? false
                     }
                 }()
 
@@ -285,6 +287,7 @@ struct OnboardingWizard: View {
                 case .gemini: return !(status?.geminiAvailable ?? false)
                 case .codex: return !(status?.codexAvailable ?? false)
                 case .opencode: return !(status?.opencodeAvailable ?? false)
+                case .pi: return !(status?.piAvailable ?? false)
                 }
             }
 
@@ -301,6 +304,7 @@ struct OnboardingWizard: View {
                             case .gemini: status?.geminiAvailable ?? false
                             case .codex: status?.codexAvailable ?? false
                             case .opencode: status?.opencodeAvailable ?? false
+                            case .pi: status?.piAvailable ?? false
                             }
                         }()
 
@@ -650,6 +654,7 @@ struct OnboardingWizard: View {
                             case .gemini: status?.geminiAvailable ?? false
                             case .codex: status?.codexAvailable ?? false
                             case .opencode: status?.opencodeAvailable ?? false
+                            case .pi: status?.piAvailable ?? false
                             }
                         }()
                         summaryRow(assistant.displayName, status: available)

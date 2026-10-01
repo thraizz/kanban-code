@@ -6,6 +6,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     case gemini
     case codex
     case opencode
+    case pi
 
     public var displayName: String {
         switch self {
@@ -13,6 +14,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         case .gemini: "Gemini CLI"
         case .codex: "Codex CLI"
         case .opencode: "OpenCode"
+        case .pi: "Pi"
         }
     }
 
@@ -22,6 +24,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         case .gemini: "gemini"
         case .codex: "codex"
         case .opencode: "opencode"
+        case .pi: "pi"
         }
     }
 
@@ -34,6 +37,9 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         // The input box is drawn with a heavy left bar; readiness is decided
         // from the footer in PaneOutputParser, not from this character.
         case .opencode: "┃"
+        // Pi's input is a bare editor between two rules; readiness is decided
+        // from those rules in PaneOutputParser, not from this character.
+        case .pi: "─"
         }
     }
 
@@ -44,7 +50,8 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         case .claude: "--dangerously-skip-permissions"
         case .gemini: "--yolo"
         case .codex: "--dangerously-bypass-approvals-and-sandbox"
-        case .opencode: ""
+        // Pi has no permission prompts: every tool call runs.
+        case .opencode, .pi: ""
         }
     }
 
@@ -55,7 +62,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     public var autoApproveEnvironment: [(key: String, value: String)] {
         switch self {
         case .opencode: [(key: "OPENCODE_PERMISSION", value: #"{"*":"allow"}"#)]
-        case .claude, .gemini, .codex: []
+        case .claude, .gemini, .codex, .pi: []
         }
     }
 
@@ -64,7 +71,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         switch self {
         case .claude, .gemini: "--resume"
         case .codex: "resume"
-        case .opencode: "--session"
+        case .opencode, .pi: "--session"
         }
     }
 
@@ -72,7 +79,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     public var supportsWorktree: Bool {
         switch self {
         case .claude: true
-        case .gemini, .codex, .opencode: false
+        case .gemini, .codex, .opencode, .pi: false
         }
     }
 
@@ -80,15 +87,16 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     public var supportsImageUpload: Bool {
         switch self {
         case .claude: true
-        case .gemini, .codex, .opencode: false
+        case .gemini, .codex, .opencode, .pi: false
         }
     }
 
     /// Whether this assistant exposes a hooks settings file Kanban can install into.
-    /// For OpenCode the "hook" is a plugin file that reports bus events.
+    /// For OpenCode the "hook" is a plugin file that reports bus events, for
+    /// Pi an extension file that reports its lifecycle events.
     public var supportsHooks: Bool {
         switch self {
-        case .claude, .gemini, .opencode: true
+        case .claude, .gemini, .opencode, .pi: true
         case .codex: false
         }
     }
@@ -97,7 +105,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     public var submitsPromptWithPaste: Bool {
         switch self {
         case .claude: false
-        case .gemini, .codex, .opencode: true
+        case .gemini, .codex, .opencode, .pi: true
         }
     }
 
@@ -105,7 +113,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     public var requiresRemotePathWrapper: Bool {
         switch self {
         case .claude: false
-        case .gemini, .codex, .opencode: true
+        case .gemini, .codex, .opencode, .pi: true
         }
     }
 
@@ -113,7 +121,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     /// its sessions in a SQLite database, so it has no per-session file.
     public var sessionFileExtension: String {
         switch self {
-        case .claude, .codex: "jsonl"
+        case .claude, .codex, .pi: "jsonl"
         case .gemini: "json"
         case .opencode: ""
         }
@@ -122,7 +130,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     /// Extra flags required for interactive startup in a tmux pane.
     public var interactiveLaunchFlags: [String] {
         switch self {
-        case .claude, .gemini, .opencode: []
+        case .claude, .gemini, .opencode, .pi: []
         case .codex: ["--no-alt-screen"]
         }
     }
@@ -136,6 +144,8 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         case .gemini: ".gemini"
         case .codex: ".codex"
         case .opencode: ".local/share/opencode"
+        // Pi's agent directory; its sessions are under `sessions/`.
+        case .pi: ".pi/agent"
         }
     }
 
@@ -180,6 +190,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         case .gemini: "✦"
         case .codex: "›"
         case .opencode: "┃"
+        case .pi: "π"
         }
     }
 
@@ -190,6 +201,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         case .gemini: "npm install -g @google/gemini-cli"
         case .codex: "npm install -g @openai/codex"
         case .opencode: "npm install -g opencode-ai"
+        case .pi: "npm install -g @earendil-works/pi-coding-agent"
         }
     }
 
@@ -198,8 +210,8 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         switch self {
         case .claude: "ANTHROPIC_BASE_URL"
         case .codex:  "OPENAI_BASE_URL"
-        // OpenCode configures providers in its own config, not by env.
-        case .gemini, .opencode: nil
+        // OpenCode and Pi configure providers in their own config, not by env.
+        case .gemini, .opencode, .pi: nil
         }
     }
 
@@ -240,7 +252,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
             if skipPermissions { flags.append(contentsOf: autoApproveFlags) }
             flags.append(contentsOf: interactiveLaunchFlags)
             flags.append(sessionId)
-        case .claude, .gemini, .opencode:
+        case .claude, .gemini, .opencode, .pi:
             if skipPermissions { flags.append(contentsOf: autoApproveFlags) }
             flags.append(resumeFlag)
             flags.append(sessionId)
@@ -257,8 +269,9 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
     ///
     /// The auto-approve environment goes first through `env`, so it still
     /// applies when a launcher prefix or a command template wraps the CLI.
-    /// OpenCode reads everything after `--` as positionals, so it only gets
-    /// the separator when a launcher (which needs it) is in front.
+    /// OpenCode and Pi read everything after `--` as positionals (Pi as the
+    /// first prompt), so they only get the separator when a launcher (which
+    /// needs it) is in front.
     private func assemble(
         skipPermissions: Bool,
         service: APIService?,
@@ -277,7 +290,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         }
         let needsServiceSeparator: Bool
         switch self {
-        case .opencode:
+        case .opencode, .pi:
             needsServiceSeparator = service?.launcherPrefix != nil
         case .claude, .gemini, .codex:
             needsServiceSeparator = service?.launcherPrefix != nil
@@ -289,16 +302,17 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
 
     /// The part of a session id that names its tmux session: the first 8
     /// characters of a UUID. OpenCode ids (`ses_` + a time-ordered part + a
-    /// random part) share their first characters between sessions started
-    /// close together, so theirs is the random tail.
-    public static func shortSessionId(_ sessionId: String) -> String {
-        if sessionId.hasPrefix("ses_") { return String(sessionId.suffix(8)) }
+    /// random part) and Pi's version 7 UUIDs (a millisecond timestamp first)
+    /// share their first characters between sessions started close
+    /// together, so theirs is the random tail.
+    public func shortSessionId(_ sessionId: String) -> String {
+        if sessionId.hasPrefix("ses_") || self == .pi { return String(sessionId.suffix(8)) }
         return String(sessionId.prefix(8))
     }
 
     /// The tmux session a resume of `sessionId` runs in.
     public func resumeSessionName(sessionId: String) -> String {
-        "\(cliCommand)-\(Self.shortSessionId(sessionId))"
+        "\(cliCommand)-\(shortSessionId(sessionId))"
     }
 
     /// Wraps a built assistant command with the user's launch command template.

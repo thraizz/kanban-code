@@ -38,9 +38,9 @@ public actor ImageSender {
     ) async throws {
         // An agtop host takes messages as soon as it runs, and queues them.
         if AgtopSessionName.isAgtop(sessionName) { return }
-        // Gemini, Codex and OpenCode can take longer to start (auth checks,
-        // banners, model setup, MCP servers).
-        let slowStart: Set<CodingAssistant> = [.gemini, .codex, .opencode]
+        // Gemini, Codex, OpenCode and Pi can take longer to start (auth checks,
+        // banners, model setup, MCP servers, extensions).
+        let slowStart: Set<CodingAssistant> = [.gemini, .codex, .opencode, .pi]
         let effectiveTimeout = timeout ?? (slowStart.contains(assistant) ? .seconds(60) : .seconds(30))
         let start = ContinuousClock.now
         var acceptedCodexStartupPrompt = false

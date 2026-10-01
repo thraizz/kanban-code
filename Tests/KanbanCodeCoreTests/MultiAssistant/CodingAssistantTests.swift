@@ -383,7 +383,8 @@ struct CodingAssistantTests {
         #expect(all.contains(.gemini))
         #expect(all.contains(.codex))
         #expect(all.contains(.opencode))
-        #expect(all.count == 4)
+        #expect(all.contains(.pi))
+        #expect(all.count == 5)
     }
 
     // MARK: - OpenCode
@@ -445,5 +446,49 @@ struct CodingAssistantTests {
         let cmd = CodingAssistant.opencode.launchCommand(skipPermissions: true, worktreeName: nil)
         let wrapped = CodingAssistant.applyCommandTemplate(cmd, template: "langwatch ${cli_command}")
         #expect(wrapped == #"langwatch env OPENCODE_PERMISSION='{"*":"allow"}' opencode"#)
+    }
+
+    // MARK: - Pi
+
+    @Test("Pi basics")
+    func piBasics() {
+        let pi = CodingAssistant.pi
+        #expect(pi.displayName == "Pi")
+        #expect(pi.cliCommand == "pi")
+        #expect(pi.installCommand == "npm install -g @earendil-works/pi-coding-agent")
+        #expect(pi.resumeFlag == "--session")
+        #expect(pi.sessionFileExtension == "jsonl")
+        #expect(pi.supportsHooks)
+        #expect(pi.submitsPromptWithPaste)
+        #expect(!pi.supportsWorktree)
+        #expect(!pi.supportsImageUpload)
+        #expect(pi.baseURLEnvKey == nil)
+        #expect(pi.owns(sessionPath: "/Users/me/.pi/agent/sessions/--Users-me-project--/2026-09-30T18-10-40-290Z_01a0f382-f222-75c6-988d-fcb921b2821a.jsonl"))
+        #expect(CodingAssistant.owner(ofSessionPath: "/Users/me/.pi/agent/sessions/x/y.jsonl") == .pi)
+    }
+
+    @Test("Pi has no permission prompts, so skipping them adds nothing")
+    func piLaunchSkipPermissions() {
+        #expect(CodingAssistant.pi.launchCommand(skipPermissions: true, worktreeName: "ignored") == "pi")
+        #expect(CodingAssistant.pi.resumeCommand(sessionId: "01a0f382-f222-75c6-988d-fcb921b2821a", skipPermissions: true)
+            == "pi --session 01a0f382-f222-75c6-988d-fcb921b2821a")
+    }
+
+    @Test("Pi takes a provider/model without a -- separator, which would make the flags a prompt")
+    func piModelNoSeparator() {
+        let service = APIService(name: "OpenRouter", assistant: .pi, modelFlag: "openrouter/moonshotai/kimi-k2.6")
+        let cmd = CodingAssistant.pi.launchCommand(skipPermissions: false, worktreeName: nil, service: service)
+        #expect(cmd == "pi --model openrouter/moonshotai/kimi-k2.6")
+    }
+
+    @Test("Resume tmux names use the random tail of Pi's time-ordered ids")
+    func piResumeSessionName() {
+        // Two sessions started a minute apart share their first 8 characters.
+        let a = CodingAssistant.pi.resumeSessionName(sessionId: "01a0f385-0bf4-702d-b978-176fd2135394")
+        let b = CodingAssistant.pi.resumeSessionName(sessionId: "01a0f385-6201-717b-b0eb-d7226a1b0fbd")
+        #expect(a == "pi-d2135394")
+        #expect(a != b)
+        // Codex ids are time-ordered too; their names are left as they were.
+        #expect(CodingAssistant.codex.resumeSessionName(sessionId: "019da64f-aaaa-7bbb-8ccc-c09931f2c099") == "codex-019da64f")
     }
 }

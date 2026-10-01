@@ -8,6 +8,7 @@ public enum DependencyChecker {
         public let geminiAvailable: Bool
         public let codexAvailable: Bool
         public let opencodeAvailable: Bool
+        public let piAvailable: Bool
         public let hooksInstalled: Bool
         public let pandocAvailable: Bool
         public let wkhtmltoimageAvailable: Bool
@@ -24,6 +25,7 @@ public enum DependencyChecker {
         public init(
             claudeAvailable: Bool, geminiAvailable: Bool = false, codexAvailable: Bool = false,
             opencodeAvailable: Bool = false,
+            piAvailable: Bool = false,
             hooksInstalled: Bool,
             assistantHooks: [CodingAssistant: Bool] = [:],
             pandocAvailable: Bool,
@@ -36,6 +38,7 @@ public enum DependencyChecker {
             self.geminiAvailable = geminiAvailable
             self.codexAvailable = codexAvailable
             self.opencodeAvailable = opencodeAvailable
+            self.piAvailable = piAvailable
             self.hooksInstalled = hooksInstalled
             self.pandocAvailable = pandocAvailable
             self.wkhtmltoimageAvailable = wkhtmltoimageAvailable
@@ -57,6 +60,7 @@ public enum DependencyChecker {
             case .gemini: geminiAvailable
             case .codex: codexAvailable
             case .opencode: opencodeAvailable
+            case .pi: piAvailable
             }
         }
     }
@@ -67,6 +71,7 @@ public enum DependencyChecker {
         async let gemini = ShellCommand.isAvailable("gemini")
         async let codex = ShellCommand.isAvailable("codex")
         async let opencode = ShellCommand.isAvailable("opencode")
+        async let pi = ShellCommand.isAvailable("pi")
         async let pandoc = ShellCommand.isAvailable("pandoc")
         async let wkhtmltoimage = ShellCommand.isAvailable("wkhtmltoimage")
         async let gh = ShellCommand.isAvailable("gh")
@@ -95,6 +100,7 @@ public enum DependencyChecker {
             geminiAvailable: gemini,
             codexAvailable: codex,
             opencodeAvailable: opencode,
+            piAvailable: pi,
             hooksInstalled: hooks[.claude] ?? false,
             assistantHooks: hooks,
             pandocAvailable: pandoc,

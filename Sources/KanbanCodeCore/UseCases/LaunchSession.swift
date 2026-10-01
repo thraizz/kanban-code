@@ -80,7 +80,7 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
     ) async throws -> String {
         // Kill stale tmux session if one exists — we always want a fresh resume
         let existing = try await tmux.listSessions()
-        if let match = existing.first(where: { $0.name.contains(CodingAssistant.shortSessionId(sessionId)) }) {
+        if let match = existing.first(where: { $0.name.contains(assistant.shortSessionId(sessionId)) }) {
             try? await tmux.killSession(name: match.name)
         }
 

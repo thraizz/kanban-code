@@ -3509,6 +3509,8 @@ public final class BoardStore: @unchecked Sendable {
                 scanned = try await CodexSessionParser.extractPushedBranches(from: sessionPath)
             case .opencode:
                 scanned = try OpenCodeSessionStore.extractPushedBranches(sessionPath: sessionPath)
+            case .pi:
+                scanned = try PiSessionFile.extractPushedBranches(from: sessionPath)
             }
         } catch {
             lastAutoBranchDiscovery = now
@@ -3552,7 +3554,8 @@ public final class BoardStore: @unchecked Sendable {
     /// see one that was opened from another worktree or by someone else, which
     /// is what the session's own record of the pull request is for.
     private func autoLinkRecordedPR(links: inout [Link], index: Int, sessionPath: String) async {
-        guard let ghAdapter, links[index].effectiveAssistant != .codex else { return }
+        guard let ghAdapter, links[index].effectiveAssistant != .codex,
+              links[index].effectiveAssistant != .pi else { return }
         guard let discovered = try? await JsonlParser.extractLatestLinkedPR(from: sessionPath),
             let repository = discovered.repository,
             !links[index].prLinks.contains(where: { $0.number == discovered.number }),
