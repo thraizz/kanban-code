@@ -224,7 +224,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     // MARK: - Event-driven notification path (called from file watcher)
 
     private let passLock = NSLock()
-    private var lastPass: Task<Void, Never>?
+    private var lastPass: Task<[String], Never>?
 
     /// Process new hook events and send notifications. Called directly by file watcher
     /// for instant response — mirrors claude-pushover's hook-driven approach.
@@ -235,20 +235,24 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     /// detector after a newer one for the same session. Chaining each call
     /// behind the previous keeps the detector fed in file order, and a caller
     /// returns only after its own events are in.
-    public func processHookEvents() async {
+    ///
+    /// Returns the ids of the sessions the newly read events belong to, so a
+    /// caller can refresh just those cards.
+    @discardableResult
+    public func processHookEvents() async -> [String] {
         let current = passLock.withLock {
             let previous = lastPass
-            let chained = Task { [weak self] in
-                await previous?.value
-                await self?.runHookEventsPass()
+            let chained = Task { [weak self] () -> [String] in
+                _ = await previous?.value
+                return await self?.runHookEventsPass() ?? []
             }
             lastPass = chained
             return chained
         }
-        await current.value
+        return await current.value
     }
 
-    private func runHookEventsPass() async {
+    private func runHookEventsPass() async -> [String] {
         do {
             let events = try await hookEventStore.readNewEvents()
 
@@ -261,7 +265,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 let _ = await activityDetector.resolvePendingStops()
                 await notificationDedup.clearAllPending()
                 didInitialLoad = true
-                return
+                return []
             }
 
             if !events.isEmpty {
@@ -338,8 +342,11 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                     break
                 }
             }
+            var seen = Set<String>()
+            return events.compactMap { seen.insert($0.sessionId).inserted ? $0.sessionId : nil }
         } catch {
             KanbanCodeLog.info("notify", "processHookEvents error: \(error)")
+            return []
         }
     }
 
