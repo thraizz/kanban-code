@@ -49,7 +49,7 @@ Feature: Performance and Virtualization
     And it should only wake up on:
       | Event                    | Frequency        |
       | Hook notification        | On each hook     |
-      | Periodic poll            | Every 10 seconds |
+      | Periodic poll            | Every 30 seconds with hooks installed, every 3 seconds without |
       | File change detected     | On fs.watch      |
 
   Scenario: .jsonl scanning is incremental

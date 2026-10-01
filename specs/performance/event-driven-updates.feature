@@ -17,6 +17,10 @@ Feature: Event-driven board updates
     When a tmux session for a card is created or killed
     Then the card should reflect the change within 500ms
 
+  # Not implemented: activity detection reads session file mtimes during the
+  # poll and there is no per-session watcher or incremental parse to hook into.
+  # Hook events already cover live activity; a watcher would need its own
+  # per-file DispatchSource lifecycle, so it is left for a later change.
   Scenario: Session file changes are picked up through file watching
     When a session .jsonl file is written
     Then the change should be detected through a file system watcher

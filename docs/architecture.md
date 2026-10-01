@@ -98,6 +98,15 @@ User action / Timer / Hook event
                store.dispatch(.completed)
 ```
 
+## Event-driven updates
+
+The full `reconcile()` is a safety net, not the update path:
+
+- **Hook events**: `hook-events.jsonl` is tailed by byte offset (`HookLogTail`), bursts are coalesced for 50ms, and `refreshActivity(sessionIds:)` polls only the touched sessions and dispatches `.sessionActivityChanged`. An event for a session the board has not discovered yet requests one full reconcile.
+- **tmux**: `BoardStore.runTmuxWatch()` runs a read-only `tmux list-sessions` every 400ms while a card has a tmux link. Dead sessions go through `.tmuxLivenessScanned`; new names trigger a reconcile. No tmux hooks or config are touched.
+- **Fallback poll**: `ReconcilePolicy` picks 30s when the hook watcher runs and every enabled assistant with sessions has hooks installed, otherwise 3s (10s in background).
+- Session `.jsonl` changes are still found by the poll; there is no per-session file watcher.
+
 ## Race Condition Prevention
 
 ### `isLaunching` flag

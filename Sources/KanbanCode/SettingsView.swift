@@ -298,6 +298,11 @@ struct AssistantsSettingsView: View {
                                 .controlSize(.small)
                             }
                         }
+                        if !status.hooksInstalled {
+                            Text("Installing hooks makes the board update instantly instead of every few seconds.")
+                                .font(.caption)
+                                .foregroundStyle(.secondary)
+                        }
                     } else if status.enabled {
                         HStack {
                             Label("Activity", systemImage: "doc.text.magnifyingglass")

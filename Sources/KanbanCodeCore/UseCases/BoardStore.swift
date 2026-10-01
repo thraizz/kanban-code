@@ -666,6 +666,10 @@ public enum Action: Sendable {
     case agtopQueueRead(sessionName: String, queue: [String])
     case gitHubIssuesUpdated(links: [Link])
     case activityChanged([String: ActivityState]) // sessionId → state
+    /// Hook-driven update for a few sessions: merged into the activity map,
+    /// and only the cards that own those sessions are re-columned. `.stale`
+    /// drops the session's entry.
+    case sessionActivityChanged([String: ActivityState])
 
     // Busy state (transient spinners)
     case setBusy(cardId: String, busy: Bool)
@@ -956,6 +960,33 @@ public enum Reducer {
         let stamped = stampLocalChanges(state: state, before: before, action: action, effects: effects)
         state.rebuildCards()
         return stamped
+    }
+
+    /// Moves cards between columns for the given activity. `only` limits it to
+    /// the cards of those sessions. Returns whether any card changed.
+    static func applyActivityToColumns(
+        _ state: AppState, activityMap: [String: ActivityState], only sessionIds: Set<String>?
+    ) -> Bool {
+        var changed = false
+        for (id, var link) in state.links where link.isLaunching != true && state.isOwnedLocally(link) {
+            guard let sessionId = link.sessionLink?.sessionId,
+                  sessionIds?.contains(sessionId) ?? true,
+                  let activity = activityMap[sessionId] else { continue }
+            let hasWorktree = link.worktreeLink?.branch != nil
+            let hasLiveSession = link.tmuxLink.map { tmux in
+                guard tmux.isShellOnly != true else { return false }
+                return tmux.allSessionNames.contains(where: { state.tmuxSessions.contains($0) })
+            } ?? false
+            let oldColumn = link.column
+            UpdateCardColumn.update(
+                link: &link, activityState: activity,
+                hasWorktree: hasWorktree, hasLiveSession: hasLiveSession)
+            if link.column != oldColumn {
+                state.links[id] = link
+                changed = true
+            }
+        }
+        return changed
     }
 
     static func reduceAction(state: AppState, action: Action) -> [Effect] {
@@ -2574,25 +2605,19 @@ public enum Reducer {
 
         case .activityChanged(let activityMap):
             // Lightweight column update — no full reconciliation, just activity → column
-            var changed = false
-            for (id, var link) in state.links where link.isLaunching != true && state.isOwnedLocally(link) {
-                guard let sessionId = link.sessionLink?.sessionId,
-                      let activity = activityMap[sessionId] else { continue }
-                let hasWorktree = link.worktreeLink?.branch != nil
-                let hasLiveSession = link.tmuxLink.map { tmux in
-                    guard tmux.isShellOnly != true else { return false }
-                    return tmux.allSessionNames.contains(where: { state.tmuxSessions.contains($0) })
-                } ?? false
-                let oldColumn = link.column
-                UpdateCardColumn.update(
-                    link: &link, activityState: activity,
-                    hasWorktree: hasWorktree, hasLiveSession: hasLiveSession)
-                if link.column != oldColumn {
-                    state.links[id] = link
-                    changed = true
-                }
-            }
+            let changed = applyActivityToColumns(state, activityMap: activityMap, only: nil)
             if state.activityMap != activityMap { state.activityMap = activityMap }
+            return changed ? [.persistLinks(Array(state.links.values))] : []
+
+        case .sessionActivityChanged(let updates):
+            // Same as .activityChanged, limited to the sessions in `updates`.
+            guard !updates.isEmpty else { return [] }
+            var merged = state.activityMap
+            for (sessionId, activity) in updates {
+                if activity == .stale { merged[sessionId] = nil } else { merged[sessionId] = activity }
+            }
+            let changed = applyActivityToColumns(state, activityMap: merged, only: Set(updates.keys))
+            if state.activityMap != merged { state.activityMap = merged }
             return changed ? [.persistLinks(Array(state.links.values))] : []
 
         // MARK: Busy State
@@ -3044,6 +3069,50 @@ public final class BoardStore: @unchecked Sendable {
     /// Lightweight activity-only refresh. Queries the activity detector for all
     /// sessions with hook data and recomputes columns immediately — no discovery,
     /// no worktree scan, no PR fetch. Runs in <1ms.
+    /// Targeted version for hook events: only the given sessions are polled
+    /// and re-columned. A session the board has not discovered yet needs a
+    /// full pass, which is requested here.
+    public func refreshActivity(sessionIds: [String]) async {
+        defer { LatencyMetrics.shared.hookWritesApplied() }
+        guard let activityDetector else { return }
+        guard !sessionIds.isEmpty else { return }
+        var paths: [String: String] = [:]
+        var unknown = false
+        for id in sessionIds {
+            if let path = state.sessions[id]?.jsonlPath {
+                paths[id] = path
+                reconciledForUnknown.remove(id)
+            } else if reconciledForUnknown.insert(id).inserted {
+                // Once per session: an excluded or headless session never
+                // becomes known and must not cost a full pass per event.
+                unknown = true
+            }
+        }
+        if reconciledForUnknown.count > 512 { reconciledForUnknown.removeAll() }
+        if !paths.isEmpty {
+            let updates = await currentActivityUpdates(sessionPaths: paths, detector: activityDetector)
+            var changed: [String: ActivityState] = [:]
+            for (id, activity) in updates {
+                let current = state.activityMap[id]
+                if activity == .stale ? current != nil : current != activity { changed[id] = activity }
+            }
+            if !changed.isEmpty {
+                KanbanCodeLog.info("activity", "hook refresh (targeted): \(changed.map { "\($0.key.prefix(8))=\($0.value)" }.joined(separator: ","))")
+                dispatch(.sessionActivityChanged(changed))
+            }
+        }
+        if unknown { await reconcile(rerunIfBusy: true) }
+    }
+
+    private nonisolated func currentActivityUpdates(
+        sessionPaths: [String: String], detector: ActivityDetector
+    ) async -> [String: ActivityState] {
+        _ = await detector.pollActivity(sessionPaths: sessionPaths)
+        var result: [String: ActivityState] = [:]
+        for id in sessionPaths.keys { result[id] = await detector.activityState(for: id) }
+        return result
+    }
+
     public func refreshActivity() async {
         // Hook events were applied once this returns: closes the staleness sample.
         defer { LatencyMetrics.shared.hookWritesApplied() }
@@ -3130,14 +3199,92 @@ public final class BoardStore: @unchecked Sendable {
         await loadLocalLinks()
     }
 
+    // MARK: - Event sources
+
+    /// Set by the hook file watcher once it is observing `hook-events.jsonl`.
+    public var hookWatcherRunning = false
+    /// Whether hook events are reliable enough for a slow fallback poll.
+    public private(set) var eventSourcesHealthy = false
+
+    /// Interval for the next full reconcile; see `ReconcilePolicy`.
+    public var reconcileInterval: Duration {
+        ReconcilePolicy.interval(appIsActive: appIsActive, eventSourcesHealthy: eventSourcesHealthy)
+    }
+
+    /// Re-checks which assistants have hooks installed (small file reads, off
+    /// the main actor) and updates `reconcileInterval` accordingly.
+    public func refreshEventSourceHealth() async {
+        let enabled = ((try? await settingsStore?.read())?.enabledAssistants) ?? CodingAssistant.allCases
+        let withSessions = Set(state.sessions.values.map(\.assistant))
+        let watcher = hookWatcherRunning
+        let installed = await Self.installedHooks(for: enabled)
+        let healthy = ReconcilePolicy.eventSourcesHealthy(
+            hookWatcherRunning: watcher,
+            enabledAssistants: enabled,
+            hooksInstalled: installed,
+            assistantsWithSessions: withSessions
+        )
+        if healthy != eventSourcesHealthy {
+            KanbanCodeLog.info("reconcile", "event sources \(healthy ? "healthy: fallback poll every \(ReconcilePolicy.eventDriven)" : "not healthy: fast poll")")
+            eventSourcesHealthy = healthy
+        }
+    }
+
+    private nonisolated static func installedHooks(for assistants: [CodingAssistant]) async -> Set<CodingAssistant> {
+        Set(assistants.filter { $0.supportsHooks && HookManager.isInstalled(for: $0) })
+    }
+
+    /// Runs until cancelled: notices tmux sessions that were created or killed
+    /// outside the app well before the next full reconcile.
+    ///
+    /// It only reads (`tmux list-sessions`), and only while a card has a tmux
+    /// link. Dead sessions are cleared through `.tmuxLivenessScanned`; a new
+    /// session name needs the full pass to be matched to a card.
+    public func runTmuxWatch(activeInterval: Duration = .milliseconds(400),
+                             backgroundInterval: Duration = .seconds(3)) async {
+        guard let tmuxAdapter else { return }
+        while !Task.isCancelled {
+            try? await Task.sleep(for: appIsActive ? activeInterval : backgroundInterval)
+            guard !Task.isCancelled else { break }
+            guard !isSystemSleeping, !isReconciling,
+                  state.links.values.contains(where: { $0.tmuxLink != nil && !$0.isRemote }),
+                  let live = try? await tmuxAdapter.listSessions() else { continue }
+            let names = Set(live.map(\.name))
+            // A pass or a launch may have started while tmux was answering.
+            guard !isReconciling, names != state.tmuxSessions else { continue }
+            let added = names.subtracting(state.tmuxSessions)
+            KanbanCodeLog.info("tmux", "watch: +\(added.count) -\(state.tmuxSessions.subtracting(names).count)")
+            dispatch(.tmuxLivenessScanned(live: names))
+            if !added.isEmpty { await reconcile(rerunIfBusy: true) }
+        }
+    }
+
     // MARK: - Reconciliation
 
     /// Full reconciliation: discover sessions, load links, merge, assign columns.
     /// Replaces BoardState.refresh(). The async work happens here; the state mutation
     /// happens atomically via dispatch(.reconciled(...)).
-    public func reconcile() async {
-        // Skip entirely while the machine sleeps — dark wakes still run timers.
+    ///
+    /// `rerunIfBusy`: when a pass is already running, run one more right after
+    /// it. Event-driven callers need this because their trigger may postdate
+    /// what the running pass has already read, and with a slow poll nothing
+    /// else would pick it up soon.
+    public func reconcile(rerunIfBusy: Bool = false) async {
         guard !isSystemSleeping else { return }
+        if isReconciling {
+            if rerunIfBusy { rerunReconcileRequested = true }
+            return
+        }
+        repeat {
+            rerunReconcileRequested = false
+            await performReconcile()
+        } while rerunReconcileRequested && !isSystemSleeping
+    }
+
+    private var rerunReconcileRequested = false
+    private var reconciledForUnknown = Set<String>()
+
+    private func performReconcile() async {
         // Prevent concurrent reconciliation — overlapping calls create orphan cards
         // with different IDs from the same data.
         guard !isReconciling else { return }
