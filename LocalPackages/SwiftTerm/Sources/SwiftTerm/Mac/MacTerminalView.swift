@@ -658,7 +658,12 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         guard let currentContext = getCurrentGraphicsContext() else {
             return
         }
+        let signposter = TerminalDrawStats.signposter
+        let signpostState = signposter.beginInterval("draw")
+        let start = DispatchTime.now().uptimeNanoseconds
         drawTerminalContents (dirtyRect: dirtyRect, context: currentContext, bufferOffset: terminal.displayBuffer.yDisp)
+        TerminalDrawStats.shared.record(nanos: DispatchTime.now().uptimeNanoseconds - start)
+        signposter.endInterval("draw", signpostState)
     }
     
     public override func cursorUpdate(with event: NSEvent)
