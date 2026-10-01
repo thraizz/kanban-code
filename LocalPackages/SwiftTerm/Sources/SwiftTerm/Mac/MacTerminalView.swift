@@ -153,6 +153,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // of attributes for an NSAttributedString
     var attributes: [AttributeRenderKey: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [AttributeRenderKey: [NSAttributedString.Key:Any]] = [:]
+    /// Per-row cache of built attributed strings / CTLines, see RowRenderCache.swift
+    let rowRenderCache = RowRenderCache()
     
     
     // Cache for the colors in the 0..255 range
@@ -306,6 +308,45 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     var becomeMainObserver, resignMainObserver: NSObjectProtocol?
+    var occlusionObserver: NSObjectProtocol?
+
+    /// Set when output arrived (or a draw was requested) while the view could not be seen.
+    var needsRedrawWhenVisible = false
+
+    /// True when the view is in a window, not hidden, and the window is at least partly on screen.
+    var isDrawable: Bool {
+        guard let window else { return false }
+        return !isHiddenOrHasHiddenAncestor && window.occlusionState.contains(.visible)
+    }
+
+    private func redrawIfBecameVisible() {
+        guard needsRedrawWhenVisible, isDrawable else { return }
+        needsRedrawWhenVisible = false
+        terminal.updateFullScreen()
+        needsDisplay = true
+    }
+
+    open override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+            self.occlusionObserver = nil
+        }
+        if let window {
+            occlusionObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.redrawIfBecameVisible() }
+                }
+            // Attached to a window: whatever arrived while detached has not been drawn.
+            needsRedrawWhenVisible = true
+            redrawIfBecameVisible()
+        }
+    }
+
+    open override func viewDidUnhide() {
+        super.viewDidUnhide()
+        redrawIfBecameVisible()
+    }
     
     deinit {
         if let becomeMainObserver {
@@ -313,6 +354,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         if let resignMainObserver {
             NotificationCenter.default.removeObserver (resignMainObserver)
+        }
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver (occlusionObserver)
         }
         progressReportTimer?.invalidate()
     }
@@ -471,6 +515,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         set {
             _selectedTextBackgroundColor = newValue
+            rowRenderCache.invalidateAll()
         }
     }
 
@@ -658,7 +703,19 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         guard let currentContext = getCurrentGraphicsContext() else {
             return
         }
+        // Hidden / occluded / minimized terminals keep their buffer current but do not
+        // draw; a full redraw is requested when they become visible again.
+        if window != nil && !isDrawable {
+            needsRedrawWhenVisible = true
+            TerminalDrawStats.shared.recordSkippedHidden()
+            return
+        }
+        let signposter = TerminalDrawStats.signposter
+        let signpostState = signposter.beginInterval("draw")
+        let start = DispatchTime.now().uptimeNanoseconds
         drawTerminalContents (dirtyRect: dirtyRect, context: currentContext, bufferOffset: terminal.displayBuffer.yDisp)
+        TerminalDrawStats.shared.record(nanos: DispatchTime.now().uptimeNanoseconds - start)
+        signposter.endInterval("draw", signpostState)
     }
     
     public override func cursorUpdate(with event: NSEvent)
