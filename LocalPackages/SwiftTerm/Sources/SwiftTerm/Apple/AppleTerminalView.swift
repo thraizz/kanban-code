@@ -1701,11 +1701,18 @@ extension TerminalView {
                 }
             }
             requestMetalDisplay()
-        } else {
+        } else if isDrawable {
             setNeedsDisplay(region)
+        } else {
+            // Not visible: the buffer is already up to date, redraw when shown again.
+            needsRedrawWhenVisible = true
         }
 #else
-        setNeedsDisplay(region)
+        if isDrawable {
+            setNeedsDisplay(region)
+        } else {
+            needsRedrawWhenVisible = true
+        }
 #endif
         #else
         // TODO iOS: need to update the code above, but will do that when I get some real

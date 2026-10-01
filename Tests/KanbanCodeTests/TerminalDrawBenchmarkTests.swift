@@ -84,4 +84,20 @@ struct TerminalDrawBenchmarkTests {
         view.selectNone()
         #expect(try pixels(view) == before)
     }
+
+    @Test("A terminal in a hidden window keeps its buffer but does not draw")
+    func hiddenTerminalDoesNotDraw() throws {
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 800),
+                              styleMask: [.titled], backing: .buffered, defer: true)
+        let view = TerminalView(frame: NSRect(x: 0, y: 0, width: 1200, height: 800))
+        window.contentView = view // never ordered front: not visible
+        let stats = TerminalDrawStats.shared
+        stats.reset()
+        view.feed(text: "still delivered\r\n")
+        let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+        #expect(stats.drawCount == 0)
+        #expect(stats.skippedHiddenCount >= 1)
+        #expect(view.getTerminal().getLine(row: 0)?.translateToString(trimRight: true) == "still delivered")
+    }
 }

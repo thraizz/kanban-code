@@ -308,6 +308,45 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     var becomeMainObserver, resignMainObserver: NSObjectProtocol?
+    var occlusionObserver: NSObjectProtocol?
+
+    /// Set when output arrived (or a draw was requested) while the view could not be seen.
+    var needsRedrawWhenVisible = false
+
+    /// True when the view is in a window, not hidden, and the window is at least partly on screen.
+    var isDrawable: Bool {
+        guard let window else { return false }
+        return !isHiddenOrHasHiddenAncestor && window.occlusionState.contains(.visible)
+    }
+
+    private func redrawIfBecameVisible() {
+        guard needsRedrawWhenVisible, isDrawable else { return }
+        needsRedrawWhenVisible = false
+        terminal.updateFullScreen()
+        needsDisplay = true
+    }
+
+    open override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+            self.occlusionObserver = nil
+        }
+        if let window {
+            occlusionObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.redrawIfBecameVisible() }
+                }
+            // Attached to a window: whatever arrived while detached has not been drawn.
+            needsRedrawWhenVisible = true
+            redrawIfBecameVisible()
+        }
+    }
+
+    open override func viewDidUnhide() {
+        super.viewDidUnhide()
+        redrawIfBecameVisible()
+    }
     
     deinit {
         if let becomeMainObserver {
@@ -315,6 +354,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         if let resignMainObserver {
             NotificationCenter.default.removeObserver (resignMainObserver)
+        }
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver (occlusionObserver)
         }
         progressReportTimer?.invalidate()
     }
@@ -659,6 +701,13 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
 #endif
         guard let currentContext = getCurrentGraphicsContext() else {
+            return
+        }
+        // Hidden / occluded / minimized terminals keep their buffer current but do not
+        // draw; a full redraw is requested when they become visible again.
+        if window != nil && !isDrawable {
+            needsRedrawWhenVisible = true
+            TerminalDrawStats.shared.recordSkippedHidden()
             return
         }
         let signposter = TerminalDrawStats.signposter
