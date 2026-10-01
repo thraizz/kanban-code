@@ -2935,21 +2935,33 @@ public final class BoardStore: @unchecked Sendable {
     public func dispatch(_ action: Action) {
         if let foreignCardHandler, foreignCardHandler(action) { return }
         if deferUntilLocalLinksLoad(action) { return }
+        // Mirror gives the case name without serializing associated values.
+        let actionName = Mirror(reflecting: action).children.first?.label ?? String(describing: action)
+        LastDispatchedAction.shared.set(actionName)
+        #if canImport(os)
+        let sp = PerfSignposts.store
+        let spID = sp.makeSignpostID()
+        let dispatchState = sp.beginInterval("dispatch", id: spID, "\(actionName, privacy: .public)")
+        #endif
         let t = DispatchTime.now().uptimeNanoseconds
         let effects = guardedEffects(Reducer.reduce(state: state, action: action))
         let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t) / 1_000_000
         if totalMs > 16 {
-            // Mirror gives the case name without serializing associated values.
-            let actionName = Mirror(reflecting: action).children.first?.label ?? String(describing: action)
             KanbanCodeLog.info("dispatch-perf", String(format: "dispatch(%@): %.1fms", actionName, totalMs))
         }
+        #if canImport(os)
+        let effectsState = sp.beginInterval("effects", id: spID, "\(effects.count) effects")
+        #endif
         for effect in effects {
             Task { [weak self] in
                 guard let self else { return }
                 await self.effectHandler.execute(effect, dispatch: self.dispatch)
             }
         }
-
+        #if canImport(os)
+        sp.endInterval("effects", effectsState)
+        sp.endInterval("dispatch", dispatchState)
+        #endif
     }
 
     /// Dispatch an action and wait for all its effects to complete.
@@ -3033,6 +3045,8 @@ public final class BoardStore: @unchecked Sendable {
     /// sessions with hook data and recomputes columns immediately — no discovery,
     /// no worktree scan, no PR fetch. Runs in <1ms.
     public func refreshActivity() async {
+        // Hook events were applied once this returns: closes the staleness sample.
+        defer { LatencyMetrics.shared.hookWritesApplied() }
         guard let activityDetector else { return }
         if state.sessions.isEmpty {
             // Session discovery has not delivered yet (first reconcile still
@@ -3133,8 +3147,12 @@ public final class BoardStore: @unchecked Sendable {
         // Only show loading indicator on first reconcile, not periodic refreshes
         if state.links.isEmpty { dispatch(.setLoading(true)) }
         let reconcileStart = ContinuousClock.now
+        // Phase timings + signposts; see ReconcilePhases. Observation only.
+        let ph = ReconcilePhases(start: reconcileStart)
 
         do {
+            await ph.probeMainActorHop()
+            let tSettings = ph.begin("settings")
             // Use in-memory settings (loaded at startup, updated via .settingsLoaded action)
             // Fall back to reading from disk if settings haven't been loaded yet
             var configuredProjects = state.configuredProjects
@@ -3155,10 +3173,14 @@ public final class BoardStore: @unchecked Sendable {
                     ))
                 }
             }
+            ph.end(tSettings, "settings")
 
             // Show cached data immediately while discovery runs. A board
             // without this master's own links is never reconciled.
-            guard await loadLocalLinks() else {
+            let tLinks = ph.begin("links")
+            let localLinksOK = await loadLocalLinks()
+            ph.end(tLinks, "links", detail: "links.json + tombstones")
+            guard localLinksOK else {
                 if state.isLoading { dispatch(.setLoading(false)) }
                 return
             }
@@ -3170,12 +3192,14 @@ public final class BoardStore: @unchecked Sendable {
             // After a reboot every cached tmux link is stale, so clear dead
             // ones up front — otherwise cards keep offering a terminal whose
             // attach fails in the pane until the first full pass lands.
+            let tLiveness = ph.begin("tmuxLiveness")
             if let tmuxAdapter, let live = try? await tmuxAdapter.listSessions() {
                 dispatch(.tmuxLivenessScanned(live: Set(live.map(\.name))))
                 dispatch(.agtopQueuesScanned(Self.agtopQueues(in: live)))
             }
+            ph.end(tLiveness, "tmuxLiveness")
 
-            let t1 = ContinuousClock.now
+            let t1 = ph.begin("discoverSessions")
             // Headless runs in a globally excluded folder are not tracked
             // at all: a benchmark there can start thousands of them.
             let exclusion = state.pathExclusion
@@ -3189,7 +3213,7 @@ public final class BoardStore: @unchecked Sendable {
                 let known = Set(state.links.values.compactMap { $0.sessionLink?.sessionId })
                 sessions = sessions.filter { known.contains($0.id) }
             }
-            KanbanCodeLog.info("reconcile", "discoverSessions: \(t1.duration(to: .now)) (\(sessions.count) sessions)")
+            ph.end(t1, "discoverSessions", detail: "\(sessions.count) sessions")
 
             // Use in-memory state as source of truth — NOT disk.
             var existingLinks = Array(state.links.values)
@@ -3200,7 +3224,7 @@ public final class BoardStore: @unchecked Sendable {
             // Scan worktrees once per unique repo (parallel, with fingerprint caching)
             var worktreesByRepo: [String: [Worktree]] = [:]
             if let worktreeAdapter {
-                let t = ContinuousClock.now
+                let t = ph.begin("worktrees")
 
                 // Re-scan when EITHER the parent dir mtime OR any worktree's HEAD
                 // mtime changed since last cache. The parent catches add/remove,
@@ -3248,12 +3272,13 @@ public final class BoardStore: @unchecked Sendable {
                 worktreeCache = worktreeCache.filter { uniqueRepoRoots.contains($0.key) }
 
                 let total = worktreesByRepo.values.flatMap { $0 }.count
-                KanbanCodeLog.info("reconcile", "worktrees: \(t.duration(to: .now)) (\(total) across \(uniqueRepoRoots.count) repos, \(reposToScan.count) scanned)")
+                ph.end(t, "worktrees", detail: "\(total) across \(uniqueRepoRoots.count) repos, \(reposToScan.count) scanned")
             }
 
             // Incremental branch scan for watermarked cards.
             // Reads bottom-up from EOF to watermark — stops at the most recent push.
             // File reads run off the main thread.
+            let tBranchScan = ph.begin("latestPushedBranch")
             let scanInput = existingLinks
             existingLinks = await Task.detached(priority: .utility) {
                 var links = scanInput
@@ -3277,11 +3302,13 @@ public final class BoardStore: @unchecked Sendable {
                 }
                 return links
             }.value
+            ph.end(tBranchScan, "latestPushedBranch")
 
             // Automatic branch discovery for recently active in-progress cards.
             // This intentionally scans at most one card per pass and is throttled
             // separately from PR refresh. Manual "Discover Branches and PRs" still
             // does the full eager scan for a single card.
+            let tEarly = ph.begin("earlyActivityMap")
             var earlyActivityMap: [String: ActivityState] = [:]
             if let activityDetector {
                 earlyActivityMap = await currentActivityMap(
@@ -3289,14 +3316,18 @@ public final class BoardStore: @unchecked Sendable {
                     detector: activityDetector
                 )
             }
+            ph.end(tEarly, "earlyActivityMap")
+            let tAuto = ph.begin("branchAutoDiscovery")
             await autoDiscoverBranchesForRecentlyActiveCards(
                 links: &existingLinks,
                 activityMap: earlyActivityMap
             )
+            ph.end(tAuto, "branchAutoDiscovery")
 
             // Collect branches + PR numbers that can still change. Finished
             // cards' merged PRs never move again, and looking them all up made
             // one pass take minutes across a hundred repos.
+            let tPRSched = ph.begin("prFetchScheduling")
             let refreshScope = PRRefreshScope.collect(links: existingLinks)
             let branchesByRepo = refreshScope.branchesByRepo
             let prNumbersByRepo = refreshScope.prNumbersByRepo
@@ -3345,10 +3376,13 @@ public final class BoardStore: @unchecked Sendable {
                 }
             }
 
+            ph.end(tPRSched, "prFetchScheduling", detail: shouldFetchPRs ? "fetch due" : "fetch not due")
+
             // Scan tmux sessions
-            let t2 = ContinuousClock.now
+            let t2 = ph.begin("tmux")
             let tmuxSessions = (try? await tmuxAdapter?.listSessions()) ?? []
-            KanbanCodeLog.info("reconcile", "tmux: \(t2.duration(to: .now)) (\(tmuxSessions.count) sessions)")
+            ph.end(t2, "tmux", detail: "\(tmuxSessions.count) sessions")
+            let tDeaths = ph.begin("tmuxDeathScan")
             if tmuxAdapter != nil {
                 dispatch(.agtopQueuesScanned(Self.agtopQueues(in: tmuxSessions)))
                 let currentNames = Set(tmuxSessions.map(\.name))
@@ -3372,9 +3406,10 @@ public final class BoardStore: @unchecked Sendable {
                 }
                 lastTmuxSessionNames = currentNames
             }
+            ph.end(tDeaths, "tmuxDeathScan")
 
             // Reconcile — pullRequests map feeds branch→PR matching in the reconciler
-            let t3 = ContinuousClock.now
+            let t3 = ph.begin("reconciler")
             let connectedMachines = Set(state.remoteMachineStates.filter { $0.value.isConnected }.keys)
             let snapshot = CardReconciler.DiscoverySnapshot(
                 sessions: sessions,
@@ -3395,13 +3430,14 @@ public final class BoardStore: @unchecked Sendable {
             if !migrating.isEmpty {
                 mergedLinks = mergedLinks.map { migrating[$0.id] ?? $0 }
             }
-            KanbanCodeLog.info("reconcile", "reconciler: \(t3.duration(to: .now)) (\(existingLinks.count) existing → \(mergedLinks.count) merged)")
+            ph.end(t3, "reconciler", detail: "\(existingLinks.count) existing → \(mergedLinks.count) merged")
 
             // Update existing PR statuses from the by-number results. A pull
             // request is matched by the repository its own URL names, so a
             // card carrying a sibling repository's pull request refreshes it
             // instead of asking its own repository for that number. Cards
             // whose pull request has no URL yet fall back to their project.
+            let tPRMerge = ph.begin("prStatusMerge")
             if !prsByRepoKeyAndNumber.isEmpty || !prsByRepoAndNumber.isEmpty {
                 for i in mergedLinks.indices {
                     let repoRoot = mergedLinks[i].projectPath
@@ -3424,14 +3460,16 @@ public final class BoardStore: @unchecked Sendable {
             // `earlyActivityMap` shipped a snapshot as old as the pass was
             // long, and a slow pass then turned off the spinner of a session
             // that had started working while the pass ran.
-            let t4 = ContinuousClock.now
+            ph.end(tPRMerge, "prStatusMerge")
+            let t4 = ph.begin("activityMap")
             var activityMap = earlyActivityMap
             if let activityDetector {
                 activityMap = await currentActivityMap(sessions: sessions, detector: activityDetector)
             }
-            KanbanCodeLog.info("reconcile", "activityMap: \(t4.duration(to: .now)) (\(activitySummary(activityMap)))")
+            ph.end(t4, "activityMap", detail: activitySummary(activityMap))
 
             // Compute discovered project paths
+            let tProj = ph.begin("projectPaths")
             let sessionPaths = mergedLinks.map { $0.projectPath }
             let projectsForDiscovery = configuredProjects
             let discoveredProjectPaths = await Task.detached(priority: .userInitiated) {
@@ -3440,9 +3478,11 @@ public final class BoardStore: @unchecked Sendable {
                     configuredProjects: projectsForDiscovery
                 )
             }.value
+            ph.end(tProj, "projectPaths")
 
             // Dispatch reconciled result — reducer handles all state mutations atomically
-            let t5 = ContinuousClock.now
+            await ph.probeMainActorHop()
+            let t5 = ph.begin("dispatch")
             let result = ReconciliationResult(
                 links: mergedLinks,
                 sessions: sessions,
@@ -3454,14 +3494,14 @@ public final class BoardStore: @unchecked Sendable {
                 globalRemoteSettings: globalRemoteSettings
             )
             dispatch(.reconciled(result))
-            KanbanCodeLog.info("reconcile", "dispatch: \(t5.duration(to: .now))")
+            ph.end(t5, "dispatch")
 
             // Fetch GitHub issues if enough time has elapsed
-            let t6 = ContinuousClock.now
+            let t6 = ph.begin("gitHubIssues")
             await refreshGitHubIssuesIfNeeded()
-            KanbanCodeLog.info("reconcile", "gitHubIssues: \(t6.duration(to: .now))")
+            ph.end(t6, "gitHubIssues")
 
-            KanbanCodeLog.info("reconcile", "TOTAL: \(reconcileStart.duration(to: .now))")
+            ph.logTotal()
         } catch {
             KanbanCodeLog.info("reconcile", "FAILED after \(reconcileStart.duration(to: .now)): \(error)")
             dispatch(.setError(error.localizedDescription))

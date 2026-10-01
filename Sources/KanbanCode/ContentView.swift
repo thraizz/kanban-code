@@ -1916,6 +1916,7 @@ struct ContentView: View {
 
         KanbanCodeLog.info("watcher", "File watcher started for hook-events.jsonl")
         for await _ in events {
+            LatencyMetrics.shared.hookWriteObserved()
             KanbanCodeLog.info("watcher", "hook-events.jsonl changed")
             NotificationCenter.default.post(name: .kanbanCodeHookEvent, object: nil)
         }

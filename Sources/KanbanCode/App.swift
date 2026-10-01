@@ -125,6 +125,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         defaults.set(false, forKey: "NSAutomaticCapitalizationEnabled")
         defaults.set(false, forKey: "NSAutomaticPeriodSubstitutionEnabled")
 
+        InputLatencyProbe.shared.start()
+
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         if let window = NSApp.windows.first {

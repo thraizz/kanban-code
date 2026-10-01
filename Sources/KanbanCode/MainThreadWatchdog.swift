@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import KanbanCodeCore
 import QuartzCore
@@ -6,12 +7,24 @@ import os
 /// Detects main thread hangs by pinging from a background thread.
 /// Logs any hang > threshold to ~/.kanban-code/logs/main-thread-hangs.log
 /// Enabled by default; set KANBAN_WATCHDOG=0 to disable.
+///
+/// Timeline of one stall: at 250ms a `sample` of the main thread is started
+/// right away (so the stack is captured while the hang is happening, not after
+/// it), more samples follow while it lasts, and only a stall past 500ms counts
+/// as a HANG. A stall while a modal panel/alert runs is ignored entirely.
 final class MainThreadWatchdog: @unchecked Sendable {
     static let shared = MainThreadWatchdog()
 
     private let checkInterval: TimeInterval = 0.1
     private let minLogInterval: TimeInterval = 10
     private let minSampleInterval: TimeInterval = 300
+    /// Stall length that starts a stack capture.
+    private let sampleThreshold: TimeInterval = 0.25
+    /// Stall length that counts as a hang.
+    private let hangThreshold: TimeInterval = 0.5
+    private let maxSamplesPerHang = 3
+    private let modalDepth = os.OSAllocatedUnfairLock(initialState: 0)
+    private let modalWindowUp = os.OSAllocatedUnfairLock(initialState: false)
     private let maxSampleFiles = 40
     private let maxSampleBytes: UInt64 = 250 * 1024 * 1024
     private let _isRunning = os.OSAllocatedUnfairLock(initialState: false)
@@ -45,6 +58,7 @@ final class MainThreadWatchdog: @unchecked Sendable {
         }
         guard !alreadyRunning else { return }
         log("WATCHDOG START pid=\(ProcessInfo.processInfo.processIdentifier)")
+        installModalTracking()
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
@@ -58,10 +72,44 @@ final class MainThreadWatchdog: @unchecked Sendable {
                     semaphore.signal()
                 }
 
-                if semaphore.wait(timeout: .now() + 0.5) == .timedOut {
-                    self.logThrottled(String(format: "HANG: main thread blocked for >500ms at %.3f", pingTime))
-                    self.captureSampleThrottled(reason: "hang")
-                    semaphore.wait()
+                var modalSeen = false
+                if semaphore.wait(timeout: .now() + self.sampleThreshold) == .timedOut {
+                    modalSeen = self.isModal()
+                    var samples = 0
+                    if !modalSeen {
+                        self.captureSample(reason: "stall", force: false)
+                        samples = 1
+                    }
+                    var counted = false
+                    while semaphore.wait(timeout: .now() + 0.05) == .timedOut {
+                        modalSeen = modalSeen || self.isModal()
+                        if modalSeen { continue }
+                        let elapsed = CACurrentMediaTime() - pingTime
+                        if elapsed > self.hangThreshold && !counted {
+                            counted = true
+                            let last = LastDispatchedAction.shared.get()
+                            self.logThrottled(String(
+                                format: "HANG: main thread blocked for >500ms at %.3f lastAction=%@ (%.0fms before the stall)",
+                                pingTime, last.name, last.ageMs
+                            ))
+                        }
+                        if samples < self.maxSamplesPerHang {
+                            // Keep capturing while the hang lasts; a running sample defers this.
+                            if self.captureSample(reason: "stall", force: true) { samples += 1 }
+                        }
+                    }
+                    if counted && !modalSeen {
+                        let elapsed = CACurrentMediaTime() - pingTime
+                        self.log(String(
+                            format: "HANG END: main thread was blocked for %.0fms lastAction=%@",
+                            elapsed * 1000, LastDispatchedAction.shared.get().name
+                        ))
+                    }
+                }
+                if modalSeen {
+                    // A modal panel/alert owns the main thread: neither a hang nor a stall stat.
+                    Thread.sleep(forTimeInterval: self.checkInterval)
+                    continue
                 }
                 stats.record(CACurrentMediaTime() - pingTime)
                 if let line = stats.flushIfDue(now: CACurrentMediaTime()) {
@@ -103,6 +151,42 @@ final class MainThreadWatchdog: @unchecked Sendable {
         }
     }
 
+    /// True while the main thread is inside a modal session (NSOpenPanel,
+    /// NSSavePanel, NSAlert.runModal, app-modal windows). Safe from any thread.
+    private func isModal() -> Bool {
+        modalDepth.withLock { $0 > 0 } || modalWindowUp.withLock { $0 }
+    }
+
+    /// Tracks modal sessions without touching AppKit from the watchdog thread:
+    /// a main run-loop observer counts entries into the modal-panel mode, and
+    /// key-window changes refresh `NSApp.modalWindow != nil`.
+    private func installModalTracking() {
+        Self.addModalObserver(watchdog: self)
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            let center = NotificationCenter.default
+            for name in [NSWindow.didBecomeKeyNotification, NSWindow.didResignKeyNotification,
+                         NSApplication.didBecomeActiveNotification] {
+                center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                    let up = NSApp.modalWindow != nil
+                    self?.modalWindowUp.withLock { $0 = up }
+                }
+            }
+        }
+    }
+
+    /// Nonisolated so the run-loop callback does not inherit main-actor isolation.
+    private nonisolated static func addModalObserver(watchdog: MainThreadWatchdog) {
+        let activities = CFRunLoopActivity.entry.rawValue | CFRunLoopActivity.exit.rawValue
+        let observer = CFRunLoopObserverCreateWithHandler(kCFAllocatorDefault, activities, true, 0) { _, activity in
+            guard let mode = CFRunLoopCopyCurrentMode(CFRunLoopGetCurrent()) else { return }
+            guard (mode.rawValue as String) == "NSModalPanelRunLoopMode" else { return }
+            let entering = activity.contains(.entry)
+            watchdog.modalDepth.withLock { $0 = max(0, $0 + (entering ? 1 : -1)) }
+        }
+        CFRunLoopAddObserver(CFRunLoopGetMain(), observer, .commonModes)
+    }
+
     func stop() {
         _isRunning.withLock { $0 = false }
     }
@@ -139,23 +223,27 @@ final class MainThreadWatchdog: @unchecked Sendable {
         }
     }
 
-    private func captureSampleThrottled(reason: String) {
+    /// Starts a 1s `sample` of this process. Returns false when one is already
+    /// running or the 5-minute throttle holds (`force` skips the throttle, used
+    /// for follow-up samples of a hang already being captured).
+    @discardableResult
+    private func captureSample(reason: String, force: Bool) -> Bool {
         let startedSampling = isSampling.withLock { sampling -> Bool in
             guard !sampling else { return false }
             sampling = true
             return true
         }
-        guard startedSampling else { return }
+        guard startedSampling else { return false }
 
         let shouldSample = lastSampleTime.withLock { last -> Bool in
             let now = Date()
-            guard now.timeIntervalSince(last) >= minSampleInterval else { return false }
+            guard force || now.timeIntervalSince(last) >= minSampleInterval else { return false }
             last = now
             return true
         }
         guard shouldSample else {
             isSampling.withLock { $0 = false }
-            return
+            return false
         }
 
         let pid = String(ProcessInfo.processInfo.processIdentifier)
@@ -175,6 +263,7 @@ final class MainThreadWatchdog: @unchecked Sendable {
             process.standardError = nil
             process.terminationHandler = { proc in
                 self.log("SAMPLE END status=\(proc.terminationStatus) path=\(samplePath)")
+                self.logSampleSummary(path: samplePath)
                 self.pruneSamples()
                 self.isSampling.withLock { $0 = false }
             }
@@ -185,6 +274,18 @@ final class MainThreadWatchdog: @unchecked Sendable {
                 self.isSampling.withLock { $0 = false }
             }
         }
+        return true
+    }
+
+    /// Writes the top app frames of the main thread so a hang is readable
+    /// without opening the sample file.
+    private func logSampleSummary(path: String) {
+        guard let text = try? String(contentsOfFile: path, encoding: .utf8) else { return }
+        let frames = SampleSummary.topAppFrames(sampleText: text, module: "KanbanCode", limit: 5)
+        let last = LastDispatchedAction.shared.get()
+        let line = "SAMPLE SUMMARY top5=[\(frames.joined(separator: " | "))] lastAction=\(last.name)"
+        log(line)
+        KanbanCodeLog.warn("main-thread", line)
     }
 
     private func pruneSamples() {
