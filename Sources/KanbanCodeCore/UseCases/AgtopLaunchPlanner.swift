@@ -12,10 +12,10 @@ public enum AgtopLaunchPlanner {
 
         public var reason: String {
             switch self {
-            case .notClaude: "agtop only runs Claude Code"
+            case .notClaude: "cards run only Claude Code on rush"
             case .remote: "remote cards run on tmux"
             case .commandOverride: "a custom command runs on tmux"
-            case .notInstalled: "agtop is not installed"
+            case .notInstalled: "rush is not installed"
             }
         }
     }

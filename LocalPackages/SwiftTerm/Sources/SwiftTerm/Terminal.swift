@@ -5639,12 +5639,16 @@ open class Terminal {
         case .x10:
             sendResponse(cc.CSI, "M", [UInt8(buttonFlags+32), min (UInt8(255), UInt8(32 + x+1)), min (UInt8(255), UInt8(32+y+1))])
         case .sgr:
-            let bflags : Int = ((buttonFlags & 3) == 3) ? (buttonFlags & ~3) : buttonFlags
-            let m = ((buttonFlags & 3) == 3) ? "m" : "M"
+            // A release is button 3 without the motion bit; with it, 3 is
+            // motion with no button held (xterm's 35), not a release.
+            let isRelease = (buttonFlags & 3) == 3 && (buttonFlags & 32) == 0
+            let bflags : Int = isRelease ? (buttonFlags & ~3) : buttonFlags
+            let m = isRelease ? "m" : "M"
             sendResponse(cc.CSI, "<\(bflags);\(x+1);\(y+1)\(m)")
         case .sgrPixel:
-            let bflags : Int = ((buttonFlags & 3) == 3) ? (buttonFlags & ~3) : buttonFlags
-            let m = ((buttonFlags & 3) == 3) ? "m" : "M"
+            let isRelease = (buttonFlags & 3) == 3 && (buttonFlags & 32) == 0
+            let bflags : Int = isRelease ? (buttonFlags & ~3) : buttonFlags
+            let m = isRelease ? "m" : "M"
             print ("\(pixelX);\(pixelY)")
             sendResponse(cc.CSI, "<\(bflags);\(pixelX);\(pixelY)\(m)")
             

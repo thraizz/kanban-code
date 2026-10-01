@@ -14,6 +14,7 @@ let linuxOnly = false
 var products: [Product] = [
     .executable(name: "kanban-code-remote-demo", targets: ["KanbanCodeRemoteDemo"]),
     .executable(name: "kanban-code-server", targets: ["KanbanCodeServer"]),
+    .executable(name: "kanban-code-export", targets: ["KanbanCodeExport"]),
     .library(name: "KanbanCodeCore", targets: ["KanbanCodeCore"]),
     .library(name: "KanbanCodeRemoteKit", targets: ["KanbanCodeRemoteKit"]),
 ]
@@ -34,6 +35,12 @@ var targets: [Target] = [
         name: "KanbanCodeServer",
         dependencies: ["KanbanCodeCore", "KanbanCodeRemoteKit"],
         path: "Sources/KanbanCodeServer"
+    ),
+    // Prints a session as the app's Markdown export, for `kanban export`.
+    .executableTarget(
+        name: "KanbanCodeExport",
+        dependencies: ["KanbanCodeCore"],
+        path: "Sources/KanbanCodeExport"
     ),
     // Wire types of the remote control API, shared with the iOS app.
     .target(

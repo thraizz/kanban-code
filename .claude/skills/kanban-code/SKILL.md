@@ -147,6 +147,7 @@ kanban channel send standup "PR #42 merged. unblocks anyone waiting on the auth 
 - `kanban sessions` — all live tmux sessions with card associations. Useful for sanity-checking who's online before broadcasting.
 - `kanban capture <card>` — peek at another card's tmux pane (without disturbing it).
 - `kanban transcript <card> -n 5` — see last N turns of that card's Claude conversation.
+- `kanban export [card] [--out file.md]`: the whole session as Markdown, the same text the app's "Copy conversation as Markdown" gives (user and assistant messages). No card means your own; also takes a `@handle` or a Claude session id. Prints to stdout unless `--out`.
 - `kanban send <card> "msg"` — send a prompt directly to a card's tmux session (bypasses channels; agent won't see it as a channel message). Prefer `kanban dm` instead for 1:1.
   - `--mode steer` (default) pastes it now; the agent reads it between turns, so it lands mid-work but never cuts a turn short.
   - `--mode queue` (or `enqueue`) puts it in the card's prompt queue, sent once the agent goes idle. Use it when the message is "next up", not "right now".

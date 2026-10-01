@@ -492,7 +492,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     /// UI for agtop, a tmux attach otherwise.
     public static func localCommand(forSession sessionName: String) -> [String] {
         if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
-            return [AgtopCliAdapter.findExecutable() ?? "agtop", "open", agtopId, "--solo"]
+            return AgtopCliAdapter.openCommand(id: agtopId)
         }
         return [ShellCommand.findExecutable("tmux") ?? "tmux", "attach-session", "-t", sessionName]
     }

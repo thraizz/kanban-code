@@ -86,7 +86,7 @@ public struct AgtopCommandFailed: Error, LocalizedError {
     public let arguments: [String]
     public let message: String
 
-    public var errorDescription: String? { "agtop \(arguments.first ?? "") failed: \(message)" }
+    public var errorDescription: String? { "rush \(arguments.first ?? "") failed: \(message)" }
 }
 
 /// Drives agtop hosts through the `agtop session` CLI, on this machine or,
@@ -116,8 +116,48 @@ public final class AgtopCliAdapter: @unchecked Sendable {
 
     public var isRemote: Bool { remote != nil }
 
+    /// rush, or agtop, the name it had before it was renamed, for a machine
+    /// that has only the older build.
     public static func findExecutable() -> String? {
-        ShellCommand.findExecutable("agtop")
+        ShellCommand.findExecutable("rush") ?? ShellCommand.findExecutable("agtop")
+    }
+
+    /// Whether `executable` is rush rather than an agtop build from before
+    /// the rename. The two differ in a few commands: rush opens one session
+    /// alone without `--solo`, names the agent to start, and edits a queue
+    /// with `rush queue` instead of `agtop session queue`.
+    public static func isRush(_ executable: String) -> Bool {
+        (executable as NSString).lastPathComponent.hasPrefix("rush")
+    }
+
+    /// The command that shows session `id` alone, full width.
+    public static func openArguments(executable: String, id: String) -> [String] {
+        isRush(executable) ? [executable, "open", id] : [executable, "open", id, "--solo"]
+    }
+
+    /// `openArguments` with the binary this machine has.
+    public static func openCommand(id: String) -> [String] {
+        openArguments(executable: findExecutable() ?? "rush", id: id)
+    }
+
+    /// Turns off copying a selection as a drag ends, for rush and for agtop:
+    /// the card's terminal copies with cmd+c.
+    public static let copyOnSelectOff = "RUSH_COPY_ON_SELECT=0 AGTOP_COPY_ON_SELECT=0"
+
+    /// Shell for another machine that shows session `id` alone, with rush
+    /// when the machine has it and agtop otherwise.
+    public static func remoteOpenScript(id: String) -> String {
+        let quoted = shellQuote(id)
+        return "if command -v rush >/dev/null 2>&1; then exec rush open \(quoted); "
+            + "else exec agtop open \(quoted) --solo; fi"
+    }
+
+    /// Arguments that send now (`send`) or drop (`remove`) the queued
+    /// message at `index`, for the binary at `executable`.
+    public static func queueArguments(executable: String, action: String, id: String, index: Int, was: String) -> [String] {
+        isRush(executable)
+            ? ["queue", action, id, String(index), "--was", was]
+            : ["session", "queue", id, action, String(index), "--was", was]
     }
 
     public var isAvailable: Bool {
@@ -131,8 +171,10 @@ public final class AgtopCliAdapter: @unchecked Sendable {
 
     /// Arguments for `agtop session start`, the prompt already written to
     /// `promptFile` (`-` for stdin).
-    public static func startArguments(_ request: AgtopStartRequest, promptFile: String?) -> [String] {
+    /// rush runs other agents too, so it is told the agent is Claude Code.
+    public static func startArguments(_ request: AgtopStartRequest, promptFile: String?, rush: Bool = false) -> [String] {
         var args = ["session", "start", "--cwd", request.cwd, "--session-id", request.sessionId]
+        if rush { args += ["--agent", "claude"] }
         if request.resume { args.append("--resume") }
         if let name = request.name, !name.isEmpty { args += ["--name", name] }
         if let promptFile { args += ["--prompt-file", promptFile] }
@@ -151,7 +193,8 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         var request = request
         request.imagePaths = try await machinePaths(of: request.imagePaths)
         let prompt = request.prompt.flatMap { $0.isEmpty ? nil : $0 }
-        let args = Self.startArguments(request, promptFile: prompt == nil ? nil : "-")
+        let args = Self.startArguments(
+            request, promptFile: prompt == nil ? nil : "-", rush: resolvedExecutable().map(Self.isRush) ?? false)
         let result = try await exec(args, stdin: prompt, timeout: 60)
         guard result.succeeded else {
             throw AgtopCommandFailed(arguments: Array(args.dropFirst()), message: Self.errorMessage(result))
@@ -175,12 +218,17 @@ public final class AgtopCliAdapter: @unchecked Sendable {
     /// Sends the queued message at `index` now. `was` is its text as last
     /// read, so the host still finds it if the queue moved.
     public func sendQueued(id: String, index: Int, was: String) async throws {
-        _ = try await run(["session", "queue", id, "send", String(index), "--was", was], timeout: 30)
+        _ = try await run(try queueArguments("send", id: id, index: index, was: was), timeout: 30)
     }
 
     /// Drops the queued message at `index` (see `sendQueued`).
     public func removeQueued(id: String, index: Int, was: String) async throws {
-        _ = try await run(["session", "queue", id, "remove", String(index), "--was", was], timeout: 30)
+        _ = try await run(try queueArguments("remove", id: id, index: index, was: was), timeout: 30)
+    }
+
+    private func queueArguments(_ action: String, id: String, index: Int, was: String) throws -> [String] {
+        guard let bin = resolvedExecutable() else { throw Self.notInstalled }
+        return Self.queueArguments(executable: bin, action: action, id: id, index: index, was: was)
     }
 
     public func interrupt(id: String) async throws {
@@ -209,18 +257,25 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         return try JSONDecoder().decode([AgtopSessionInfo].self, from: Data(trimmed.utf8))
     }
 
-    /// `agtop --version`, such as `agtop ce96836 (Sep 28)`.
+    /// `rush --version`, such as `rush b06e734 (Sep 30)`.
     public func version() async -> String? {
         guard let result = try? await exec(["--version"], stdin: nil, timeout: 15), result.succeeded else { return nil }
         let line = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
         return line.isEmpty ? nil : line
     }
 
+    /// The build a `--version` line names, without the date after it, which
+    /// is the local day of the machine that answered: `rush b06e734 (Sep 30)`
+    /// and `rush b06e734 (Sep 29)` are the same build.
+    public static func build(ofVersion version: String) -> String {
+        version.split(separator: " ").prefix(2).joined(separator: " ")
+    }
+
     // MARK: - Helpers
 
     public static let notInstalled = AgtopCommandFailed(
         arguments: [],
-        message: "agtop is not installed (go install github.com/0xdeafcafe/agtop/cmd/agtop@latest)"
+        message: "rush is not installed (go install github.com/0xdeafcafe/rush/cmd/rush@latest)"
     )
 
     private func run(_ args: [String], timeout: TimeInterval) async throws -> String {

@@ -54,6 +54,9 @@ export function proxyRefusalReason(argv: string[]): string | undefined {
   if (argv.some((arg) => arg === "--project" || arg.startsWith("--project="))) {
     return "`--project` names a path that does not exist on both sides of a remote card.";
   }
+  if (command === "export" && argv.some((arg) => arg === "-o" || arg === "--out" || arg.startsWith("--out="))) {
+    return "`kanban export --out` would write the file on the Mac; redirect stdout instead (`kanban export > file.md`).";
+  }
   if (command === "channel" && sub === "share") {
     return "`kanban channel share` is not available on a remote card.";
   }

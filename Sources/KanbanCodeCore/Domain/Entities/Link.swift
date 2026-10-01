@@ -618,6 +618,13 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
 
         queuedPrompts = try c.decodeIfPresent([QueuedPrompt].self, forKey: .queuedPrompts)
         browserTabs = try c.decodeIfPresent([BrowserTabInfo].self, forKey: .browserTabs)
+
+        // A card whose session holds the prompt keeps a preview of it.
+        let trimmed = PromptPreview.trimmedBody(of: self)
+        if trimmed != promptBody {
+            promptBody = trimmed
+            (decoder.userInfo[PromptTrimReport.userInfoKey] as? PromptTrimReport)?.record()
+        }
     }
 
     public func encode(to encoder: Encoder) throws {

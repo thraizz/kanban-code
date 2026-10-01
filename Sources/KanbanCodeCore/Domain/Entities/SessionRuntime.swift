@@ -4,14 +4,15 @@ import Foundation
 public enum SessionRuntime: String, Codable, Sendable, CaseIterable {
     /// A tmux session running the assistant's interactive CLI.
     case tmux
-    /// An agtop host (`agtop host run <id>`) running Claude Code headless.
-    /// The card's terminal shows it with `agtop open <id> --solo`.
+    /// A rush host (`rush host run <id>`) running Claude Code headless. The
+    /// card's terminal shows it with `rush open <id>`. The stored value stays
+    /// "agtop", the name rush had before it was renamed.
     case agtop
 
     public var displayName: String {
         switch self {
         case .tmux: "tmux"
-        case .agtop: "agtop"
+        case .agtop: "rush"
         }
     }
 }

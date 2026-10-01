@@ -44,7 +44,7 @@ enum AppServices {
             return [shell, "-l", "-c", script]
         }
         if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
-            return [AgtopCliAdapter.findExecutable() ?? "agtop", "open", agtopId, "--solo"]
+            return AgtopCliAdapter.openCommand(id: agtopId)
         }
         return [shell, "-l", "-c", TerminalCache.attachScript(tmux: TerminalCache.tmuxPath, session: sessionName)]
     }

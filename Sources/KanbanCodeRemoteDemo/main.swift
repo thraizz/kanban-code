@@ -77,7 +77,7 @@ struct DemoOptions {
 
           --pair      adds a device and prints its token and kanbancode://pair link
           --devices   devices file (default .claude/tmp/remote-demo/devices.json)
-          --agtop     makes the "agtop" demo card open `agtop open <id> --solo`
+          --agtop     makes the "rush" demo card open `rush open <id>`
           --tmux-socket  tmux cards attach to a session on this tmux server (tmux -L <name>,
                       no config file), created on first open, and scroll frames drive its copy-mode
           --machine   this master's identity; the board and its cards name it
@@ -402,7 +402,7 @@ final class DemoHost: RemoteControlHost {
         let c = try cardState(cardId)
         guard c.card.isLive else { throw RemoteHostError.conflict("card \(cardId) has no live session") }
         if c.card.runtime == .agtop, let id = c.agtopId {
-            return ["agtop", "open", id, "--solo"]
+            return AgtopCliAdapter.openCommand(id: id)
         }
         if let socket = tmuxSocket {
             return ["tmux", "-L", socket, "-f", "/dev/null", "new-session", "-A", "-s", sessionName, "/bin/zsh", "-l"]

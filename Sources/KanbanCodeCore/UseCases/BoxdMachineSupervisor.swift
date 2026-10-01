@@ -597,23 +597,28 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// Readies an ssh machine for sessions: its tmux server stops handing
     /// `NO_COLOR` to new panes (a server started from a shell that had it
     /// set, such as an agent's, passes it to every session after), and its
-    /// agtop, when it has one, is recorded so cards set to agtop run there.
+    /// rush (or agtop, its name before the rename), when it has one, is
+    /// recorded so cards set to rush run there.
     private func prepareSessions(machineName: String, bridge: BoxdBridge, remoteHome: String) async {
         _ = try? await bridge.exec(["sh", "-c", Self.tmuxColorScript], stdin: nil, cwd: nil, timeout: 20)
-        let found = try? await bridge.exec(["sh", "-c", "command -v agtop"], stdin: nil, cwd: nil, timeout: 20)
-        let path = found?.succeeded == true ? found?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : ""
+        let found = try? await bridge.exec(
+            ["sh", "-c", "command -v rush || command -v agtop"], stdin: nil, cwd: nil, timeout: 20)
+        let path = found?.succeeded == true
+            ? found?.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+            : ""
         guard !path.isEmpty else {
             registry.setAgtop(nil, on: machineName)
-            KanbanCodeLog.info(Self.subsystem, "\(machineName): no agtop, cards run on tmux there")
+            KanbanCodeLog.info(Self.subsystem, "\(machineName): no rush, cards run on tmux there")
             return
         }
         let agtop = AgtopCliAdapter(remote: bridge, executable: path, scratchDirectory: "\(remoteHome)/.kanban-code/tmp/agtop")
         registry.setAgtop(agtop, on: machineName)
         let remoteVersion = await agtop.version()
         let localVersion = await AgtopCliAdapter().version()
-        KanbanCodeLog.info(Self.subsystem, "\(machineName): agtop at \(path) (\(remoteVersion ?? "?"), here \(localVersion ?? "none"))")
-        if let remoteVersion, let localVersion, remoteVersion != localVersion {
-            KanbanCodeLog.warn(Self.subsystem, "\(machineName) runs \(remoteVersion), this machine \(localVersion): Scripts/agtop-to-machine.sh <ssh target> updates it")
+        KanbanCodeLog.info(Self.subsystem, "\(machineName): rush at \(path) (\(remoteVersion ?? "?"), here \(localVersion ?? "none"))")
+        if let remoteVersion, let localVersion,
+           AgtopCliAdapter.build(ofVersion: remoteVersion) != AgtopCliAdapter.build(ofVersion: localVersion) {
+            KanbanCodeLog.warn(Self.subsystem, "\(machineName) runs \(remoteVersion), this machine \(localVersion): Scripts/rush-to-machine.sh <ssh target> updates it")
         }
     }
 

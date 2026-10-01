@@ -61,11 +61,19 @@ struct RemoteAttachScriptTests {
         #expect(script.contains("fi; [ $r -eq 0 ] && break; if [ -e '/tmp/marker.paused' ]; then continue; fi; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done"))
     }
 
-    @Test("an agtop session on an ssh machine opens agtop there, in truecolor, after the ready marker")
+    @Test("a rush session on an ssh machine opens rush there (agtop without it), in truecolor, after the ready marker")
     func sshMachineAgtop() {
         let script = TerminalCache.remoteAgtopScript(target: "root@10.0.0.1", id: "0a1b2c3d", readyMarker: "/tmp/marker")
         #expect(script.hasPrefix("for i in $(seq 1 2400); do [ -e '/tmp/marker' ] && break; sleep 0.5; done; while :; do "))
-        #expect(script.contains(#"/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 'root@10.0.0.1' -- 'PATH="$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/go/bin" COLORTERM=truecolor AGTOP_COPY_ON_SELECT=0 exec agtop open '\''0a1b2c3d'\'' --solo'; sleep 1; done"#))
+        #expect(script.contains(#"/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 'root@10.0.0.1' -- 'PATH="$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/go/bin" COLORTERM=truecolor; export COLORTERM RUSH_COPY_ON_SELECT=0 AGTOP_COPY_ON_SELECT=0; if command -v rush >/dev/null 2>&1; then exec rush open '\''0a1b2c3d'\''; else exec agtop open '\''0a1b2c3d'\'' --solo; fi'; sleep 1; done"#))
+    }
+
+    @Test("a rush session opens rush alone, agtop with --solo, with copy on select off for both")
+    func localAgtop() {
+        #expect(TerminalCache.agtopScript(agtop: "/Users/me/go/bin/rush", id: "0a1b2c3d")
+            == "export RUSH_COPY_ON_SELECT=0 AGTOP_COPY_ON_SELECT=0; while :; do '/Users/me/go/bin/rush' 'open' '0a1b2c3d'; sleep 0.3; done")
+        #expect(TerminalCache.agtopScript(agtop: "/Users/me/go/bin/agtop", id: "0a1b2c3d")
+            == "export RUSH_COPY_ON_SELECT=0 AGTOP_COPY_ON_SELECT=0; while :; do '/Users/me/go/bin/agtop' 'open' '0a1b2c3d' '--solo'; sleep 0.3; done")
     }
 
     @Test("wheel ticks on a machine become one copy-mode move per flush")

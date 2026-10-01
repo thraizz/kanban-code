@@ -127,20 +127,26 @@ export function agtopIdFromSessionName(sessionName: string): string | undefined 
 
 let agtopPath: string | undefined;
 
-/// Test seam: pin the agtop binary. Pass undefined to look it up again.
+/// Test seam: pin the rush binary. Pass undefined to look it up again.
 export function setAgtopPath(path?: string): void {
   agtopPath = path;
 }
 
+/// rush, or agtop, the name rush had before it was renamed, where only the
+/// older build is installed. The session commands used here are the same.
 export function findAgtop(): string {
   if (agtopPath) return agtopPath;
-  const goBin = join(homedir(), "go", "bin", "agtop");
-  if (existsSync(goBin)) return (agtopPath = goBin);
-  try {
-    return (agtopPath = execSync("command -v agtop", { encoding: "utf-8", shell: "/bin/sh" }).trim() || "agtop");
-  } catch {
-    return (agtopPath = "agtop");
+  for (const name of ["rush", "agtop"]) {
+    const goBin = join(homedir(), "go", "bin", name);
+    if (existsSync(goBin)) return (agtopPath = goBin);
+    try {
+      const found = execSync(`command -v ${name}`, { encoding: "utf-8", shell: "/bin/sh" }).trim();
+      if (found) return (agtopPath = found);
+    } catch {
+      // not on the PATH: try the next name
+    }
   }
+  return (agtopPath = "rush");
 }
 
 /// The shell script that plays a tmux command chain on an agtop host. The

@@ -84,6 +84,15 @@ import {
 import { deriveHandle, formatHandle, stripAt } from "./handles.js";
 import { parseDeliveryMode, type DeliveryMode } from "./delivery.js";
 import { queueCardPrompt } from "./cards.js";
+import {
+  EXPORT_BINARY,
+  claudeSessionFile,
+  exportArguments,
+  findExportBinary,
+  resolveExportTarget,
+  runExport,
+  type ExportTarget,
+} from "./export.js";
 import { parseDuration, runShare } from "./share-cli.js";
 import {
   assertOwnedSubagent,
@@ -1025,6 +1034,67 @@ program
         console.log(`[${prefix}] ${text}`);
         console.log("");
       }
+    }
+  });
+
+// ── kanban export [card] ─────────────────────────────────────────────
+
+program
+  .command("export")
+  .description("Export a whole session as Markdown, the same text the app copies")
+  .argument("[card]", "Card ID or prefix, @handle, card name, or Claude session id (default: this card)")
+  .option("-o, --out <file>", "Write the Markdown to a file instead of stdout")
+  .option("-j, --json", "Output as JSON: the card, session and Markdown (or the file written)")
+  .addHelpText(
+    "after",
+    `
+
+Examples:
+  kanban export                      # the card this agent runs in
+  kanban export @judge-lab --out /tmp/judge-lab.md
+  kanban export 3f0c2a9e-...-session-id > session.md
+`
+  )
+  .action(async (cardRef: string | undefined, opts) => {
+    const fail = (message: string): never => {
+      if (opts.json) output({ ok: false, error: message }, { json: true });
+      else console.error(message);
+      process.exit(1);
+    };
+    let target: ExportTarget;
+    try {
+      target = resolveExportTarget(cardRef, {
+        links: readLinks(),
+        tmuxSession: currentTmuxSessionName,
+        cardForHandle: findCardByHandle,
+        sessionFile: claudeSessionFile,
+      });
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e));
+    }
+    const binary = findExportBinary();
+    if (!binary) {
+      return fail(
+        `${EXPORT_BINARY} not found. Build it with \`make app\` (or \`swift build --product ${EXPORT_BINARY}\`), or point KANBAN_CODE_EXPORT at it.`
+      );
+    }
+    const out = opts.out ? resolve(opts.out) : undefined;
+    const result = await runExport(binary, exportArguments(target), { out, capture: Boolean(opts.json) && !out });
+    if (result.code !== 0) return fail(result.stderr || `${EXPORT_BINARY} exited with ${result.code}`);
+    if (opts.json) {
+      const card = target.kind === "card" ? target.card : undefined;
+      output(
+        {
+          ok: true,
+          cardId: card?.id,
+          sessionId: card?.sessionLink?.sessionId ?? (target.kind === "session" ? target.sessionId : undefined),
+          bytes: result.bytes,
+          ...(out ? { out } : { markdown: result.markdown }),
+        },
+        { json: true }
+      );
+    } else if (out) {
+      console.error(`Wrote ${result.bytes} bytes to ${out}`);
     }
   });
 

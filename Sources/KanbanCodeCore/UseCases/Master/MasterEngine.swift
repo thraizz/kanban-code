@@ -942,7 +942,7 @@ public final class MasterEngine {
         if case .fallback(let fallback) = choice {
             KanbanCodeLog.info("agtop", "Running on tmux: \(fallback.reason)")
             if fallback == .notInstalled {
-                store.dispatch(.setError("agtop is not installed, the session runs on tmux"))
+                store.dispatch(.setError("rush is not installed, the session runs on tmux"))
             }
         }
         return choice

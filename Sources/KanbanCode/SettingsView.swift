@@ -445,8 +445,8 @@ struct AssistantsSettingsView: View {
             }
             .onChange(of: claudeRuntime) { saveRuntime() }
             Text(agtopInstalled || claudeRuntime == .tmux
-                ? "agtop keeps each session running in the background and shows it in the card's terminal. Cards on an ssh machine run on agtop there when the machine has it. Custom commands and boxd cards run on tmux. Applies to new launches and resumes."
-                : "agtop is not installed. Install it with `go install github.com/0xdeafcafe/agtop/cmd/agtop@latest`, sessions run on tmux until then.")
+                ? "rush keeps each session running in the background and shows it in the card's terminal. Cards on an ssh machine run on rush there when the machine has it. Custom commands and boxd cards run on tmux. Applies to new launches and resumes."
+                : "rush is not installed. Install it with `go install github.com/0xdeafcafe/rush/cmd/rush@latest`, sessions run on tmux until then.")
                 .font(.caption)
                 .foregroundStyle(agtopInstalled || claudeRuntime == .tmux ? .tertiary : .secondary)
                 .fixedSize(horizontal: false, vertical: true)

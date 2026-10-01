@@ -22,7 +22,7 @@ public enum KanbanCodeLog {
     }()
 
     private static let queue = DispatchQueue(label: "kanban-code.log", qos: .utility)
-    private static let debugEnabled: Bool = {
+    public static let debugEnabled: Bool = {
         let env = ProcessInfo.processInfo.environment
         return env["KANBAN_CODE_DEBUG_LOGS"] == "1" || env["KANBAN_DEBUG"] == "1"
     }()
@@ -60,9 +60,9 @@ public enum KanbanCodeLog {
     }
 
     /// Log verbose diagnostics. Disabled by default; set KANBAN_CODE_DEBUG_LOGS=1.
-    public nonisolated static func debug(_ subsystem: String, _ message: String) {
+    public nonisolated static func debug(_ subsystem: String, _ message: @autoclosure () -> String) {
         guard debugEnabled else { return }
-        write("DEBUG", subsystem, message)
+        write("DEBUG", subsystem, message())
     }
 
     private nonisolated static func write(_ level: String, _ subsystem: String, _ message: String) {

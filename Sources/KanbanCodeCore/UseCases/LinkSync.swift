@@ -168,6 +168,9 @@ public enum LinkSync {
         t.rev = [link.rev, rev].compactMap { $0 }.max()
         t.browserTabs = nil
         t.lastOpenedAt = nil
+        // Nothing brings back a headless run nobody claimed: its prompt
+        // would only weigh on every peer for the tombstone's lifetime.
+        if link.isUnclaimedHeadless { t.promptBody = nil }
         return t
     }
 

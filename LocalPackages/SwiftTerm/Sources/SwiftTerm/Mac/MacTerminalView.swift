@@ -2237,14 +2237,21 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         updateHoverLink(at: hit.grid)
         
-        if terminal.mouseMode.sendMotionEvent() {
+        if allowMouseReporting && terminal.mouseMode.sendMotionEvent() {
             let flags = encodeMouseEvent(with: event, overwriteRelease: true)
             terminal.sendMotion(buttonFlags: flags, x: hit.grid.col, y: hit.grid.row, pixelX: hit.pixels.col, pixelY: hit.pixels.row)
         }
     }
     
+    /// Wheel movement not sent yet, in lines, while the program has the mouse.
+    private var pendingWheelLines: CGFloat = 0
+
     public override func scrollWheel(with event: NSEvent) {
         if event.deltaY == 0 {
+            return
+        }
+        if allowMouseReporting && terminal.mouseMode != .off {
+            sendWheel(with: event)
             return
         }
         let velocity = calcScrollingVelocity(delta: Int (abs (event.deltaY)))
@@ -2255,6 +2262,32 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
     }
     
+    /// A program that asked for the mouse gets the wheel as buttons 4 (up)
+    /// and 5 (down), one report per line turned, as xterm sends it. A
+    /// trackpad turns fractions of a line per event, so they add up until a
+    /// whole line is reached; turning the other way starts over.
+    func sendWheel(with event: NSEvent) {
+        if (pendingWheelLines > 0) != (event.deltaY > 0) {
+            pendingWheelLines = 0
+        }
+        pendingWheelLines += event.deltaY
+        let lines = min(Int(abs(pendingWheelLines)), 10)
+        guard lines > 0 else {
+            return
+        }
+        pendingWheelLines = pendingWheelLines.truncatingRemainder(dividingBy: 1)
+        let flags = event.modifierFlags
+        let buttonFlags = terminal.encodeButton(
+            button: event.deltaY > 0 ? 4 : 5, release: false,
+            shift: flags.contains(.shift), meta: flags.contains(.option), control: flags.contains(.control))
+        let displayBuffer = terminal.displayBuffer
+        let hit = calculateMouseHit(with: event)
+        let screenRow = max(0, min(displayBuffer.rows - 1, hit.grid.row - displayBuffer.yDisp))
+        for _ in 0..<lines {
+            terminal.sendEvent(buttonFlags: buttonFlags, x: hit.grid.col, y: screenRow, pixelX: hit.pixels.col, pixelY: hit.pixels.row)
+        }
+    }
+
     private func calcScrollingVelocity (delta: Int) -> Int
     {
         if delta > 9 {

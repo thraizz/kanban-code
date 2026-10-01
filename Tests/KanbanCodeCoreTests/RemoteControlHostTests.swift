@@ -291,7 +291,8 @@ struct RemoteControlHostTests {
         addCard(store, id: "card_a", session: "agtop-0123abcd", live: true, busy: false)
         addCard(store, id: "card_b", session: "card-b", live: true, busy: false)
         let agtop = try await host.terminalCommand(cardId: "card_a", sessionName: "agtop-0123abcd")
-        #expect(Array(agtop.suffix(3)) == ["open", "0123abcd", "--solo"])
+        #expect(agtop == AgtopCliAdapter.openCommand(id: "0123abcd"))
+        #expect(agtop.contains("open") && agtop.contains("0123abcd"))
         let tmux = try await host.terminalCommand(cardId: "card_b", sessionName: "card-b")
         #expect(Array(tmux.suffix(3)) == ["attach-session", "-t", "card-b"])
         await #expect(throws: RemoteHostError.self) {

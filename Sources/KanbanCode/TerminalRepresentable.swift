@@ -1054,30 +1054,33 @@ final class TerminalCache {
             + " sleep 0.1; done; echo 'Session ended.'"
     }
 
-    /// The shell command a terminal runs to show an agtop session on an ssh
-    /// machine: `agtop open <id> --solo` there, over `ssh -tt`, which sizes
-    /// the remote pty and follows resizes. It waits for the ready marker of
-    /// the launch first, like `remoteAttachScript`, and opens the view again
-    /// when it is quit or the connection drops. ssh passes TERM on;
-    /// COLORTERM it does not, so it is set on the machine.
+    /// The shell command a terminal runs to show a rush session on an ssh
+    /// machine: `rush open <id>` there (`agtop open <id> --solo` on a machine
+    /// that has only agtop), over `ssh -tt`, which sizes the remote pty and
+    /// follows resizes. It waits for the ready marker of the launch first,
+    /// like `remoteAttachScript`, and opens the view again when it is quit
+    /// or the connection drops. ssh passes TERM on; COLORTERM it does not,
+    /// so it is set on the machine.
     static func remoteAgtopScript(target: String, id: String, readyMarker: String?) -> String {
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let remote = "PATH=\"$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/go/bin\" COLORTERM=truecolor AGTOP_COPY_ON_SELECT=0 "
-            + "exec agtop open \(quote(id)) --solo"
+        let remote = "PATH=\"$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/go/bin\" COLORTERM=truecolor; "
+            + "export COLORTERM \(AgtopCliAdapter.copyOnSelectOff); \(AgtopCliAdapter.remoteOpenScript(id: id))"
         let ssh = "/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "
             + "\(quote(target)) -- \(quote(remote))"
         let wait = readyMarker.map { "for i in $(seq 1 2400); do [ -e \(quote($0)) ] && break; sleep 0.5; done; " } ?? ""
         return wait + "while :; do \(ssh); sleep 1; done"
     }
 
-    /// The shell command a terminal runs to show an agtop session. The view
+    /// The shell command a terminal runs to show a rush session. The view
     /// shows that one session only, and quitting it leaves the host running,
     /// so it opens again.
     static func agtopScript(agtop: String?, id: String) -> String {
-        guard let agtop else { return "echo 'agtop is not installed.'" }
-        let bin = agtop.replacingOccurrences(of: "'", with: "'\\''")
+        guard let agtop else { return "echo 'rush is not installed.'" }
+        let open = AgtopCliAdapter.openArguments(executable: agtop, id: id)
+            .map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            .joined(separator: " ")
         // Copying is asked for with cmd+c here, never by letting go of a drag.
-        return "export AGTOP_COPY_ON_SELECT=0; while :; do '\(bin)' open '\(id)' --solo; sleep 0.3; done"
+        return "export \(AgtopCliAdapter.copyOnSelectOff); while :; do \(open); sleep 0.3; done"
     }
 
     /// Remove and terminate a specific terminal (e.g., when user kills a session).

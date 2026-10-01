@@ -171,6 +171,7 @@ struct CardDetailView: View {
 
     // Edit prompt
     @State private var showEditPromptSheet = false
+    @State private var editPromptBody: String?
 
     // File watcher for real-time history
     @State private var historyWatcherFD: Int32 = -1
@@ -303,7 +304,7 @@ struct CardDetailView: View {
             case .pullRequest:
                 PRTabView(card: card, githubBaseURL: githubBaseURL)
             case .prompt:
-                PromptTabView(card: card, onCopyToast: showCopyToast, showEditPromptSheet: $showEditPromptSheet)
+                PromptTabView(card: card, onCopyToast: showCopyToast, showEditPromptSheet: $showEditPromptSheet, editPromptBody: $editPromptBody)
             }
             }
         }
@@ -536,7 +537,7 @@ struct CardDetailView: View {
             let existingPaths = Set(card.link.promptImagePaths ?? [])
             EditPromptSheet(
                 isPresented: $showEditPromptSheet,
-                body: card.link.promptBody ?? "",
+                body: editPromptBody ?? card.link.promptBody ?? "",
                 existingImagePaths: card.link.promptImagePaths ?? [],
                 onSave: { body, images in
                     let imagePaths: [String]? = images.isEmpty ? nil : images.compactMap { img in

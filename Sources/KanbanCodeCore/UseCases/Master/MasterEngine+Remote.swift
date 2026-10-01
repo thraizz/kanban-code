@@ -33,8 +33,14 @@ extension MasterEngine {
         let projectPath = link.projectPath ?? NSHomeDirectory()
         let assistant = link.effectiveAssistant
         if let machine, !isLocalMachine(machine), let peer = peerMachine(named: machine) {
-            let prompt = link.promptBody ?? link.name ?? ""
-            launchOnPeer(cardId: link.id, prompt: prompt, worktree: worktree, peer: peer)
+            guard PromptPreview.isPreview(link) else {
+                launchOnPeer(cardId: link.id, prompt: link.promptBody ?? link.name ?? "", worktree: worktree, peer: peer)
+                return
+            }
+            Task {
+                let prompt = await PromptPreview.fullPrompt(for: link) ?? link.name ?? ""
+                launchOnPeer(cardId: link.id, prompt: prompt, worktree: worktree, peer: peer)
+            }
             return
         }
         let choice = platform.remoteMachineChoice(machine, projectPath)
@@ -42,6 +48,8 @@ extension MasterEngine {
         Task {
             let settings = try? await settingsStore.read()
             let project = settings?.projects.first(where: { $0.path == projectPath })
+            var link = link
+            link.promptBody = await PromptPreview.fullPrompt(for: link)
             var prompt = PromptBuilder.buildPrompt(card: link, project: project, settings: settings)
             if prompt.isEmpty { prompt = link.promptBody ?? link.name ?? "" }
             let isGitRepo = FileManager.default.fileExists(atPath: (projectPath as NSString).appendingPathComponent(".git"))

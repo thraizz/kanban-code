@@ -8,10 +8,12 @@ struct AgtopTests {
     /// like the real one.
     struct FakeAgtop {
         let dir: String
-        var path: String { "\(dir)/agtop" }
+        let name: String
+        var path: String { "\(dir)/\(name)" }
         var logPath: String { "\(dir)/calls.log" }
 
-        init() throws {
+        init(name: String = "agtop") throws {
+            self.name = name
             dir = NSTemporaryDirectory() + "kanban-agtop-test-\(UUID().uuidString)"
             try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             let script = """
@@ -195,6 +197,46 @@ struct AgtopTests {
         #expect(calls.contains("ARGS session queue 0a1b2c3d send 1 --was and this"))
         #expect(calls.contains("ARGS session queue 0a1b2c3d remove 0 --was later"))
         #expect(try await adapter.list().first?.queue == ["later", "and this"])
+    }
+
+    @Test("rush sends now or removes a queued message with rush queue")
+    func rushQueueCommands() async throws {
+        let fake = try FakeAgtop(name: "rush")
+        defer { fake.cleanup() }
+        let adapter = fake.adapter()
+        try await adapter.sendQueued(id: "0a1b2c3d", index: 1, was: "and this")
+        try await adapter.removeQueued(id: "0a1b2c3d", index: 0, was: "later")
+        let calls = fake.calls()
+        #expect(calls.contains("ARGS queue send 0a1b2c3d 1 --was and this"))
+        #expect(calls.contains("ARGS queue remove 0a1b2c3d 0 --was later"))
+    }
+
+    @Test("rush is told the agent is Claude Code, agtop is not")
+    func rushStartNamesTheAgent() async throws {
+        let rush = try FakeAgtop(name: "rush")
+        defer { rush.cleanup() }
+        _ = try await rush.adapter().start(AgtopStartRequest(cwd: "/repo", sessionId: "0a1b2c3d-1111-2222-3333-444455556666", resume: false))
+        #expect(rush.calls().contains("ARGS session start --cwd /repo --session-id 0a1b2c3d-1111-2222-3333-444455556666 --agent claude --json"))
+        let agtop = try FakeAgtop()
+        defer { agtop.cleanup() }
+        _ = try await agtop.adapter().start(AgtopStartRequest(cwd: "/repo", sessionId: "0a1b2c3d-1111-2222-3333-444455556666", resume: false))
+        #expect(agtop.calls().contains("ARGS session start --cwd /repo --session-id 0a1b2c3d-1111-2222-3333-444455556666 --json"))
+    }
+
+    @Test("rush opens one session without --solo, agtop with it")
+    func openArguments() {
+        #expect(AgtopCliAdapter.openArguments(executable: "/Users/me/go/bin/rush", id: "0a1b2c3d")
+            == ["/Users/me/go/bin/rush", "open", "0a1b2c3d"])
+        #expect(AgtopCliAdapter.openArguments(executable: "/Users/me/go/bin/agtop", id: "0a1b2c3d")
+            == ["/Users/me/go/bin/agtop", "open", "0a1b2c3d", "--solo"])
+        #expect(AgtopCliAdapter.remoteOpenScript(id: "0a1b2c3d")
+            == "if command -v rush >/dev/null 2>&1; then exec rush open '0a1b2c3d'; else exec agtop open '0a1b2c3d' --solo; fi")
+    }
+
+    @Test("Versions compare by build, not by the day each machine prints")
+    func versionBuild() {
+        #expect(AgtopCliAdapter.build(ofVersion: "rush b06e734 (Sep 30)") == AgtopCliAdapter.build(ofVersion: "rush b06e734 (Sep 29)"))
+        #expect(AgtopCliAdapter.build(ofVersion: "rush b06e734 (Sep 30)") != AgtopCliAdapter.build(ofVersion: "agtop 31c008a (Sep 28)"))
     }
 
     // MARK: - agtop on a machine

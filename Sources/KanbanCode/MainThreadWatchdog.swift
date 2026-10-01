@@ -9,8 +9,7 @@ import os
 final class MainThreadWatchdog: @unchecked Sendable {
     static let shared = MainThreadWatchdog()
 
-    private let checkInterval: TimeInterval = 0.5
-    private let hangThreshold: TimeInterval = 0.5
+    private let checkInterval: TimeInterval = 0.1
     private let minLogInterval: TimeInterval = 10
     private let minSampleInterval: TimeInterval = 300
     private let maxSampleFiles = 40
@@ -49,6 +48,7 @@ final class MainThreadWatchdog: @unchecked Sendable {
 
         DispatchQueue.global(qos: .utility).async { [weak self] in
             guard let self else { return }
+            var stats = StallStats()
 
             while self._isRunning.withLock({ $0 }) {
                 let semaphore = DispatchSemaphore(value: 0)
@@ -58,18 +58,48 @@ final class MainThreadWatchdog: @unchecked Sendable {
                     semaphore.signal()
                 }
 
-                let result = semaphore.wait(timeout: .now() + 0.5)
-                let elapsed = CACurrentMediaTime() - pingTime
-
-                if result == .timedOut {
+                if semaphore.wait(timeout: .now() + 0.5) == .timedOut {
                     self.logThrottled(String(format: "HANG: main thread blocked for >500ms at %.3f", pingTime))
                     self.captureSampleThrottled(reason: "hang")
-                } else if elapsed > self.hangThreshold {
-                    self.logThrottled(String(format: "HITCH: main thread blocked for %.1fms at %.3f", elapsed * 1000, pingTime))
+                    semaphore.wait()
+                }
+                stats.record(CACurrentMediaTime() - pingTime)
+                if let line = stats.flushIfDue(now: CACurrentMediaTime()) {
+                    self.log(line)
                 }
 
                 Thread.sleep(forTimeInterval: self.checkInterval)
             }
+        }
+    }
+
+    /// Per-minute counts of main-thread stalls, as seen by the pings.
+    private struct StallStats {
+        var windowStart = CACurrentMediaTime()
+        var pings = 0
+        var over50 = 0
+        var over100 = 0
+        var over250 = 0
+        var over500 = 0
+        var maxStall: Double = 0
+
+        mutating func record(_ elapsed: Double) {
+            pings += 1
+            if elapsed > 0.05 { over50 += 1 }
+            if elapsed > 0.1 { over100 += 1 }
+            if elapsed > 0.25 { over250 += 1 }
+            if elapsed > 0.5 { over500 += 1 }
+            maxStall = max(maxStall, elapsed)
+        }
+
+        mutating func flushIfDue(now: Double) -> String? {
+            guard now - windowStart >= 60 else { return nil }
+            let line = String(
+                format: "STATS %.0fs pings=%d >50ms=%d >100ms=%d >250ms=%d >500ms=%d max=%.0fms",
+                now - windowStart, pings, over50, over100, over250, over500, maxStall * 1000
+            )
+            self = StallStats(windowStart: now)
+            return line
         }
     }
 

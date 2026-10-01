@@ -328,6 +328,8 @@ extension MasterEngine {
     public func runOwnershipLoop() async {
         var lastNotified = store.state.syncSeq
         var lastAttempt: [String: Date] = [:]
+        var scannedVersion = -1
+        var lastScan = Date.distantPast
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(500))
             let seq = store.state.syncSeq
@@ -338,6 +340,12 @@ extension MasterEngine {
             let local = store.state.localMachineId
             guard !local.isEmpty else { continue }
             // A released card stops being served once its new owner took it.
+            // The cards only need a look when they changed, or when a
+            // failed adoption is due for another try.
+            let version = store.state.cardInputsVersion
+            guard version != scannedVersion || Date().timeIntervalSince(lastScan) >= 30 else { continue }
+            scannedVersion = version
+            lastScan = Date()
             for (id, _) in releasedCards where store.state.links[id]?.migrating != true {
                 releasedCards[id] = nil
                 pendingPeerLaunches[id] = nil

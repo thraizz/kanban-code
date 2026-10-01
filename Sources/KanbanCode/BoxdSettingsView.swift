@@ -132,7 +132,7 @@ struct BoxdSettingsView: View {
                     .disabled(sshMachines.isEmpty)
             }
 
-            Text("Each machine needs tmux, git, node and the coding assistant, and agtop to run cards on agtop. Repositories are cloned into the folder on the right. Cards share the machine, the app never stops it.")
+            Text("Each machine needs tmux, git, node and the coding assistant, and rush to run cards on rush. Repositories are cloned into the folder on the right. Cards share the machine, the app never stops it.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
         }

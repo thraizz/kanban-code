@@ -78,6 +78,8 @@ private final class TestMaster {
 
     func start(peerURL: String, peerToken: String) async throws {
         let store = self.store
+        // A master reads its own links before it pulls its peers.
+        await store.loadLocalLinks()
         peerSync = PeerSync(identity: identity, peers: [PeerConfig(name: "peer", url: peerURL, token: peerToken)]) { action in
             await MainActor.run { store.dispatch(action) }
         }
@@ -219,6 +221,7 @@ struct MasterHandoverTests {
             coordinationStore: coordination
         )
         store.dispatch(.localMachineLoaded(MachineIdentity(id: "machine_box", name: "box")))
+        await store.loadLocalLinks()
         var link = Link(id: "card_x", name: "Moving", projectPath: "/mac/repo", column: .waiting,
                         sessionLink: SessionLink(sessionId: "sid-1", sessionPath: "/mac/live.jsonl"))
         link.ownerMachine = "machine_mac"

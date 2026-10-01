@@ -6,7 +6,8 @@
 # The host needs a Swift 6.2 toolchain in /opt/swift (swift.org tarball for the
 # distribution) plus zlib1g-dev. The committed tree (HEAD) is unpacked into
 # ~/Projects/kanban-server on the host, built there in release mode with a static
-# Swift runtime, installed as /usr/local/bin/kanban-code-server and restarted.
+# Swift runtime, installed as /usr/local/bin/kanban-code-server and restarted,
+# with the `kanban export` helper next to it in /usr/local/bin/kanban-code-export.
 # The CLI from the same tree is built there too (node + pnpm on the host) and
 # installed into ~/.kanban-code/cli, which the host's `kanban` wrapper runs.
 set -euo pipefail
@@ -23,7 +24,9 @@ set -euo pipefail
 export PATH=/opt/swift/usr/bin:\$PATH
 cd $REMOTE_DIR
 swift build -c release --product kanban-code-server --static-swift-stdlib
+swift build -c release --product kanban-code-export --static-swift-stdlib
 install -m 0755 .build/release/kanban-code-server /usr/local/bin/kanban-code-server
+install -m 0755 .build/release/kanban-code-export /usr/local/bin/kanban-code-export
 install -m 0644 Scripts/kanban-code-server/kanban-code-server.service /etc/systemd/system/kanban-code-server.service
 systemctl daemon-reload
 systemctl enable kanban-code-server >/dev/null

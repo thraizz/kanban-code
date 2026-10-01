@@ -89,8 +89,11 @@ public final class BoardPeerLinksServer: PeerLinksServing {
         self.peerSync = peerSync
     }
 
+    /// A peer is served this master's links only once they are loaded: an
+    /// earlier page would be a full page of nothing, with a cursor past it.
     public func linksPage(since: Int?, epoch: String?) async -> LinksPage {
-        await MainActor.run { store.peerLinksPage(since: since, epoch: epoch) }
+        await store.loadLocalLinks()
+        return await MainActor.run { store.peerLinksPage(since: since, epoch: epoch) }
     }
 
     public func peerLinksChanged(machineId: String?) async {

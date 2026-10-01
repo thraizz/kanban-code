@@ -769,7 +769,9 @@ private struct CardSearchIndexItem {
                     .joined(separator: " ")
             }
             .joined(separator: " ")
-        other = "\(card.link.projectPath ?? "") \(card.session?.firstPrompt ?? "") \(card.link.promptBody ?? "") \(card.link.sessionLink?.sessionId ?? "") \(card.link.id) \(prText)".lowercased()
+        let firstPrompt = card.session?.firstPrompt ?? ""
+        let promptBody = card.link.promptBody.flatMap { $0 == firstPrompt ? nil : $0 } ?? ""
+        other = "\(card.link.projectPath ?? "") \(firstPrompt) \(promptBody) \(card.link.sessionLink?.sessionId ?? "") \(card.link.id) \(prText)".lowercased()
         titleWords = title.split { !$0.isLetter && !$0.isNumber }.map(String.init)
         projectWords = project.split { !$0.isLetter && !$0.isNumber }.map(String.init)
         isActiveColumn = [.inProgress, .waiting, .inReview, .done].contains(card.column)

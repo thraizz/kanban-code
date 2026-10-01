@@ -97,13 +97,13 @@ public struct Notice: Sendable, Equatable {
 /// not when `state.notice` or other unrelated fields change.
 @Observable
 public final class AppState: @unchecked Sendable {
-    public var links: [String: Link] = [:]                     // cardId → Link
-    public var sessions: [String: Session] = [:]               // sessionId → Session
-    public var activityMap: [String: ActivityState] = [:]       // sessionId → activity
+    public var links: [String: Link] = [:] { didSet { cardInputsVersion &+= 1 } }  // cardId → Link
+    public var sessions: [String: Session] = [:] { didSet { cardInputsVersion &+= 1 } }  // sessionId → Session
+    public var activityMap: [String: ActivityState] = [:] { didSet { cardInputsVersion &+= 1 } }  // sessionId → activity
     /// sessionId → model the session is running now, e.g. "opus". Polled from
     /// Claude's statusline rather than derived from the card, so an in-session
     /// `/model` switch shows up.
-    public var sessionModels: [String: String] = [:]
+    public var sessionModels: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
     public var tmuxSessions: Set<String> = []                  // live tmux names
     /// Messages queued in each live agtop host, by session name; hosts with
     /// an empty queue are left out.
@@ -112,8 +112,8 @@ public final class AppState: @unchecked Sendable {
     /// selected at a time; the type system enforces that invariant. The legacy
     /// `selectedCardId` / `selectedChannelName` / `selectedDMParticipant`
     /// fields are kept as computed accessors that read/write this enum.
-    public var openDrawer: Drawer = .none
-    public var selectedProjectPath: String?
+    public var openDrawer: Drawer = .none { didSet { cardInputsVersion &+= 1 } }
+    public var selectedProjectPath: String? { didSet { cardInputsVersion &+= 1 } }
     public var paletteOpen: Bool = false
     public var detailExpanded: Bool = false
     public var promptEditorFocused: Bool = false
@@ -124,9 +124,16 @@ public final class AppState: @unchecked Sendable {
     /// Configured projects (refreshed from settings on each reconciliation).
     public var configuredProjects: [Project] = []
     /// Cached excluded paths for global view.
-    public var excludedPaths: [String] = []
+    public var excludedPaths: [String] = [] {
+        didSet {
+            cardInputsVersion &+= 1
+            if excludedPaths != oldValue { pathExclusion = PathExclusion(excludedPaths) }
+        }
+    }
+    /// `excludedPaths`, compiled.
+    public private(set) var pathExclusion: PathExclusion = .none
     /// Rules that hide discovered sessions by their prompt, on every view.
-    public var sessionExclusion = SessionExclusion()
+    public var sessionExclusion = SessionExclusion() { didSet { cardInputsVersion &+= 1 } }
     /// Project paths discovered from sessions but not yet configured.
     public var discoveredProjectPaths: [String] = []
 
@@ -136,7 +143,7 @@ public final class AppState: @unchecked Sendable {
     public var isRefreshingBacklog = false
 
     /// Repo paths currently affected by GitHub API rate limiting.
-    public var rateLimitedRepos: Set<String> = []
+    public var rateLimitedRepos: Set<String> = [] { didSet { cardInputsVersion &+= 1 } }
 
     /// Session IDs that were deliberately deleted by the user.
     /// Prevents the reconciler from recreating cards for these sessions.
@@ -148,7 +155,7 @@ public final class AppState: @unchecked Sendable {
 
     /// Cards with an async operation in progress (terminal creating, worktree cleanup, PR discovery).
     /// Transient — not persisted. Used to show a spinner on the card.
-    public var busyCards: Set<String> = []
+    public var busyCards: Set<String> = [] { didSet { cardInputsVersion &+= 1 } }
 
     /// Global remote execution settings (from Settings.remote).
     public var globalRemoteSettings: RemoteSettings?
@@ -182,26 +189,26 @@ public final class AppState: @unchecked Sendable {
 
     /// This master's machine id (`~/.kanban-code/machine.json`). Cards whose
     /// `ownerMachine` is nil or equal to it run here.
-    public var localMachineId: String = ""
+    public var localMachineId: String = "" { didSet { cardInputsVersion &+= 1 } }
     /// This master's display name.
     public var localMachineName: String = ""
     /// This master runs all the time (`kanban-code-server`).
     public var localMachineAlwaysOn = false
     /// GitHub repository ("host/owner/name") of the project paths peers'
     /// cards use, for pull request lookups of paths with no checkout here.
-    public var peerRepoSlugs: [String: String] = [:]
+    public var peerRepoSlugs: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Repository ("host/owner/name") of each configured project here, so
     /// a card another master runs shows under the project here that checks
     /// out the same repository.
-    public var localProjectSlugs: [String: String] = [:]
+    public var localProjectSlugs: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Live state of every configured peer, by `PeerConfig.id`.
-    public var peerStatuses: [String: PeerStatus] = [:]
+    public var peerStatuses: [String: PeerStatus] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Local copies of the transcripts of cards other masters own, by
     /// session id; the cards read their chat from here.
-    public var peerTranscriptPaths: [String: String] = [:]
+    public var peerTranscriptPaths: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Cards other masters own, as their owners report them: live, in a
     /// turn, and what waits in their queue (agtop's included).
-    public var peerCards: [String: PeerCardState] = [:]
+    public var peerCards: [String: PeerCardState] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Deleted cards, by id, kept for `LinkSync.tombstoneLifetime` so the
     /// deletion reaches every peer and wins over older edits.
     @ObservationIgnored public var tombstones: [String: Link] = [:]
@@ -335,6 +342,27 @@ public final class AppState: @unchecked Sendable {
     /// Cards presented above the normal lanes while retaining their real column.
     public internal(set) var pinnedCards: [KanbanCodeCard] = []
 
+    /// Unarchived subagent cards that pass the project filter, by parent
+    /// card id, newest activity first.
+    public internal(set) var subagentCardsByParent: [String: [KanbanCodeCard]] = [:]
+
+    /// Subagent cards of `subagentCardsByParent`, by id.
+    public internal(set) var subagentCardsById: [String: KanbanCodeCard] = [:]
+
+    /// How many subagent cards descend from each card.
+    public internal(set) var descendantCounts: [String: Int] = [:]
+
+    /// Bumped by every change to what `rebuildCards` reads, so a rebuild
+    /// with nothing new to show returns at once.
+    @ObservationIgnored var cardInputsVersion = 0
+    @ObservationIgnored private var builtCardInputsVersion = -1
+
+    /// Project filter answers by card path, valid for `projectFilterMemoKey`.
+    @ObservationIgnored private var projectFilterMemo: [String: Bool] = [:]
+    @ObservationIgnored private var projectFilterMemoKey: [String]?
+    /// The session exclusion rules `filteredCards` was last built with.
+    @ObservationIgnored private var filteredSessionExclusion: SessionExclusion?
+
     /// Rebuild all cached card arrays from current state.
     /// Only assigns when the result differs — prevents unnecessary SwiftUI re-renders.
     /// The configured project here that checks out the repository a peer's
@@ -346,6 +374,22 @@ public final class AppState: @unchecked Sendable {
     }
 
     func rebuildCards() {
+        guard cardInputsVersion != builtCardInputsVersion else { return }
+        builtCardInputsVersion = cardInputsVersion
+        let started = DispatchTime.now().uptimeNanoseconds
+        var built = started
+        var filtered = started
+        defer {
+            let now = DispatchTime.now().uptimeNanoseconds
+            let total = now - started
+            if total > 16_000_000 {
+                built = max(built, started)
+                filtered = max(filtered, built)
+                KanbanCodeLog.info("rebuild-perf", String(
+                    format: "rebuildCards %.1fms (build %.1fms, filter %.1fms) cards=%d",
+                    Double(total) / 1e6, Double(built - started) / 1e6, Double(filtered - built) / 1e6, cards.count))
+            }
+        }
         var machines: [String: (name: String, online: Bool)] = [:]
         for status in peerStatuses.values {
             if let machine = status.machine { machines[machine.id] = (machine.name, status.online) }
@@ -395,15 +439,51 @@ public final class AppState: @unchecked Sendable {
                 owner: owner
             )
         }
-        if newCards != cards { cards = newCards }
+        let cardsChanged = newCards != cards
+        if cardsChanged { cards = newCards }
+        built = DispatchTime.now().uptimeNanoseconds
 
         let newSelected = selectedCardId.flatMap { id in cards.first { $0.id == id } }
         if newSelected != selectedCard { selectedCard = newSelected }
 
-        let newFiltered = cards.filter {
-            cardMatchesProjectFilter($0) && !sessionExclusion.excludes(link: $0.link, session: $0.session)
+        // Everything below derives from the cards, the project filter and the session exclusion rules.
+        let memoKey = [selectedProjectPath ?? ""] + excludedPaths
+        guard cardsChanged || memoKey != projectFilterMemoKey || sessionExclusion != filteredSessionExclusion else { return }
+        filteredSessionExclusion = sessionExclusion
+        if memoKey != projectFilterMemoKey {
+            projectFilterMemo = [:]
+            projectFilterMemoKey = memoKey
+        }
+        let newFiltered = cards.filter { card in
+            // Exclusion rules match on the prompt, so they are checked per card, outside the path memo.
+            guard !sessionExclusion.excludes(link: card.link, session: card.session) else { return false }
+            guard let path = card.link.projectPath ?? card.session?.projectPath else {
+                return cardMatchesProjectFilter(card)
+            }
+            if let known = projectFilterMemo[path] { return known }
+            let matches = cardMatchesProjectFilter(card)
+            projectFilterMemo[path] = matches
+            return matches
         }
         if newFiltered != filteredCards { filteredCards = newFiltered }
+        filtered = DispatchTime.now().uptimeNanoseconds
+
+        let newSubagents = Dictionary(grouping: newFiltered.filter {
+            $0.link.parentCardId != nil && !$0.link.manuallyArchived
+        }) { $0.link.parentCardId! }
+        .mapValues { cards in
+            cards.sorted {
+                let left = $0.link.lastActivity ?? $0.link.updatedAt
+                let right = $1.link.lastActivity ?? $1.link.updatedAt
+                return left == right ? $0.id < $1.id : left > right
+            }
+        }
+        if newSubagents != subagentCardsByParent {
+            subagentCardsByParent = newSubagents
+            subagentCardsById = Dictionary(uniqueKeysWithValues: newSubagents.values.flatMap { $0 }.map { ($0.id, $0) })
+        }
+        let newDescendantCounts = SubagentHierarchy.descendantCounts(in: links)
+        if newDescendantCounts != descendantCounts { descendantCounts = newDescendantCounts }
 
         let newPinned = newFiltered.filter { $0.link.isPinned && $0.link.parentCardId == nil }.sorted {
             switch ($0.link.pinnedSortOrder, $1.link.pinnedSortOrder) {
@@ -419,22 +499,30 @@ public final class AppState: @unchecked Sendable {
         }
         if newPinned != pinnedCards { pinnedCards = newPinned }
 
-        // Per-column sorted arrays
+        // Per-column sorted arrays. Indices are sorted, not the cards: a
+        // card is a large value and a sort moves each one many times.
+        var indicesByColumn: [KanbanCodeColumn: [Int]] = [:]
+        var sortKeys: [(order: Int?, time: Date, id: String)] = []
+        sortKeys.reserveCapacity(newFiltered.count)
+        for i in newFiltered.indices {
+            let link = newFiltered[i].link
+            sortKeys.append((link.sortOrder, link.lastActivity ?? link.updatedAt, link.id))
+            if link.parentCardId == nil { indicesByColumn[link.column, default: []].append(i) }
+        }
         var newByColumn: [KanbanCodeColumn: [KanbanCodeCard]] = [:]
         for column in KanbanCodeColumn.allCases {
-            newByColumn[column] = newFiltered.filter { $0.column == column && $0.link.parentCardId == nil }
-                .sorted {
-                    switch ($0.link.sortOrder, $1.link.sortOrder) {
-                    case (let a?, let b?): return a < b
-                    case (_?, nil): return true
-                    case (nil, _?): return false
-                    case (nil, nil):
-                        let t0 = $0.link.lastActivity ?? $0.link.updatedAt
-                        let t1 = $1.link.lastActivity ?? $1.link.updatedAt
-                        if t0 != t1 { return t0 > t1 }
-                        return $0.id < $1.id
-                    }
+            let sorted = (indicesByColumn[column] ?? []).sorted { i, j in
+                let a = sortKeys[i], b = sortKeys[j]
+                switch (a.order, b.order) {
+                case (let x?, let y?): return x < y
+                case (_?, nil): return true
+                case (nil, _?): return false
+                case (nil, nil):
+                    if a.time != b.time { return a.time > b.time }
+                    return a.id < b.id
                 }
+            }
+            newByColumn[column] = sorted.map { newFiltered[$0] }
         }
         if newByColumn != cardsByColumn { cardsByColumn = newByColumn }
 
@@ -496,24 +584,7 @@ public final class AppState: @unchecked Sendable {
     }
 
     public func isExcludedFromGlobalView(_ card: KanbanCodeCard) -> Bool {
-        guard !excludedPaths.isEmpty else { return false }
-        let cardPath = card.link.projectPath ?? card.session?.projectPath
-        guard let cardPath else { return false }
-        let normalized = ProjectDiscovery.normalizePath(cardPath)
-        let name = (normalized as NSString).lastPathComponent
-        for excluded in excludedPaths {
-            if excluded.contains("*") || excluded.contains("?") {
-                // Glob pattern — match against full path and folder name
-                if fnmatch(excluded, normalized, 0) == 0 { return true }
-                if fnmatch(excluded, name, 0) == 0 { return true }
-            } else {
-                let normalizedExcluded = ProjectDiscovery.normalizePath(excluded)
-                if normalized == normalizedExcluded || normalized.hasPrefix(normalizedExcluded + "/") {
-                    return true
-                }
-            }
-        }
-        return false
+        pathExclusion.matches(card.link.projectPath ?? card.session?.projectPath)
     }
 
     public init() {}
@@ -872,11 +943,19 @@ public enum Reducer {
         reduce(state: state, action: action)
     }
 
+    /// Runs `action`, stamps what it changed for peer sync, then rebuilds
+    /// the cards (a no-op when none of their inputs changed).
     public static func reduce(state: AppState, action: Action) -> [Effect] {
-        if case .peerLinksMerged = action { return reduceAction(state: state, action: action) }
+        if case .peerLinksMerged = action {
+            let effects = reduceAction(state: state, action: action)
+            state.rebuildCards()
+            return effects
+        }
         let before = state.links
         let effects = reduceAction(state: state, action: action)
-        return stampLocalChanges(state: state, before: before, action: action, effects: effects)
+        let stamped = stampLocalChanges(state: state, before: before, action: action, effects: effects)
+        state.rebuildCards()
+        return stamped
     }
 
     static func reduceAction(state: AppState, action: Action) -> [Effect] {
@@ -1128,7 +1207,6 @@ public enum Reducer {
             // than walking every card each time the scan comes back identical.
             guard state.sessionModels != models else { return [] }
             state.sessionModels = models
-            state.rebuildCards()
             return []
 
         case .setCardModel(let cardId, let model):
@@ -2213,7 +2291,6 @@ public enum Reducer {
                 "reconcile",
                 "tmux liveness: cleared \(removedSessionNames.count) dead session(s): \(removedSessionNames.prefix(5).joined(separator: ", "))\(removedSessionNames.count > 5 ? ", …" : "")"
             )
-            state.rebuildCards()
             var effects: [Effect] = [.persistLinks(Array(state.links.values))]
             if !removedSessionNames.isEmpty {
                 effects.append(.cleanupTerminalCache(sessionNames: removedSessionNames))
@@ -2221,7 +2298,6 @@ public enum Reducer {
             return effects
 
         case .reconciled(let result):
-            var cardInputsChanged = false
 
             // Equality-gated assignments — only trigger @Observable change notifications
             // for fields that actually differ. Prevents unnecessary SwiftUI re-renders
@@ -2241,11 +2317,9 @@ public enum Reducer {
             )
             if state.sessions != newSessions {
                 state.sessions = newSessions
-                cardInputsChanged = true
             }
             if state.activityMap != result.activityMap {
                 state.activityMap = result.activityMap
-                cardInputsChanged = true
             }
 
             // Merge reconciled links using last-writer-wins on updatedAt.
@@ -2349,6 +2423,22 @@ public enum Reducer {
             // we keep the removed orphans here, the next reconcile sees them
             // again, logs the same branch-change/dedup work every few seconds,
             // and creates avoidable UI hitches.
+            // Headless cards in a globally excluded folder go: discovery no
+            // longer tracks their sessions.
+            let exclusion = state.pathExclusion
+            if !exclusion.isEmpty {
+                var dropped = 0
+                for (id, link) in mergedLinks
+                where link.isUnclaimedHeadless && link.isLaunching != true
+                    && state.isOwnedLocally(link) && exclusion.matches(link.projectPath) {
+                    mergedLinks.removeValue(forKey: id)
+                    dropped += 1
+                }
+                if dropped > 0 {
+                    KanbanCodeLog.info("store", "Dropped \(dropped) headless card(s) in excluded folders")
+                }
+            }
+
             let reconciledIds = Set(result.links.map(\.id))
             for (id, link) in mergedLinks {
                 guard !reconciledIds.contains(id),
@@ -2440,7 +2530,7 @@ public enum Reducer {
                 // Copy session's firstPrompt into link.promptBody
                 if link.promptBody == nil,
                    let sessionId = link.sessionLink?.sessionId,
-                   let session = result.sessions.first(where: { $0.id == sessionId }),
+                   let session = newSessions[sessionId],
                    let firstPrompt = session.firstPrompt, !firstPrompt.isEmpty {
                     link.promptBody = firstPrompt
                 }
@@ -2451,7 +2541,6 @@ public enum Reducer {
             let linksChanged = state.links != mergedLinks
             if linksChanged {
                 state.links = mergedLinks
-                cardInputsChanged = true
             }
             state.lastRefresh = Date()
             if state.isLoading { state.isLoading = false }
@@ -2460,12 +2549,8 @@ public enum Reducer {
             if let selectedId = state.selectedCardId,
                !mergedLinks.keys.contains(selectedId) {
                 state.selectedCardId = nil
-                cardInputsChanged = true
             }
 
-            if cardInputsChanged {
-                state.rebuildCards()
-            }
 
             return linksChanged ? [.persistLinks(Array(mergedLinks.values))] : []
 
@@ -2608,13 +2693,11 @@ public enum Reducer {
 
         case .peerRepoSlugsLoaded(_, let slugs):
             for (path, slug) in slugs { state.peerRepoSlugs[path] = slug }
-            state.rebuildCards()
             return []
 
         case .localProjectSlugsResolved(let slugs):
             guard state.localProjectSlugs != slugs else { return [] }
             state.localProjectSlugs = slugs
-            state.rebuildCards()
             return []
 
         case .peerStatusChanged(let status):
@@ -2689,7 +2772,6 @@ public enum Reducer {
         case .setRateLimitedRepos(let repos):
             guard state.rateLimitedRepos != repos else { return [] }
             state.rateLimitedRepos = repos
-            state.rebuildCards()
             return []
 
         case .setSelectedProject(let path):
@@ -2750,6 +2832,14 @@ public final class BoardStore: @unchecked Sendable {
     public private(set) var state: AppState
     private let effectHandler: EffectHandler
 
+    /// Whether this master has read its own links.json. Until then the
+    /// board is not this machine's set: peer pages wait in
+    /// `pendingPeerPages`, and no full rewrite of links.json or
+    /// tombstones.json runs, so a peer's set can never replace the file.
+    public private(set) var localLinksLoaded = false
+    private var pendingPeerPages: [(peer: String, links: [Link])] = []
+    private var localLinksLoad: Task<Bool, Never>?
+
     // Dependencies for reconciliation
     private var isReconciling = false
     private var lastGHLookup: ContinuousClock.Instant = .now - .seconds(600)
@@ -2793,6 +2883,8 @@ public final class BoardStore: @unchecked Sendable {
     /// GitHub repository ("host/owner/name") of the project paths of the
     /// cards this master runs, served to peers with the links.
     public private(set) var localRepoSlugs: [String: String] = [:]
+    /// Roots whose repository did not resolve, with the time of the try.
+    private var unresolvedRepoRoots: [String: Date] = [:]
     private var cachedPRsByRepoAndNumber: [String: [Int: PullRequest]] = [:]
     /// "host/owner/name" → number → PR, for pull requests routed by the
     /// repository their own URL names rather than by the card's project.
@@ -2839,53 +2931,18 @@ public final class BoardStore: @unchecked Sendable {
         return queues
     }
 
-    /// Actions that only toggle UI state and don't affect card data — skip rebuildCards().
-    private static func needsRebuild(_ action: Action) -> Bool {
-        switch action {
-        case .reconciled, .setRateLimitedRepos, .tmuxLivenessScanned, .sessionModelsScanned,
-             .agtopQueuesScanned, .agtopQueueRead:
-            // These reducers diff their card inputs and rebuild only when the
-            // derived card snapshots can actually change. A periodic PR/status
-            // pass that produces the same links must not relayout the board.
-            return false
-        case .setPaletteOpen, .setDetailExpanded, .setPromptEditorFocused,
-             .showDialog, .dismissDialog, .setError, .setNotice, .setLoading, .setIsRefreshingBacklog,
-             .launchProgress, .localMachineLoaded, .peerRepoSlugsLoaded, .localProjectSlugsResolved:
-            return false
-        case .refreshChannels, .refreshChannelMessages, .channelsLoaded,
-             .channelMessagesLoaded, .createChannel, .sendChannelMessage,
-             .channelMessageAppended, .markChannelRead, .channelReadStateLoaded,
-             .refreshChannelReadState, .setAppFrontmost, .deleteChannel,
-             .renameChannel, .reorderChannel, .kickChannelMember, .draftsLoaded,
-             .setChannelDraft, .setDMDraft, .loadDrafts,
-             .refreshDMMessages, .dmMessagesLoaded, .sendDirectMessage,
-             .dmMessageAppended:
-            // Channel/DM history, read markers, and drafts are deliberately
-            // independent from card layout. Rebuilding cards here was a major
-            // source of channel hangs because every JSONL tail reload forced
-            // board/sidebar recomputation while chat was rendering.
-            return false
-        default:
-            return true
-        }
-    }
-
     /// Dispatch an action. Reducer runs synchronously, effects run async.
     public func dispatch(_ action: Action) {
         if let foreignCardHandler, foreignCardHandler(action) { return }
-        #if DEBUG
-        let t = CACurrentMediaTime()
-        #endif
-        let effects = Reducer.reduce(state: state, action: action)
-        if Self.needsRebuild(action) { state.rebuildCards() }
-        #if DEBUG
-        let totalMs = (CACurrentMediaTime() - t) * 1000
-        if totalMs > 4 {
-            // Use Mirror to get just the action case name without serializing associated values
+        if deferUntilLocalLinksLoad(action) { return }
+        let t = DispatchTime.now().uptimeNanoseconds
+        let effects = guardedEffects(Reducer.reduce(state: state, action: action))
+        let totalMs = Double(DispatchTime.now().uptimeNanoseconds - t) / 1_000_000
+        if totalMs > 16 {
+            // Mirror gives the case name without serializing associated values.
             let actionName = Mirror(reflecting: action).children.first?.label ?? String(describing: action)
             KanbanCodeLog.info("dispatch-perf", String(format: "dispatch(%@): %.1fms", actionName, totalMs))
         }
-        #endif
         for effect in effects {
             Task { [weak self] in
                 guard let self else { return }
@@ -2897,8 +2954,8 @@ public final class BoardStore: @unchecked Sendable {
 
     /// Dispatch an action and wait for all its effects to complete.
     public func dispatchAndWait(_ action: Action) async {
-        let effects = Reducer.reduce(state: state, action: action)
-        if Self.needsRebuild(action) { state.rebuildCards() }
+        if deferUntilLocalLinksLoad(action) { return }
+        let effects = guardedEffects(Reducer.reduce(state: state, action: action))
         await withTaskGroup(of: Void.self) { group in
             for effect in effects {
                 group.addTask { [weak self] in
@@ -2907,6 +2964,67 @@ public final class BoardStore: @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Holds a peer page back until this master has read its own links: a
+    /// page merged into the empty board of a starting master would be
+    /// persisted as the whole of links.json.
+    private func deferUntilLocalLinksLoad(_ action: Action) -> Bool {
+        guard !localLinksLoaded, case .peerLinksMerged(let peer, let links) = action else { return false }
+        pendingPeerPages.append((peer, links))
+        return true
+    }
+
+    /// Drops the full rewrites of links.json and tombstones.json while the
+    /// local links are not loaded: the board then holds no more than what
+    /// arrived since startup, and writing it would replace the file.
+    private func guardedEffects(_ effects: [Effect]) -> [Effect] {
+        guard !localLinksLoaded else { return effects }
+        return effects.filter { effect in
+            switch effect {
+            case .persistLinks, .persistTombstones:
+                KanbanCodeLog.warn("store", "Skipped a links.json rewrite before the local links loaded")
+                return false
+            default:
+                return true
+            }
+        }
+    }
+
+    /// Reads this master's links.json and tombstones.json into the board,
+    /// once. Concurrent callers share the same read. A card already on the
+    /// board is newer than its copy on disk and is kept. Peer pages that
+    /// arrived meanwhile are merged afterwards. Returns false when the file
+    /// could not be read, so the caller does not act on a partial board.
+    @discardableResult
+    public func loadLocalLinks() async -> Bool {
+        if localLinksLoaded { return true }
+        if let localLinksLoad { return await localLinksLoad.value }
+        let task = Task { @MainActor [self] () -> Bool in
+            let t = ContinuousClock.now
+            guard let cached = try? await coordinationStore.readLinks() else {
+                KanbanCodeLog.warn("store", "Could not read links.json, the board waits for the next try")
+                return false
+            }
+            let tombstones = (try? await coordinationStore.readTombstones()) ?? []
+            for link in cached where state.links[link.id] == nil {
+                state.links[link.id] = link
+            }
+            state.loadSyncState(tombstones: tombstones)
+            state.rebuildCards()
+            localLinksLoaded = true
+            KanbanCodeLog.info("reconcile", "cached links: \(t.duration(to: .now)) (\(cached.count) links)")
+            let pending = pendingPeerPages
+            pendingPeerPages = []
+            for page in pending {
+                dispatch(.peerLinksMerged(peer: page.peer, links: page.links))
+            }
+            return true
+        }
+        localLinksLoad = task
+        let loaded = await task.value
+        if !loaded { localLinksLoad = nil }
+        return loaded
     }
 
     // MARK: - Activity Refresh (fast path)
@@ -2941,7 +3059,9 @@ public final class BoardStore: @unchecked Sendable {
         }
     }
 
-    private func currentActivityMap(
+    /// Runs off the main actor: it asks the detectors about every session,
+    /// and each answer would otherwise hop back to the main thread.
+    private nonisolated func currentActivityMap(
         sessions: [Session],
         detector: ActivityDetector
     ) async -> [String: ActivityState] {
@@ -2993,15 +3113,7 @@ public final class BoardStore: @unchecked Sendable {
             }
         }
         // Also load cached links so cards appear instantly
-        if state.links.isEmpty {
-            if let cached = try? await coordinationStore.readLinks(), !cached.isEmpty {
-                for link in cached {
-                    state.links[link.id] = link
-                }
-                state.loadSyncState(tombstones: (try? await coordinationStore.readTombstones()) ?? [])
-                state.rebuildCards()
-            }
-        }
+        await loadLocalLinks()
     }
 
     // MARK: - Reconciliation
@@ -3044,17 +3156,11 @@ public final class BoardStore: @unchecked Sendable {
                 }
             }
 
-            // Show cached data immediately while discovery runs
-            if state.links.isEmpty {
-                let t = ContinuousClock.now
-                let cached = try await coordinationStore.readLinks()
-                if !cached.isEmpty {
-                    for link in cached {
-                        state.links[link.id] = link
-                    }
-                }
-                state.loadSyncState(tombstones: (try? await coordinationStore.readTombstones()) ?? [])
-                KanbanCodeLog.info("reconcile", "cached links: \(t.duration(to: .now)) (\(cached.count) links)")
+            // Show cached data immediately while discovery runs. A board
+            // without this master's own links is never reconciled.
+            guard await loadLocalLinks() else {
+                if state.isLoading { dispatch(.setLoading(false)) }
+                return
             }
 
             // Fast tmux liveness pass. The full pass below can spend a long
@@ -3070,8 +3176,15 @@ public final class BoardStore: @unchecked Sendable {
             }
 
             let t1 = ContinuousClock.now
+            // Headless runs in a globally excluded folder are not tracked
+            // at all: a benchmark there can start thousands of them.
+            let exclusion = state.pathExclusion
+            discovery.setHeadlessExclusion(exclusion)
             let allSessions = try await discovery.discoverSessions()
-            var sessions = allSessions.filter { !state.deletedSessionIds.contains($0.id) }
+            var sessions = allSessions.filter {
+                !state.deletedSessionIds.contains($0.id)
+                    && !($0.isHeadless && exclusion.matches($0.projectPath))
+            }
             if !adoptsDiscoveredSessions {
                 let known = Set(state.links.values.compactMap { $0.sessionLink?.sessionId })
                 sessions = sessions.filter { known.contains($0.id) }
@@ -3093,10 +3206,12 @@ public final class BoardStore: @unchecked Sendable {
                 // mtime changed since last cache. The parent catches add/remove,
                 // the HEAD piece catches `git checkout -b` inside a worktree.
                 var reposToScan: [String] = []
-                var fingerprints: [String: WorktreeCacheFingerprint] = [:]
+                let repoRoots = uniqueRepoRoots
+                let fingerprints = await Task.detached(priority: .utility) {
+                    Dictionary(uniqueKeysWithValues: repoRoots.map { ($0, WorktreeCacheFingerprint.capture(repoRoot: $0)) })
+                }.value
                 for repoRoot in uniqueRepoRoots {
-                    let fp = WorktreeCacheFingerprint.capture(repoRoot: repoRoot)
-                    fingerprints[repoRoot] = fp
+                    guard let fp = fingerprints[repoRoot] else { continue }
                     if let cached = worktreeCache[repoRoot], cached.fingerprint == fp {
                         worktreesByRepo[repoRoot] = cached.worktrees
                     } else {
@@ -3138,24 +3253,30 @@ public final class BoardStore: @unchecked Sendable {
 
             // Incremental branch scan for watermarked cards.
             // Reads bottom-up from EOF to watermark — stops at the most recent push.
-            for i in existingLinks.indices {
-                guard let watermark = existingLinks[i].manualOverrides.branchWatermark,
-                      let sessionPath = existingLinks[i].sessionLink?.sessionPath else { continue }
-                let attrs = try? FileManager.default.attributesOfItem(atPath: sessionPath)
-                let fileSize = (attrs?[.size] as? Int) ?? 0
-                guard fileSize > watermark else { continue }
-                if let latest = try? await JsonlParser.extractLatestPushedBranch(
-                    from: sessionPath, stopAtOffset: watermark
-                ) {
-                    existingLinks[i].discoveredBranches = [latest.branch]
-                    if let repo = latest.repoPath, repo != existingLinks[i].projectPath {
-                        existingLinks[i].discoveredRepos = [latest.branch: repo]
-                    } else {
-                        existingLinks[i].discoveredRepos = nil
+            // File reads run off the main thread.
+            let scanInput = existingLinks
+            existingLinks = await Task.detached(priority: .utility) {
+                var links = scanInput
+                for i in links.indices {
+                    guard let watermark = links[i].manualOverrides.branchWatermark,
+                          let sessionPath = links[i].sessionLink?.sessionPath else { continue }
+                    let attrs = try? FileManager.default.attributesOfItem(atPath: sessionPath)
+                    let fileSize = (attrs?[.size] as? Int) ?? 0
+                    guard fileSize > watermark else { continue }
+                    if let latest = try? await JsonlParser.extractLatestPushedBranch(
+                        from: sessionPath, stopAtOffset: watermark
+                    ) {
+                        links[i].discoveredBranches = [latest.branch]
+                        if let repo = latest.repoPath, repo != links[i].projectPath {
+                            links[i].discoveredRepos = [latest.branch: repo]
+                        } else {
+                            links[i].discoveredRepos = nil
+                        }
                     }
+                    links[i].manualOverrides.branchWatermark = fileSize
                 }
-                existingLinks[i].manualOverrides.branchWatermark = fileSize
-            }
+                return links
+            }.value
 
             // Automatic branch discovery for recently active in-progress cards.
             // This intentionally scans at most one card per pass and is throttled
@@ -3263,7 +3384,11 @@ public final class BoardStore: @unchecked Sendable {
                 pullRequests: pullRequests,
                 connectedRemoteMachines: connectedMachines
             )
-            var mergedLinks = CardReconciler.reconcile(existing: existingLinks, snapshot: snapshot)
+            // Pure work over every card and session: keep it off the main thread.
+            let reconcileInput = existingLinks
+            var mergedLinks = await Task.detached(priority: .userInitiated) {
+                CardReconciler.reconcile(existing: reconcileInput, snapshot: snapshot)
+            }.value
             // A card moving between masters is frozen until the new owner
             // adopts it: its session and worktree are the releasing master's.
             let migrating = Dictionary(existingLinks.filter { $0.migrating == true }.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
@@ -3308,10 +3433,13 @@ public final class BoardStore: @unchecked Sendable {
 
             // Compute discovered project paths
             let sessionPaths = mergedLinks.map { $0.projectPath }
-            let discoveredProjectPaths = ProjectDiscovery.findUnconfiguredPaths(
-                sessionPaths: sessionPaths,
-                configuredProjects: configuredProjects
-            )
+            let projectsForDiscovery = configuredProjects
+            let discoveredProjectPaths = await Task.detached(priority: .userInitiated) {
+                ProjectDiscovery.findUnconfiguredPaths(
+                    sessionPaths: sessionPaths,
+                    configuredProjects: projectsForDiscovery
+                )
+            }.value
 
             // Dispatch reconciled result — reducer handles all state mutations atomically
             let t5 = ContinuousClock.now
@@ -3350,23 +3478,45 @@ public final class BoardStore: @unchecked Sendable {
             if let root = link.projectPath, !root.isEmpty { roots.insert(root) }
             for repo in (link.discoveredRepos ?? [:]).values { roots.insert(repo) }
         }
-        for root in roots where localRepoSlugs[root] == nil && FileManager.default.fileExists(atPath: root) {
-            if let slug = await ghAdapter.resolveRepoSlug(repoRoot: root) {
-                localRepoSlugs[root] = "\(slug.host)/\(slug.owner)/\(slug.name)"
-            }
+        // A root that did not resolve (gone, or not a repository) is tried
+        // again every few minutes, not on every pass.
+        let now = Date()
+        let pending = roots.filter { root in
+            localRepoSlugs[root] == nil
+                && (unresolvedRepoRoots[root].map { now.timeIntervalSince($0) > 600 } ?? true)
         }
-        var projectSlugs: [String: String] = [:]
-        for project in state.configuredProjects where FileManager.default.fileExists(atPath: project.path) {
-            if let slug = await ghAdapter.resolveRepoSlug(repoRoot: project.path) {
-                projectSlugs[project.path] = "\(slug.host)/\(slug.owner)/\(slug.name)"
+        let projectPaths = state.configuredProjects.map(\.path)
+        let peerSlugs = leader ? state.peerRepoSlugs : [:]
+        // File checks and git calls run off the main thread.
+        let (resolved, projectSlugs) = await Task.detached(priority: .utility) {
+            var resolved: [String: String?] = [:]
+            for root in pending {
+                guard FileManager.default.fileExists(atPath: root),
+                      let slug = await ghAdapter.resolveRepoSlug(repoRoot: root)
+                else { resolved[root] = .some(nil); continue }
+                resolved[root] = "\(slug.host)/\(slug.owner)/\(slug.name)"
+            }
+            var projectSlugs: [String: String] = [:]
+            for path in projectPaths where FileManager.default.fileExists(atPath: path) {
+                if let slug = await ghAdapter.resolveRepoSlug(repoRoot: path) {
+                    projectSlugs[path] = "\(slug.host)/\(slug.owner)/\(slug.name)"
+                }
+            }
+            for (root, slug) in peerSlugs where !FileManager.default.fileExists(atPath: root) {
+                ghAdapter.rememberSlug(slug, forRoot: root)
+            }
+            return (resolved, projectSlugs)
+        }.value
+        for (root, slug) in resolved {
+            if let slug {
+                localRepoSlugs[root] = slug
+                unresolvedRepoRoots[root] = nil
+            } else {
+                unresolvedRepoRoots[root] = now
             }
         }
         for (path, slug) in projectSlugs { localRepoSlugs[path] = slug }
         if projectSlugs != state.localProjectSlugs { dispatch(.localProjectSlugsResolved(projectSlugs)) }
-        guard leader else { return }
-        for (root, slug) in state.peerRepoSlugs where !FileManager.default.fileExists(atPath: root) {
-            ghAdapter.rememberSlug(slug, forRoot: root)
-        }
     }
 
     /// Fetch PR data via targeted GraphQL — concurrent across repos (max 5).

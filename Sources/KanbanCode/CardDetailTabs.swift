@@ -172,6 +172,7 @@ struct PromptTabView: View {
     let card: KanbanCodeCard
     var onCopyToast: ((String) -> Void)?
     @Binding var showEditPromptSheet: Bool
+    @Binding var editPromptBody: String?
 
     var body: some View {
         ScrollView {
@@ -184,10 +185,12 @@ struct PromptTabView: View {
                     Spacer()
 
                     Button {
-                        if let body = card.link.promptBody {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(body, forType: .string)
-                            onCopyToast?("Copied prompt")
+                        Task {
+                            if let body = await PromptPreview.fullPrompt(for: card.link, transcriptPath: card.session?.jsonlPath) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(body, forType: .string)
+                                onCopyToast?("Copied prompt")
+                            }
                         }
                     } label: {
                         Image(systemName: "doc.on.doc")
@@ -196,7 +199,12 @@ struct PromptTabView: View {
                     .buttonStyle(.borderless)
                     .help("Copy prompt")
 
-                    Button { showEditPromptSheet = true } label: {
+                    Button {
+                        Task {
+                            editPromptBody = await PromptPreview.fullPrompt(for: card.link, transcriptPath: card.session?.jsonlPath)
+                            showEditPromptSheet = true
+                        }
+                    } label: {
                         Image(systemName: "pencil")
                             .font(.app(.caption))
                     }

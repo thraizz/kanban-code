@@ -96,7 +96,19 @@ public actor CoordinationStore {
 
         let data = try Data(contentsOf: URL(fileURLWithPath: filePath))
         do {
-            return try decoder.decode(LinksContainer.self, from: data)
+            let report = PromptTrimReport()
+            decoder.userInfo[PromptTrimReport.userInfoKey] = report
+            defer { decoder.userInfo[PromptTrimReport.userInfoKey] = nil }
+            let container = try decoder.decode(LinksContainer.self, from: data)
+            if report.count > 0 {
+                // Prompt bodies were shortened to previews: keep the old
+                // file aside and write the short one once.
+                let stamp = Int(Date().timeIntervalSince1970)
+                try? fileManager.copyItem(atPath: filePath, toPath: "\(filePath).pre-promptbody-\(stamp).bak")
+                try? writeLinks(container.links)
+                KanbanCodeLog.info("store", "Shortened \(report.count) prompt bodies to previews in links.json")
+            }
+            return container
         } catch {
             // Corruption recovery: backup and return empty
             let backupPath = filePath + ".bkp"

@@ -12,10 +12,10 @@ Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/
 ExecStart=/usr/local/bin/kanban-code-server
 Restart=always
 RestartSec=3
-# The agtop hosts, tmux servers and assistants the server starts outlive it:
+# The rush hosts, tmux servers and assistants the server starts outlive it:
 # a restart or deploy stops only the server, and it reattaches to them.
 KillMode=process
-# agtop hosts, transcripts and sockets add up to many open files.
+# rush hosts, transcripts and sockets add up to many open files.
 LimitNOFILE=1048576
 
 [Install]

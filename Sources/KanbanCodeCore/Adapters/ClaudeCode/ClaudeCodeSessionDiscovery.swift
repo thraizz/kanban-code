@@ -19,10 +19,30 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
     private var fileMtimes: [String: Date] = [:]
     /// Track which sessions came from which directory for eviction
     private var dirSessionIds: [String: Set<String>] = [:]
+    /// Headless sessions whose project is excluded, by directory: never
+    /// read again, whatever their mtime, until the exclusions change.
+    private var dirSkippedIds: [String: Set<String>] = [:]
+    private var headlessExclusion: PathExclusion = .none
 
     public init(claudeDir: String? = nil) {
         self.claudeDir = claudeDir
             ?? (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
+    }
+
+    public func setHeadlessExclusion(_ exclusion: PathExclusion) {
+        guard exclusion != headlessExclusion else { return }
+        headlessExclusion = exclusion
+        // Rescan every directory: sessions a removed entry excluded come
+        // back, and cached ones a new entry excludes go.
+        dirMtimes = [:]
+        dirSkippedIds = [:]
+        for (id, session) in cachedSessions where isExcludedHeadless(session) {
+            cachedSessions.removeValue(forKey: id)
+        }
+    }
+
+    private func isExcludedHeadless(_ session: Session) -> Bool {
+        session.isHeadless && headlessExclusion.matches(session.projectPath)
     }
 
     public func discoverSessions() async throws -> [Session] {
@@ -50,6 +70,8 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
 
             // Directory changed — re-scan it
             var dirSessions: Set<String> = []
+            var skipped = dirSkippedIds[dirName] ?? []
+            let mayBeExcluded = headlessExclusion.mayMatchClaudeProjectDir(dirName)
 
             // Read index file for summaries
             let indexPath = (dirPath as NSString).appendingPathComponent("sessions-index.json")
@@ -67,6 +89,10 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
             for jsonlFile in jsonlFiles {
                 let filePath = (dirPath as NSString).appendingPathComponent(jsonlFile)
                 let sessionId = jsonlFile.replacingOccurrences(of: ".jsonl", with: "")
+                if skipped.contains(sessionId) {
+                    dirSessions.insert(sessionId)
+                    continue
+                }
                 dirSessions.insert(sessionId)
 
                 guard let attrs = try? fileManager.attributesOfItem(atPath: filePath),
@@ -84,6 +110,15 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
                         if session.projectPath == nil { session.projectPath = entry.projectPath }
                         cachedSessions[sessionId] = session
                     }
+                    continue
+                }
+                if mayBeExcluded, cachedSessions[sessionId] == nil,
+                   let launch = try? await JsonlParser.extractLaunchContext(from: filePath),
+                   launch.entrypoint == Session.headlessEntrypoint,
+                   headlessExclusion.matches(indexById[sessionId]?.projectPath
+                       ?? launch.cwd ?? JsonlParser.decodeDirectoryName(dirName)) {
+                    skipped.insert(sessionId)
+                    fileMtimes.removeValue(forKey: filePath)
                     continue
                 }
                 fileMtimes[filePath] = mtime
@@ -110,6 +145,12 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
                         session.gitBranch = metadata.gitBranch
                     }
 
+                    if isExcludedHeadless(session) {
+                        skipped.insert(sessionId)
+                        cachedSessions.removeValue(forKey: sessionId)
+                        fileMtimes.removeValue(forKey: filePath)
+                        continue
+                    }
                     cachedSessions[sessionId] = session
                 } else if let entry = indexEntry {
                     // File couldn't parse but we have index data
@@ -130,11 +171,14 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
                 }
             }
             dirSessionIds[dirName] = dirSessions
+            skipped.formIntersection(dirSessions)
+            dirSkippedIds[dirName] = skipped.isEmpty ? nil : skipped
         }
 
         // Evict entire directories that were removed
         for removedDir in Set(dirMtimes.keys).subtracting(seenDirs) {
             dirMtimes.removeValue(forKey: removedDir)
+            dirSkippedIds.removeValue(forKey: removedDir)
             if let ids = dirSessionIds.removeValue(forKey: removedDir) {
                 for id in ids { cachedSessions.removeValue(forKey: id) }
             }

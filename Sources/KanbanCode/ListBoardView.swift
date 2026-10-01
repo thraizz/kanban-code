@@ -51,24 +51,15 @@ struct ListBoardView: View {
     }
 
     private var activeSubagentCardsByParent: [String: [KanbanCodeCard]] {
-        Dictionary(grouping: store.state.filteredCards.filter {
-            $0.link.parentCardId != nil && !$0.link.manuallyArchived
-        }) { $0.link.parentCardId! }
-        .mapValues { cards in
-            cards.sorted {
-                let left = $0.link.lastActivity ?? $0.link.updatedAt
-                let right = $1.link.lastActivity ?? $1.link.updatedAt
-                return left == right ? $0.id < $1.id : left > right
-            }
-        }
+        store.state.subagentCardsByParent
     }
 
     private var activeSubagentCardsById: [String: KanbanCodeCard] {
-        Dictionary(uniqueKeysWithValues: activeSubagentCardsByParent.values.flatMap { $0 }.map { ($0.id, $0) })
+        store.state.subagentCardsById
     }
 
     private var activeSubagentLinks: [String: Link] {
-        Dictionary(uniqueKeysWithValues: activeSubagentCardsById.values.map { ($0.id, $0.link) })
+        activeSubagentCardsById.mapValues(\.link)
     }
 
     private var collapsedColumns: Set<KanbanCodeColumn> {
@@ -121,7 +112,7 @@ struct ListBoardView: View {
     @ViewBuilder
     private var pinnedCardsSection: some View {
         let cards = store.state.pinnedCards
-        let descendantCounts = SubagentHierarchy.descendantCounts(in: store.state.links)
+        let descendantCounts = store.state.descendantCounts
         if !cards.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -278,7 +269,7 @@ struct ListBoardView: View {
             isRefreshingBacklog: store.state.isRefreshingBacklog,
             availableProjects: availableProjects,
             dragState: dragState,
-            descendantCounts: SubagentHierarchy.descendantCounts(in: store.state.links),
+            descendantCounts: store.state.descendantCounts,
             subagentsByParent: activeSubagentCardsByParent,
             onShowSubagents: onShowSubagents,
             onSelectCard: handleCardSelection,
