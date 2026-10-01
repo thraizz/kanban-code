@@ -618,7 +618,7 @@ private struct ChatMessageList: View {
                 isBusyFromPane = newBusy
             }
             if let sid = sessionId {
-                let newUsage = ContextUsageReader.read(sessionId: sid)
+                let newUsage = await ContextUsageReader.readAsync(sessionId: sid)
                 if newUsage != contextUsage { contextUsage = newUsage }
             }
             let recentlyBusy = Date.now.timeIntervalSince(lastBusyDetected) < 10
