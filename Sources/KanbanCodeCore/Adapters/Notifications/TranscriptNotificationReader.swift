@@ -40,6 +40,11 @@ public enum TranscriptNotificationReader {
                 return nil
             }
             turns = parsed
+        case .pi:
+            guard let parsed = try? PiSessionFile.turns(from: transcriptPath) else {
+                return nil
+            }
+            turns = parsed
         }
         return lastAssistantText(from: turns)
     }

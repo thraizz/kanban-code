@@ -32,6 +32,12 @@ Feature: Coding Assistant Registry
     And registry.detector(for: .opencode) should return OpenCodeActivityDetector
     And registry.store(for: .opencode) should return OpenCodeSessionStore
 
+  Scenario: Register Pi adapters
+    When Pi adapters are registered
+    Then registry.discovery(for: .pi) should return PiSessionDiscovery
+    And registry.detector(for: .pi) should return PiActivityDetector
+    And registry.store(for: .pi) should return PiSessionStore
+
   Scenario: Only installed assistants are registered
     Given Gemini CLI is not installed
     Then registry.available should only contain [.claude]

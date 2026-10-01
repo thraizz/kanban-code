@@ -59,7 +59,30 @@ public enum PaneOutputParser {
                 return false
             }
             return lines.contains { $0.contains("ctrl+p") || $0.contains("Ask anything") }
+        case .pi:
+            // Pi draws its editor between two horizontal rules. While it
+            // works, a status ("⠏ Working") is written into the top rule; an
+            // idle editor has both rules bare.
+            let rules = piEditorRules(paneOutput)
+            return !rules.isEmpty && !rules.contains(where: isPiStatusRule)
         }
+    }
+
+    /// The two rules of Pi's editor frame, bare or carrying a status: the
+    /// last rules drawn with `─` near the bottom of the pane, below any a
+    /// reply might contain.
+    private static func piEditorRules(_ paneOutput: String) -> [String] {
+        Array(paneOutput
+            .components(separatedBy: .newlines)
+            .map { stripAnsi($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+            .suffix(16)
+            .filter { $0.hasPrefix("──") && $0.hasSuffix("──") }
+            .suffix(2))
+    }
+
+    private static func isPiStatusRule(_ rule: String) -> Bool {
+        rule.contains { $0 != "─" && $0 != " " }
     }
 
     /// Codex can stop on startup confirmation screens before showing its input
@@ -107,6 +130,8 @@ public enum PaneOutputParser {
             return !isReady(tail, assistant: assistant)
         case .opencode:
             return paneOutput.contains("esc interrupt")
+        case .pi:
+            return piEditorRules(paneOutput).contains(where: isPiStatusRule)
         }
     }
 

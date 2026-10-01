@@ -272,6 +272,8 @@ struct ContentView: View {
                         assistantRegistry.register(.codex, discovery: CodexSessionDiscovery(), detector: CodexActivityDetector(), store: CodexSessionStore())
                     case .opencode:
                         assistantRegistry.register(.opencode, discovery: OpenCodeSessionDiscovery(), detector: OpenCodeActivityDetector(), store: OpenCodeSessionStore())
+                    case .pi:
+                        assistantRegistry.register(.pi, discovery: PiSessionDiscovery(), detector: PiActivityDetector(), store: PiSessionStore())
                     }
                 }
             } else {

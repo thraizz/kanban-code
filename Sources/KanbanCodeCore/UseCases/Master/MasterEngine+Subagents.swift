@@ -442,6 +442,11 @@ extension MasterEngine {
         case .opencode:
             // OpenCode sessions live in its database; the path only routes.
             return OpenCodeDatabase.virtualSessionPath(sessionId: sessionId)
+        case .pi:
+            // Pi's file name starts with the fork's creation time.
+            return PiSessionFile.sessionFile(sessionId: sessionId, in: directory)
+                ?? (directory as NSString).appendingPathComponent(
+                    PiSessionFile.fileName(sessionId: sessionId, createdAt: .now))
         }
     }
 

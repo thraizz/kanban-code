@@ -230,6 +230,7 @@ public enum ShellCommand {
             "\(home)/.local/bin",      // XDG local bin / claude installer
             "\(home)/go/bin",          // go install (agtop)
             "\(home)/.opencode/bin",   // OpenCode install script
+            "\(home)/.pi/agent/bin",   // Pi managed install
             "/opt/homebrew/bin",       // Homebrew (Apple Silicon)
             "/usr/local/bin",          // Homebrew (Intel) / npm global
             "/usr/bin",                // System binaries

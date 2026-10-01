@@ -1252,8 +1252,8 @@ function requireSubagentTarget(caller: Link, query: string, links: Link[]): Link
 
 function requestedAssistant(raw: string): CodingAssistant | undefined {
   if (raw === "inherit") return undefined;
-  if (raw === "claude" || raw === "codex" || raw === "gemini" || raw === "opencode") return raw;
-  throw new Error(`Unknown assistant "${raw}". Use inherit, claude, codex, gemini, or opencode.`);
+  if (raw === "claude" || raw === "codex" || raw === "gemini" || raw === "opencode" || raw === "pi") return raw;
+  throw new Error(`Unknown assistant "${raw}". Use inherit, claude, codex, gemini, opencode, or pi.`);
 }
 
 async function runSubagentCreate(

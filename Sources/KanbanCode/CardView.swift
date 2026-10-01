@@ -230,6 +230,8 @@ struct AssistantIcon: View {
             CodexIcon()
         case .opencode:
             OpenCodeGlyph().fill(style: FillStyle(eoFill: true))
+        case .pi:
+            PiGlyph()
         }
     }
 
@@ -248,6 +250,9 @@ struct AssistantIcon: View {
             return SessionIcon.resizedForMenu(src, to: size)
         case .opencode:
             return shapeMenuImage(OpenCodeGlyph(), size: size)
+        case .pi:
+            // The menu image is drawn bottom-up.
+            return shapeMenuImage(PiGlyph(upsideDown: true), size: size)
         }
     }
 
@@ -281,6 +286,27 @@ struct OpenCodeGlyph: Shape {
         path.addRect(outer)
         // Even-odd: the upper part of the inner square is the hole.
         path.addRect(CGRect(x: inner.minX, y: inner.minY, width: inner.width, height: inner.height * 0.5))
+        return path
+    }
+}
+
+/// A plain π for Pi: a bar over two legs, drawn as a shape rather than a
+/// copy of the brand mark.
+struct PiGlyph: Shape {
+    /// For a context whose y axis points up.
+    var upsideDown = false
+
+    func path(in rect: CGRect) -> Path {
+        let side = min(rect.width, rect.height)
+        let origin = CGPoint(x: rect.midX - side / 2, y: rect.midY - side / 2)
+        func box(_ x: CGFloat, _ y: CGFloat, _ width: CGFloat, _ height: CGFloat) -> CGRect {
+            let top = upsideDown ? 1 - y - height : y
+            return CGRect(x: origin.x + x * side, y: origin.y + top * side, width: width * side, height: height * side)
+        }
+        var path = Path()
+        path.addRect(box(0.1, 0.16, 0.8, 0.16))
+        path.addRect(box(0.26, 0.32, 0.16, 0.54))
+        path.addRect(box(0.58, 0.32, 0.16, 0.54))
         return path
     }
 }
