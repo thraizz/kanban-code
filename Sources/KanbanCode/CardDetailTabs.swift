@@ -227,18 +227,36 @@ struct PromptTabView: View {
                         .padding(.top, 4)
 
                     ForEach(imagePaths, id: \.self) { path in
-                        if let nsImage = NSImage(contentsOfFile: path) {
-                            Image(nsImage: nsImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(maxWidth: 400, maxHeight: 300)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
-                        }
+                        PromptAttachedImage(path: path)
                     }
                 }
             }
             .padding(16)
+        }
+    }
+}
+
+/// Loads an attached prompt image off the main thread instead of reading it in the view body.
+private struct PromptAttachedImage: View {
+    let path: String
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 400, maxHeight: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+            }
+        }
+        .task(id: path) {
+            let path = path
+            image = await Task.detached(priority: .utility) {
+                NSImage(contentsOfFile: path)
+            }.value
         }
     }
 }

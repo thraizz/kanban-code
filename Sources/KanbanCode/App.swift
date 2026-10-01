@@ -199,33 +199,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     /// Check for a pending project open request from the CLI.
     private func checkPendingOpenProject() {
+        Task.detached(priority: .utility) {
+            guard let path = Self.consumeMarkerFile(named: "open-project") else { return }
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .kanbanCodeOpenProject, object: nil,
+                    userInfo: ["path": path]
+                )
+            }
+        }
+    }
+
+    /// Consume a one-line marker file (read + delete). Runs off the main thread:
+    /// this fires on every app activation, so it must not do file I/O on main.
+    private nonisolated static func consumeMarkerFile(named name: String) -> String? {
         let file = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".kanban-code/open-project")
-        guard let path = try? String(contentsOf: file, encoding: .utf8)
+            .appendingPathComponent(".kanban-code/\(name)")
+        guard let raw = try? String(contentsOf: file, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty else { return }
+              !raw.isEmpty else { return nil }
         try? FileManager.default.removeItem(at: file)
-        NotificationCenter.default.post(
-            name: .kanbanCodeOpenProject, object: nil,
-            userInfo: ["path": path]
-        )
+        return raw
     }
 
     /// Check for a pending channel-focus request: select the channel the
     /// gateway wrote to ~/.kanban-code/focus-channel when a room spawned, so
     /// the board snaps to the room's channel without a relaunching deep link.
     private func checkPendingFocusChannel() {
-        let file = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".kanban-code/focus-channel")
-        guard let raw = try? String(contentsOf: file, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return }
-        try? FileManager.default.removeItem(at: file)
-        let name = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
-        NotificationCenter.default.post(
-            name: .kanbanCodeSelectChannel, object: nil,
-            userInfo: ["channelName": name]
-        )
+        Task.detached(priority: .utility) {
+            guard let raw = Self.consumeMarkerFile(named: "focus-channel") else { return }
+            let name = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .kanbanCodeSelectChannel, object: nil,
+                    userInfo: ["channelName": name]
+                )
+            }
+        }
     }
 
     /// Prevent Cmd+W from closing the single window — close terminal tab instead.
