@@ -1494,17 +1494,25 @@ struct ContentView: View {
                 orchestrator.start()
             }
             .task(id: "hook-watcher") {
-                await watchHookEvents(path: hookEventsPath)
+                await watchHookEvents(path: hookEventsPath, store: store)
             }
             .task(id: "settings-watcher") {
                 await watchSettingsFile(path: settingsFilePath)
             }
             .task(id: "refresh-timer") {
-                // Adaptive: 3s when active, 10s when backgrounded
+                // Slow safety net (30s) while hooks deliver events; otherwise
+                // 3s active / 10s backgrounded. See ReconcilePolicy.
+                await store.refreshEventSourceHealth()
                 await engine.runReconcileLoop(
-                    interval: { [store] in store.appIsActive ? .seconds(3) : .seconds(10) },
-                    afterPass: { [systemTray] in systemTray.update() }
+                    interval: { [store] in store.reconcileInterval },
+                    afterPass: { [store, systemTray] in
+                        systemTray.update()
+                        Task { await store.refreshEventSourceHealth() }
+                    }
                 )
+            }
+            .task(id: "tmux-watch") {
+                await store.runTmuxWatch()
             }
             .task(id: "channels-bootstrap") {
                 // Initial load + start the file-system watcher (no polling).
@@ -1576,8 +1584,9 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeHookEvent).receive(on: RunLoop.main)) { _ in
                 Task {
-                    await orchestrator.processHookEvents()
-                    await store.refreshActivity()
+                    // Only the sessions named by the new lines are refreshed.
+                    let sessionIds = await orchestrator.processHookEvents()
+                    await store.refreshActivity(sessionIds: sessionIds)
                     systemTray.update()
                 }
             }
@@ -1885,7 +1894,7 @@ struct ContentView: View {
     }
 
     /// Watch ~/.kanban-code/hook-events.jsonl for writes → post notification.
-    private nonisolated func watchHookEvents(path: String) async {
+    private nonisolated func watchHookEvents(path: String, store: BoardStore) async {
         let dir = (path as NSString).deletingLastPathComponent
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         if !FileManager.default.fileExists(atPath: path) {
@@ -1901,7 +1910,7 @@ struct ContentView: View {
             queue: .global(qos: .userInitiated)
         )
 
-        let events = AsyncStream<Void> { continuation in
+        let events = AsyncStream<Void>(bufferingPolicy: .bufferingNewest(1)) { continuation in
             source.setEventHandler {
                 continuation.yield()
             }
@@ -1915,11 +1924,17 @@ struct ContentView: View {
         }
 
         KanbanCodeLog.info("watcher", "File watcher started for hook-events.jsonl")
+        await MainActor.run { store.hookWatcherRunning = true }
         for await _ in events {
             LatencyMetrics.shared.hookWriteObserved()
+            // Coalesce a burst of appends (a tool call writes several lines
+            // within milliseconds) into one targeted update. Writes landing
+            // during the pause are read by the same pass.
+            try? await Task.sleep(for: .milliseconds(50))
             KanbanCodeLog.info("watcher", "hook-events.jsonl changed")
             NotificationCenter.default.post(name: .kanbanCodeHookEvent, object: nil)
         }
+        await MainActor.run { store.hookWatcherRunning = false }
         KanbanCodeLog.info("watcher", "File watcher loop exited (cancelled?)")
 
         close(fd)
