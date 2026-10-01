@@ -10,11 +10,26 @@ import Foundation
 import CoreText
 import os
 
-/// A segment together with the CoreText objects needed to draw it.
+/// A glyph run with everything the draw pass needs already extracted from
+/// CoreText, so drawing does not have to bridge CTRun attribute dictionaries.
+struct PreparedRun {
+    let attributes: [NSAttributedString.Key: Any]
+    let startColumn: Int
+    let endColumn: Int
+    let glyphs: [CGGlyph]
+    /// Baseline offset of each glyph as reported by CoreText.
+    let glyphY: [CGFloat]
+    let font: TTFont
+    let foregroundCGColor: CGColor?
+    let backgroundColor: TTColor?
+    /// True if underline or strikethrough has to be drawn for this run.
+    let needsRunAttributes: Bool
+}
+
+/// A segment together with the glyph runs needed to draw it.
 struct PreparedSegment {
     let segment: ViewLineSegment
-    let ctLine: CTLine
-    let runs: [CTRun]
+    let runs: [PreparedRun]
 }
 
 /// Everything derived from one buffer row that the draw pass needs.

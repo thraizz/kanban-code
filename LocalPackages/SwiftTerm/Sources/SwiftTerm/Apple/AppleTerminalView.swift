@@ -90,6 +90,7 @@ extension TerminalView {
     {
         self.attributes = [:]
         self.urlAttributes = [:]
+        rowRenderCache.invalidateAll()
         self.colors = Array(repeating: nil, count: 256)
         self.trueColors = [:]
     }
@@ -284,6 +285,7 @@ extension TerminalView {
     {
         urlAttributes = [:]
         attributes = [:]
+        rowRenderCache.invalidateAll()
         
         terminal.updateFullScreen ()
         queuePendingDisplay()
@@ -717,6 +719,113 @@ extension TerminalView {
                             kittyPlaceholders: kittyPlaceholders,
                             blockElements: blockElements,
                             boxDrawings: boxDrawings)
+    }
+
+    /// Cheap fingerprint of a row's cells: everything buildAttributedString reads from them.
+    /// Uses a plain multiply/xor mix instead of Hasher, which is several times slower per cell.
+    func rowContentHash(line: BufferLine, cols: Int) -> Int {
+        @inline(__always) func colorBits(_ c: Attribute.Color) -> UInt64 {
+            switch c {
+            case .ansi256(let code): return 0x1_0000_0000 | UInt64(code)
+            case .trueColor(let r, let g, let b): return 0x2_0000_0000 | UInt64(r) << 16 | UInt64(g) << 8 | UInt64(b)
+            case .defaultColor: return 0x3_0000_0000
+            case .defaultInvertedColor: return 0x4_0000_0000
+            }
+        }
+        var h: UInt64 = 0xcbf29ce484222325
+        @inline(__always) func mix(_ v: UInt64) {
+            h = (h ^ v) &* 0x100000001b3
+            h ^= h >> 29
+        }
+        var col = 0
+        while col < cols {
+            let ch = line[col]
+            let attr = ch.attribute
+            mix(UInt64(UInt32(bitPattern: ch.code)) | UInt64(UInt8(bitPattern: ch.width)) << 32 | (ch.hasPayload ? 1 << 40 : 0))
+            mix(colorBits(attr.fg))
+            mix(colorBits(attr.bg))
+            mix(UInt64(attr.style.rawValue) | UInt64(attr.underlineStyle.rawValue) << 8)
+            if let uc = attr.underlineColor { mix(colorBits(uc) ^ 0x5000_0000_0000) }
+            if ch.code >= Int32(CharData.maxRune) {
+                // Grapheme clusters are indices into a table; hash what they resolve to.
+                for u in String(terminal.getCharacter(for: ch)).unicodeScalars { mix(UInt64(u.value)) }
+            }
+            col += max(1, Int(ch.width))
+        }
+        return Int(truncatingIfNeeded: h)
+    }
+
+    func rowRenderContext(row: Int, cols: Int) -> RowRenderContext {
+        let tag: Int
+        switch linkHighlightMode {
+        case .hover: tag = 0
+        case .hoverWithModifier: tag = 1
+        case .always: tag = 2
+        case .alwaysWithModifier: tag = 3
+        }
+        return RowRenderContext(generation: rowRenderCache.generation,
+                                selection: selectedColumnsRange(row: row, cols: cols),
+                                linkModeTag: tag,
+                                commandActive: commandActive,
+                                highlight: linkHighlightRange?.first(where: { $0.row == row })?.range,
+                                customBlockGlyphs: customBlockGlyphs)
+    }
+
+    /// Returns the built (and CoreText-prepared) row, reusing the cached version when
+    /// neither the row's cells nor anything else that affects styling changed.
+    func cachedRowRender(row: Int, line: BufferLine, cols: Int) -> CachedRowRender {
+        let hash = rowContentHash(line: line, cols: cols)
+        let context = rowRenderContext(row: row, cols: cols)
+        if let hit = rowRenderCache.lookup(row: row, hash: hash, cols: cols, context: context) {
+            return hit
+        }
+        var info = buildAttributedString(row: row, line: line, cols: cols)
+        let prepared: [PreparedSegment] = info.segments.compactMap { segment in
+            guard segment.attributedString.length > 0 else { return nil }
+            let ctLine = CTLineCreateWithAttributedString(segment.attributedString)
+            guard let ctRuns = CTLineGetGlyphRuns(ctLine) as? [CTRun] else { return nil }
+            var processedGlyphs = 0
+            var runs: [PreparedRun] = []
+            runs.reserveCapacity(ctRuns.count)
+            for run in ctRuns {
+                let count = CTRunGetGlyphCount(run)
+                if count == 0 { continue }
+                let attrs = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
+                let startColumn = segment.column + (processedGlyphs * segment.columnWidth)
+                let endColumn = startColumn + (count * segment.columnWidth)
+                processedGlyphs += count
+                let glyphs = [CGGlyph](unsafeUninitializedCapacity: count) { buffer, n in
+                    CTRunGetGlyphs(run, CFRange(), buffer.baseAddress!)
+                    n = count
+                }
+                var positions = [CGPoint](repeating: .zero, count: count)
+                CTRunGetPositions(run, CFRange(), &positions)
+                var background: TTColor?
+                if attrs.keys.contains(.selectionBackgroundColor) {
+                    background = attrs[.selectionBackgroundColor] as? TTColor
+                } else if attrs.keys.contains(.backgroundColor) {
+                    background = attrs[.backgroundColor] as? TTColor
+                }
+                runs.append(PreparedRun(attributes: attrs,
+                                        startColumn: startColumn,
+                                        endColumn: endColumn,
+                                        glyphs: glyphs,
+                                        glyphY: positions.map { $0.y },
+                                        font: attrs[.font] as! TTFont,
+                                        foregroundCGColor: (attrs[.foregroundColor] as? TTColor)?.cgColor,
+                                        backgroundColor: background,
+                                        needsRunAttributes: attrs.keys.contains(.underlineStyle) || attrs.keys.contains(.strikethroughStyle)))
+            }
+            return PreparedSegment(segment: segment, runs: runs)
+        }
+        // Images are owned by the line and may change independently of the cells.
+        info.images = nil
+        let entry = CachedRowRender(contentHash: hash, cols: cols, context: context, info: info, prepared: prepared)
+        // Kitty placeholders depend on neighbouring state; never cache those rows.
+        if info.kittyPlaceholders.isEmpty {
+            rowRenderCache.store(row: row, entry)
+        }
+        return entry
     }
 
     func shouldUnderlineLink(row: Int, column: Int, width: Int, cell: CharData) -> Bool
@@ -1239,12 +1348,13 @@ extension TerminalView {
             } 
             #endif
             let line = displayBuffer.lines [row]
-            let lineInfo = buildAttributedString(row: row, line: line, cols: displayBuffer.cols)
+            let rendered = cachedRowRender(row: row, line: line, cols: displayBuffer.cols)
+            let lineInfo = rendered.info
             let rowBase = lineOrigin.y + cellDimension.height
             var underTextImages: [AppleImage] = []
             var overTextKittyImages: [AppleImage] = []
             var otherImages: [AppleImage] = []
-            if let images = lineInfo.images {
+            if let images = line.images {
                 for basicImage in images {
                     guard let image = basicImage as? AppleImage else {
                         continue
@@ -1271,14 +1381,8 @@ extension TerminalView {
                 overTextKittyImages.sort(by: sortKitty)
             }
 
-            // Pre-create CTLines and runs once per row to avoid duplicate creation
-            let preparedSegments: [(segment: ViewLineSegment, ctLine: CTLine, runs: [CTRun])] =
-                lineInfo.segments.compactMap { segment in
-                    guard segment.attributedString.length > 0 else { return nil }
-                    let ctLine = CTLineCreateWithAttributedString(segment.attributedString)
-                    guard let runs = CTLineGetGlyphRuns(ctLine) as? [CTRun] else { return nil }
-                    return (segment, ctLine, runs)
-                }
+            // CTLines and runs come from the per-row cache
+            let preparedSegments = rendered.prepared
 
             // Background fill loop — uses cached CTLines
             context.saveGState()
@@ -1287,21 +1391,10 @@ extension TerminalView {
             context.setLineWidth(0)
 
             for prepared in preparedSegments {
-                var processedGlyphs = 0
                 for run in prepared.runs {
-                    let runGlyphsCount = CTRunGetGlyphCount(run)
-                    if runGlyphsCount == 0 {
-                        continue
-                    }
-                    let runAttributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
-                    let startColumn = prepared.segment.column + (processedGlyphs * prepared.segment.columnWidth)
-                    let endColumn = startColumn + (runGlyphsCount * prepared.segment.columnWidth)
-                    var backgroundColor: TTColor?
-                    if runAttributes.keys.contains(.selectionBackgroundColor) {
-                        backgroundColor = runAttributes[.selectionBackgroundColor] as? TTColor
-                    } else if runAttributes.keys.contains(.backgroundColor) {
-                        backgroundColor = runAttributes[.backgroundColor] as? TTColor
-                    }
+                    let startColumn = run.startColumn
+                    let endColumn = run.endColumn
+                    let backgroundColor = run.backgroundColor
 
                     if let backgroundColor = backgroundColor {
                         let columnSpan = max(0, endColumn - startColumn)
@@ -1334,7 +1427,6 @@ extension TerminalView {
                             #endif
                         }
                     }
-                    processedGlyphs += runGlyphsCount
                 }
             }
 
@@ -1371,50 +1463,30 @@ extension TerminalView {
 
             // Glyph drawing loop — reuses cached CTLines
             for prepared in preparedSegments {
-                var processedGlyphs = 0
                 for run in prepared.runs {
-                    let runGlyphsCount = CTRunGetGlyphCount(run)
-                    if runGlyphsCount == 0 {
-                        continue
-                    }
-                    let runAttributes = CTRunGetAttributes(run) as? [NSAttributedString.Key: Any] ?? [:]
-                    let runFont = runAttributes[.font] as! TTFont
-                    let startColumn = prepared.segment.column + (processedGlyphs * prepared.segment.columnWidth)
-
-                    let runGlyphs = [CGGlyph](unsafeUninitializedCapacity: runGlyphsCount) { (bufferPointer, count) in
-                        CTRunGetGlyphs(run, CFRange(), bufferPointer.baseAddress!)
-                        count = runGlyphsCount
-                    }
-
-                    var coreTextPositions = [CGPoint](repeating: .zero, count: runGlyphsCount)
-                    CTRunGetPositions(run, CFRange(), &coreTextPositions)
-
-                    var positions = [CGPoint](repeating: .zero, count: runGlyphsCount)
-                    for i in 0..<runGlyphsCount {
-                        let ctPosition = coreTextPositions[i]
-                        let glyphColumn = startColumn + (i * prepared.segment.columnWidth)
+                    var positions = [CGPoint](repeating: .zero, count: run.glyphs.count)
+                    for i in 0..<run.glyphs.count {
+                        let glyphColumn = run.startColumn + (i * prepared.segment.columnWidth)
                         positions[i] = CGPoint(
                             x: lineOrigin.x + CGFloat(glyphColumn) * cellDimension.width,
-                            y: lineOrigin.y + yOffset + ctPosition.y)
+                            y: lineOrigin.y + yOffset + run.glyphY[i])
                     }
 
-                    nativeForegroundColor.set()
-
-                    if runAttributes.keys.contains(.foregroundColor) {
-                        let color = runAttributes[.foregroundColor] as! TTColor
-                        let cgColor = color.cgColor
+                    if let cgColor = run.foregroundCGColor {
                         if let colorSpace = cgColor.colorSpace {
                             context.setFillColorSpace(colorSpace)
                         }
                         context.setFillColor(cgColor)
+                    } else {
+                        nativeForegroundColor.set()
                     }
 
-                    CTFontDrawGlyphs(runFont, runGlyphs, &positions, positions.count, context)
+                    CTFontDrawGlyphs(run.font, run.glyphs, &positions, positions.count, context)
 
-                    // Draw other attributes
-                    drawRunAttributes(runAttributes, glyphPositions: positions, in: context)
-
-                    processedGlyphs += runGlyphsCount
+                    // Draw other attributes (underline / strikethrough)
+                    if run.needsRunAttributes {
+                        drawRunAttributes(run.attributes, glyphPositions: positions, in: context)
+                    }
                 }
             }
 

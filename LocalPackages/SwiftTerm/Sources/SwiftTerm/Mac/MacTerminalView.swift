@@ -153,6 +153,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // of attributes for an NSAttributedString
     var attributes: [AttributeRenderKey: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [AttributeRenderKey: [NSAttributedString.Key:Any]] = [:]
+    /// Per-row cache of built attributed strings / CTLines, see RowRenderCache.swift
+    let rowRenderCache = RowRenderCache()
     
     
     // Cache for the colors in the 0..255 range
@@ -471,6 +473,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         set {
             _selectedTextBackgroundColor = newValue
+            rowRenderCache.invalidateAll()
         }
     }
 

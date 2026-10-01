@@ -221,6 +221,7 @@ open class TerminalView: UIScrollView, UITextInputTraits, UIKeyInput, UIScrollVi
     // of attributes for an NSAttributedString
     var attributes: [AttributeRenderKey: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [AttributeRenderKey: [NSAttributedString.Key:Any]] = [:]
+    let rowRenderCache = RowRenderCache()
 
     // Timer to display the terminal buffer
     var link: CADisplayLink!

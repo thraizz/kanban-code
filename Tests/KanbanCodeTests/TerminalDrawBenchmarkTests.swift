@@ -50,4 +50,38 @@ struct TerminalDrawBenchmarkTests {
         print("[bench] streaming redraw: draws=\(stats.drawCount) p50=\(stats.percentile(0.5) / 1000)us p95=\(stats.p95Nanos / 1000)us")
         #expect(stats.drawCount >= 100)
     }
+
+    private func pixels(_ view: TerminalView) throws -> Data {
+        let rep = try #require(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return Data(bytes: rep.bitmapData!, count: rep.bytesPerRow * rep.pixelsHigh)
+    }
+
+    @Test("Cached rows render identically to freshly built rows")
+    func cacheIsTransparent() throws {
+        let view = filledView(rows: 60)
+        let first = try pixels(view)
+        let second = try pixels(view) // served from the row cache
+        #expect(first == second)
+        view.font = view.font // invalidates every cache
+        #expect(try pixels(view) == first)
+    }
+
+    @Test("A changed row is redrawn, not served stale from the cache")
+    func changedRowInvalidates() throws {
+        let view = filledView(rows: 60)
+        let before = try pixels(view)
+        view.feed(text: "\u{1b}[5;1H\u{1b}[7mCHANGED\u{1b}[0m")
+        #expect(try pixels(view) != before)
+    }
+
+    @Test("Selection changes are reflected despite cached rows")
+    func selectionInvalidates() throws {
+        let view = filledView(rows: 60)
+        let before = try pixels(view)
+        view.selectAll(nil)
+        #expect(try pixels(view) != before)
+        view.selectNone()
+        #expect(try pixels(view) == before)
+    }
 }
