@@ -136,6 +136,9 @@ struct SettingsView: View {
             SyncSettingsView()
                 .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath.circle") }
 
+            VaultSettingsView()
+                .tabItem { Label("Vault", systemImage: "key") }
+
             AmphetamineSettingsView()
                 .tabItem { Label("Amphetamine", systemImage: "bolt.fill") }
         }
@@ -253,7 +256,7 @@ struct AssistantsSettingsView: View {
     @State private var remoteClaudeToken = ""
     @State private var remoteTokenSaveTask: Task<Void, Never>?
     @State private var claudeRuntime: SessionRuntime = .tmux
-    @State private var agtopInstalled = AgtopCliAdapter.findExecutable() != nil
+    @State private var rushInstalled = RushCliAdapter.findExecutable() != nil
 
     var body: some View {
         Form {
@@ -449,11 +452,11 @@ struct AssistantsSettingsView: View {
                 }
             }
             .onChange(of: claudeRuntime) { saveRuntime() }
-            Text(agtopInstalled || claudeRuntime == .tmux
+            Text(rushInstalled || claudeRuntime == .tmux
                 ? "rush keeps each session running in the background and shows it in the card's terminal. Cards on an ssh machine run on rush there when the machine has it. Custom commands and boxd cards run on tmux. Applies to new launches and resumes."
                 : "rush is not installed. Install it with `go install github.com/0xdeafcafe/rush/cmd/rush@latest`, sessions run on tmux until then.")
                 .font(.caption)
-                .foregroundStyle(agtopInstalled || claudeRuntime == .tmux ? .tertiary : .secondary)
+                .foregroundStyle(rushInstalled || claudeRuntime == .tmux ? .tertiary : .secondary)
                 .fixedSize(horizontal: false, vertical: true)
         }
     }
@@ -1094,16 +1097,17 @@ struct AmphetamineSettingsView: View {
 // MARK: - Notifications
 
 struct NotificationSettingsView: View {
+    @State private var macNotifications = true
     @State private var pushoverMode: PushoverMode = .disabled
     @State private var pushoverToken = ""
     @State private var pushoverUserKey = ""
-    @State private var renderMarkdownImage = false
-    @State private var isSaving = false
+    @State private var phoneAlertMinutes = 3
+    @State private var awayMinutes = 2
     @State private var testSending = false
     @State private var testResult: String?
-    @State private var pandocAvailable = false
-    @State private var wkhtmltoimageAvailable = false
     @State private var saveTask: Task<Void, Never>?
+    @State private var loaded = false
+    @State private var macProblem: String?
 
     private let settingsStore = SettingsStore()
 
@@ -1113,19 +1117,45 @@ struct NotificationSettingsView: View {
 
     var body: some View {
         Form {
-            Section("Pushover") {
-                Picker("Pushover notifications", selection: $pushoverMode) {
-                    Text("Disabled").tag(PushoverMode.disabled)
-                    Text("Enabled").tag(PushoverMode.enabled)
-                    Text("When lid is closed").tag(PushoverMode.whenLidClosed)
-                }
-                .onChange(of: pushoverMode) { scheduleSave() }
+            Section {
+                Text("Kanban notifies only when an agent needs you to decide: a question, a plan to approve, a permission prompt or a vault approval. Never when an agent stops or goes idle, and never while that card's terminal or chat is on screen.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
 
-                if pushoverMode == .whenLidClosed {
-                    Text("Sends Pushover when MacBook lid is closed and no external display is active, local notifications otherwise.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+            Section("Mac") {
+                Toggle("Notify on this Mac", isOn: $macNotifications)
+                    .onChange(of: macNotifications) { scheduleSave() }
+                Text("Answer from the notification's options, or click it to open the card at the question. While a request is open the Dock icon shows how many wait for you.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                if macNotifications, let macProblem {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Label("Requests can go unseen: \(macProblem). Set Kanban Code's notifications to Persistent so an approval waits on screen until you answer.", systemImage: "exclamationmark.triangle.fill")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                        Button("Open Notification Settings") {
+                            if let url = URL(string: "x-apple.systempreferences:com.apple.Notifications-Settings.extension?id=\(Bundle.main.bundleIdentifier ?? "")") {
+                                NSWorkspace.shared.open(url)
+                            }
+                        }
+                        .controlSize(.small)
+                    }
                 }
+            }
+            .task {
+                while !Task.isCancelled {
+                    macProblem = await MacAttentionNotificationClient.deliveryProblem()
+                    try? await Task.sleep(for: .seconds(3))
+                }
+            }
+
+            Section("Phone") {
+                Toggle("Send to the phone (Pushover)", isOn: Binding(
+                    get: { pushoverMode != .disabled },
+                    set: { pushoverMode = $0 ? .enabled : .disabled }
+                ))
+                .onChange(of: pushoverMode) { scheduleSave() }
 
                 TextField("App Token", text: $pushoverToken)
                     .textFieldStyle(.roundedBorder)
@@ -1135,6 +1165,22 @@ struct NotificationSettingsView: View {
                     .textFieldStyle(.roundedBorder)
                     .disabled(pushoverMode == .disabled)
                     .onChange(of: pushoverUserKey) { scheduleSave() }
+
+                Stepper(value: $phoneAlertMinutes, in: 0...60) {
+                    Text(phoneAlertMinutes == 0 ? "Alert the phone at once" : "Alert the phone after \(phoneAlertMinutes) min unanswered")
+                }
+                .disabled(pushoverMode == .disabled)
+                .onChange(of: phoneAlertMinutes) { scheduleSave() }
+
+                Stepper(value: $awayMinutes, in: 1...30) {
+                    Text("Mac counts as away after \(awayMinutes) min without input")
+                }
+                .disabled(pushoverMode == .disabled)
+                .onChange(of: awayMinutes) { scheduleSave() }
+
+                Text("The phone alerts when a request is still open after the delay, or right away when the Mac is idle, locked, closed, asleep or on the screensaver. One message per request, since Pushover cannot take a message back.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
 
                 HStack {
                     Button {
@@ -1164,95 +1210,40 @@ struct NotificationSettingsView: View {
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }
-
-            Section("Rich Notification Images") {
-                Toggle("Render full output as markdown image", isOn: $renderMarkdownImage)
-                    .disabled(!pushoverConfigured)
-                    .onChange(of: renderMarkdownImage) { scheduleSave() }
-
-                if !pushoverConfigured {
-                    Text("Configure Pushover above to enable this option.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                } else if renderMarkdownImage {
-                    statusRow("pandoc", available: pandocAvailable,
-                              hint: "brew install pandoc")
-                    statusRow("wkhtmltoimage", available: wkhtmltoimageAvailable,
-                              hint: "Download .pkg from github.com/wkhtmltopdf/packaging/releases")
-
-                    if !(pandocAvailable && wkhtmltoimageAvailable) {
-                        Text("Install the missing dependencies above to enable image rendering.")
-                            .font(.caption)
-                            .foregroundStyle(.orange)
-                    }
-                } else {
-                    Text("When enabled, Claude's full markdown output is rendered as an image and attached to push notifications.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
-            }
-
-            Section("macOS Fallback") {
-                HStack {
-                    Label("Native Notifications", systemImage: "checkmark.circle.fill")
-                        .foregroundStyle(.green)
-                    Spacer()
-                    Text("Always available")
-                        .foregroundStyle(.secondary)
-                        .font(.caption)
-                }
-                Text("When Pushover is not configured, notifications are sent via macOS notification center.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-
         }
         .formStyle(.grouped)
         .padding()
         .task { await loadSettings() }
     }
 
-    private func statusRow(_ name: String, available: Bool, hint: String) -> some View {
-        HStack {
-            Label(name, systemImage: available ? "checkmark.circle.fill" : "minus.circle")
-                .foregroundStyle(available ? .green : .secondary)
-            Spacer()
-            if available {
-                Text("Available")
-                    .foregroundStyle(.secondary)
-                    .font(.caption)
-            } else {
-                Text(hint)
-                    .font(.system(.caption, design: .monospaced))
-                    .foregroundStyle(.orange)
-                    .textSelection(.enabled)
-            }
-        }
-    }
-
     private func loadSettings() async {
         do {
             let settings = try await settingsStore.read()
-            pushoverMode = settings.notifications.pushoverMode
-            pushoverToken = settings.notifications.pushoverToken ?? ""
-            pushoverUserKey = settings.notifications.pushoverUserKey ?? ""
-            renderMarkdownImage = settings.notifications.renderMarkdownImage
+            let n = settings.notifications
+            macNotifications = n.macNotifications
+            pushoverMode = n.pushoverMode
+            pushoverToken = n.pushoverToken ?? ""
+            pushoverUserKey = n.pushoverUserKey ?? ""
+            phoneAlertMinutes = max(0, n.phoneAlertDelaySeconds / 60)
+            awayMinutes = max(1, n.awayAfterSeconds / 60)
         } catch {}
-        pandocAvailable = await ShellCommand.isAvailable("pandoc")
-        wkhtmltoimageAvailable = await ShellCommand.isAvailable("wkhtmltoimage")
+        loaded = true
     }
 
     private func scheduleSave() {
+        guard loaded else { return }
         saveTask?.cancel()
         saveTask = Task {
             try? await Task.sleep(for: .milliseconds(500))
             guard !Task.isCancelled else { return }
             do {
                 var settings = try await settingsStore.read()
+                settings.notifications.macNotifications = macNotifications
                 settings.notifications.pushoverMode = pushoverMode
                 settings.notifications.pushoverToken = pushoverToken.isEmpty ? nil : pushoverToken
                 settings.notifications.pushoverUserKey = pushoverUserKey.isEmpty ? nil : pushoverUserKey
-                settings.notifications.renderMarkdownImage = renderMarkdownImage
+                settings.notifications.phoneAlertDelaySeconds = phoneAlertMinutes * 60
+                settings.notifications.awayAfterSeconds = awayMinutes * 60
                 try await settingsStore.write(settings)
                 NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
             } catch {}
@@ -1264,13 +1255,11 @@ struct NotificationSettingsView: View {
         testResult = nil
         Task {
             do {
-                let client = PushoverClient(token: pushoverToken, userKey: pushoverUserKey)
-                try await client.sendNotification(
-                    title: "Kanban Test",
-                    message: "Notifications are working!",
-                    imageData: nil,
-                    cardId: nil
-                )
+                let sender = PushoverAttentionSender(token: pushoverToken, userKey: pushoverUserKey)
+                let request = AttentionRequest(
+                    id: "test", cardId: nil, kind: .question, title: "Test",
+                    body: "Phone notifications are working.", options: [])
+                try await sender.send(request, cardName: "Kanban Code", level: .timeSensitive)
                 testResult = "Sent!"
             } catch {
                 testResult = "Failed: \(error.localizedDescription)"

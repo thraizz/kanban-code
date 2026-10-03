@@ -507,7 +507,7 @@ struct LaunchFlowIntegrationTests {
             links: [snapshot], sessions: [], activityMap: ["sess-r": .activelyWorking], tmuxSessions: [])))
 
         #expect(state.links["card_remote"]?.isLaunching == true)
-        #expect(state.launchProgress["card_remote"] == "Uploading the kanban CLI: 1.0 MB of 2.9 MB")
+        #expect(state.launchStep("card_remote") == "Uploading the kanban CLI: 1.0 MB of 2.9 MB")
     }
 
     @Test("Reconciliation does not reset a card that just completed launchTmuxReady")

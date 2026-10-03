@@ -35,10 +35,31 @@ final class SocketRemoteByteStream: RemoteByteStream, @unchecked Sendable {
 
     static let sendTimeoutMs: Int32 = 30_000
 
+    let peer: RemotePeerAddress?
+
     init(fd: Int32) {
         self.fd = fd
+        peer = Self.peerAddress(fd)
         RemoteSocket.setNonBlocking(fd)
         RemoteSocket.setOption(fd, Int32(IPPROTO_TCP), TCP_NODELAY)
+    }
+
+    private static func peerAddress(_ fd: Int32) -> RemotePeerAddress? {
+        var storage = sockaddr_storage()
+        var length = socklen_t(MemoryLayout<sockaddr_storage>.size)
+        let ok = withUnsafeMutablePointer(to: &storage) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { getpeername(fd, $0, &length) == 0 }
+        }
+        guard ok else { return nil }
+        var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
+        var service = [CChar](repeating: 0, count: Int(NI_MAXSERV))
+        let result = withUnsafePointer(to: &storage) {
+            $0.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                getnameinfo($0, length, &host, socklen_t(host.count), &service, socklen_t(service.count), NI_NUMERICHOST | NI_NUMERICSERV)
+            }
+        }
+        guard result == 0 else { return nil }
+        return RemotePeerAddress(host: String(cString: host), port: Int(String(cString: service)) ?? 0)
     }
 
     func start(onClose: @escaping @Sendable () -> Void) {

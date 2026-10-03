@@ -19,7 +19,14 @@ struct KanbanCodeMobileApp: App {
                 .environment(servers)
                 .environment(fleet)
                 .environment(pairing)
-                .onOpenURL { url in pairing.open(url.absoluteString, into: servers) }
+                .onOpenURL { url in
+                    // kanbancode://attention/<id> comes from a phone notification.
+                    if url.scheme == "kanbancode", url.host() == "attention" {
+                        NotificationCenter.default.post(name: .openAttention, object: url.pathComponents.dropFirst().first)
+                        return
+                    }
+                    pairing.open(url.absoluteString, into: servers)
+                }
                 .task { await pairFromEnvironment() }
         }
     }
@@ -39,6 +46,11 @@ struct KanbanCodeMobileApp: App {
             await pairing.pair(link, into: servers, makePrimary: index == 0)
         }
     }
+}
+
+extension Notification.Name {
+    /// Opens the attention list; `object` is the request id to show, if any.
+    static let openAttention = Notification.Name("openAttention")
 }
 
 /// Checks a pairing link against the Mac before saving it.

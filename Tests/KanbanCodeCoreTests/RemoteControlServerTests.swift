@@ -184,7 +184,8 @@ struct RemoteControlServerTests {
         let prompt = try JSONEncoder.remote.encode(RemotePromptRequest(text: "also run the tests", mode: .queue))
         let (status, _) = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.agentToken, body: prompt)
         #expect(status == 204)
-        #expect(f.host.state.withLock { $0.prompts.first?.request.text } == "also run the tests")
+        // An agent-scope device is another sender, never Rogerio typing.
+        #expect(f.host.state.withLock { $0.prompts.first?.request.text } == "[Message from openclaw (remote agent)]: also run the tests")
 
         let (conflict, _) = try await f.request("POST", "/v1/cards/card_idle/prompt", token: f.agentToken, body: prompt)
         #expect(conflict == 409)
@@ -233,14 +234,14 @@ struct RemoteControlServerTests {
         // Markers out of order, image 2 (the jpeg) no longer named.
         let body = try JSONEncoder.remote.encode(RemotePromptRequest(
             text: "see [Image #3] then [Image #1]", images: [png, jpeg, gif]))
-        let (status, _) = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.agentToken, body: body)
+        let (status, _) = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.fullToken, body: body)
         #expect(status == 204)
         #expect(f.host.state.withLock { $0.prompts.last?.request.text } == "see [Image #1] then [Image #2]")
         #expect(f.host.state.withLock { $0.promptImages.last?.map(\.fileExtension) } == ["gif", "png"])
 
         // No marker at all (an older client): every image, text as sent.
         let legacy = try JSONEncoder.remote.encode(RemotePromptRequest(text: "look", images: [png, jpeg]))
-        _ = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.agentToken, body: legacy)
+        _ = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.fullToken, body: legacy)
         #expect(f.host.state.withLock { $0.prompts.last?.request.text } == "look")
         #expect(f.host.state.withLock { $0.promptImages.last?.map(\.fileExtension) } == ["png", "jpg"])
     }

@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import KanbanCodeRemoteKit
 #if DEBUG && canImport(QuartzCore)
 import QuartzCore
 #endif
@@ -39,13 +40,16 @@ public enum DialogState: Equatable, Sendable {
 public struct PeerCardState: Sendable, Equatable {
     public var isLive: Bool
     public var isBusy: Bool
-    /// Its queue, oldest first; agtop's queued messages have `agtop-` ids.
+    /// Its queue, oldest first; rush's queued messages have `agtop-` ids (see `RemoteBoardMapper.rushPromptId`).
     public var queue: [QueuedPrompt]
+    /// A start in flight or failed there, or a move away from there.
+    public var status: RemoteSessionStatus?
 
-    public init(isLive: Bool, isBusy: Bool, queue: [QueuedPrompt] = []) {
+    public init(isLive: Bool, isBusy: Bool, queue: [QueuedPrompt] = [], status: RemoteSessionStatus? = nil) {
         self.isLive = isLive
         self.isBusy = isBusy
         self.queue = queue
+        self.status = status
     }
 }
 
@@ -105,9 +109,11 @@ public final class AppState: @unchecked Sendable {
     /// `/model` switch shows up.
     public var sessionModels: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
     public var tmuxSessions: Set<String> = []                  // live tmux names
-    /// Messages queued in each live agtop host, by session name; hosts with
+    /// Messages queued in each live rush host, by session name; hosts with
     /// an empty queue are left out.
-    public var agtopQueues: [String: [String]] = [:]
+    public var rushQueues: [String: [String]] = [:]
+    /// What each blocked rush host waits on, by session name.
+    public var rushNeeds: [String: String] = [:]
     /// Single source of truth for which drawer is open. Only ONE thing can be
     /// selected at a time; the type system enforces that invariant. The legacy
     /// `selectedCardId` / `selectedChannelName` / `selectedDMParticipant`
@@ -166,13 +172,34 @@ public final class AppState: @unchecked Sendable {
     /// Settings of the boxd remote mode (from Settings.boxd).
     public var boxdSettings: BoxdSettings?
 
+    /// True when the card runs on a disposable boxd machine. An ssh machine
+    /// is also recorded with mode `.boxd`, but it is never destroyed or stopped.
+    public func runsOnDisposableMachine(_ cardId: String) -> Bool {
+        guard let remote = links[cardId]?.remote, remote.mode == .boxd else { return false }
+        return boxdSettings?.sshMachine(named: remote.machineName) == nil
+    }
+
     /// Live state of every boxd machine the app knows, by machine name.
     /// Transient: the supervisor reports it, nothing persists it.
-    public var remoteMachineStates: [String: RemoteMachineState] = [:]
+    public var remoteMachineStates: [String: RemoteMachineState] = [:] { didSet { cardInputsVersion &+= 1 } }
 
-    /// Last progress line of a launch or resume in flight, by card id.
-    /// Transient: shown under the "Starting session" spinner.
-    public var launchProgress: [String: String] = [:]
+    /// What the last start of each card (launch, resume, move between
+    /// masters) reported, by card id: its step, the transcript copy of a
+    /// move, or why it failed. Transient; read through `KanbanCodeCard.sessionStatus`.
+    public var cardStarts: [String: CardStartReport] = [:] { didSet { cardInputsVersion &+= 1 } }
+
+    /// The step of the launch or resume of a card in flight.
+    public func launchStep(_ cardId: String) -> String? {
+        if case .step(let step) = cardStarts[cardId] { return step }
+        return nil
+    }
+
+    /// Why the last launch or resume of a card failed ("Resume failed: …"),
+    /// until the next one starts.
+    public func startFailure(_ cardId: String) -> String? {
+        if case .failed(let why) = cardStarts[cardId] { return why }
+        return nil
+    }
 
     /// Cards that keep their tmux session on `machineName`.
     public func cardIds(onMachine machineName: String) -> [String] {
@@ -207,7 +234,7 @@ public final class AppState: @unchecked Sendable {
     /// session id; the cards read their chat from here.
     public var peerTranscriptPaths: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Cards other masters own, as their owners report them: live, in a
-    /// turn, and what waits in their queue (agtop's included).
+    /// turn, and what waits in their queue (rush's included).
     public var peerCards: [String: PeerCardState] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Deleted cards, by id, kept for `LinkSync.tombstoneLifetime` so the
     /// deletion reaches every peer and wins over older edits.
@@ -302,6 +329,16 @@ public final class AppState: @unchecked Sendable {
     /// True when the app is frontmost (visible & focused). When true, notifications
     /// for new messages are suppressed — the unread badges are enough.
     public var appIsFrontmost: Bool = true
+
+    /// Decisions agents wait on (questions, plans, permissions, vault
+    /// releases), by id. Open ones plus the recently resolved, which stay a
+    /// short while so every device learns they were resolved.
+    public var attentionRequests: [String: AttentionRequest] = [:]
+
+    /// Open attention requests, oldest first.
+    public var openAttentionRequests: [AttentionRequest] {
+        attentionRequests.values.filter(\.isOpen).sorted { $0.createdAt < $1.createdAt }
+    }
 
     /// The human's handle, derived from `NSUserName()` (slugified, fallback "user").
     public var humanHandle: String = AppState.defaultHumanHandle()
@@ -436,7 +473,13 @@ public final class AppState: @unchecked Sendable {
                 isBusy: busyCards.contains(link.id),
                 isRateLimited: rateLimited,
                 liveModel: link.sessionLink.flatMap { sessionModels[$0.sessionId] },
-                owner: owner
+                owner: owner,
+                sessionStatus: CardSessionStatus.of(
+                    link: link,
+                    moving: handoverLine(cardId: link.id),
+                    report: cardStarts[link.id],
+                    peer: owner != nil ? peerCards[link.id]?.status : nil,
+                    machineState: link.remote.flatMap { remoteMachineStates[$0.machineName] })
             )
         }
         let cardsChanged = newCards != cards
@@ -608,6 +651,8 @@ public enum Action: Sendable {
     case sessionModelsScanned([String: String])
     case setCardModel(cardId: String, model: String?)
     case archiveCard(cardId: String)
+    /// Brings an archived card back to the board.
+    case unarchiveCard(cardId: String)
     case deleteCard(cardId: String)
     case selectCard(cardId: String?)
     case setPaletteOpen(Bool)
@@ -660,10 +705,12 @@ public enum Action: Sendable {
     /// Fast tmux liveness pass: clears links whose tmux sessions no longer
     /// exist (e.g. after a reboot) without waiting for a full reconcile.
     case tmuxLivenessScanned(live: Set<String>)
-    /// Every live agtop host's queue, from the same scan.
-    case agtopQueuesScanned([String: [String]])
-    /// One agtop host's queue, read after acting on it.
-    case agtopQueueRead(sessionName: String, queue: [String])
+    /// Every live rush host's queue, from the same scan.
+    case rushQueuesScanned([String: [String]])
+    /// What every blocked rush host waits on, from the same scan.
+    case rushNeedsScanned([String: String])
+    /// One rush host's queue, read after acting on it.
+    case rushQueueRead(sessionName: String, queue: [String])
     case gitHubIssuesUpdated(links: [Link])
     case activityChanged([String: ActivityState]) // sessionId → state
     /// Hook-driven update for a few sessions: merged into the activity map,
@@ -677,6 +724,12 @@ public enum Action: Sendable {
     /// A step of a launch or resume in flight. Keeps the launch alive for
     /// the stale-launch timers and shows the step under the spinner.
     case launchProgress(cardId: String, message: String)
+    /// How far the transcript copy of a card moving between masters got;
+    /// nil once the copy is over.
+    case handoverProgress(cardId: String, progress: HandoverProgress?)
+    /// What a start of the card reported where it runs: the owner's answer
+    /// for a card another master runs, or nil to forget the last report.
+    case cardStartReported(cardId: String, report: CardStartReport?)
 
     // Remote machines (boxd)
     /// A card got a machine, or its machine record changed (new cwd, new status).
@@ -745,6 +798,14 @@ public enum Action: Sendable {
     case channelReadStateLoaded(channels: [String: String], dms: [String: String])
     case refreshChannelReadState
     case setAppFrontmost(Bool)
+
+    // Attention (decisions an agent waits on)
+    /// A request is raised, or an open one is updated (same id).
+    case attentionRaised(AttentionRequest)
+    /// A request is resolved by `by` ("mac", "phone", "session", "timeout").
+    case attentionResolved(id: String, resolution: String?, by: String)
+    /// Resolved requests older than `before` are dropped.
+    case attentionPruned(before: Date)
     case deleteChannel(name: String)
     case renameChannel(old: String, new: String)
     /// Kick a member out of a channel (e.g. a dead agent whose card no longer
@@ -828,6 +889,14 @@ public enum Effect: Sendable {
     case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant)
     case journalQueuedPrompt(cardId: String, prompt: QueuedPrompt, reason: QueuedPromptJournalReason)
     case deleteFiles([String])
+
+    // Attention
+    /// A new request: notify the Mac and the phone as presence allows.
+    case deliverAttention(AttentionRequest)
+    /// An open request changed (options, body): refresh what was delivered.
+    case updateAttention(AttentionRequest)
+    /// A request was resolved: clear it from every device.
+    case withdrawAttention(AttentionRequest)
 
     // Remote machines (boxd)
     /// Stops the machine of a card whose work is over: the tab was closed,
@@ -943,6 +1012,17 @@ public enum Reducer {
             : [.stopRemoteMachine(machineName: remote.machineName, reason: .sessionStopped)]
     }
 
+    /// Takes a card out of the archive. A card in All Sessions goes to the
+    /// backlog, and reconciliation promotes it by real activity from there.
+    static func unarchive(_ link: inout Link) {
+        guard link.manuallyArchived else { return }
+        link.manuallyArchived = false
+        if link.column == .allSessions {
+            link.column = .backlog
+            link.manualOverrides.column = false
+        }
+    }
+
     public static func reduce(state: inout AppState, action: Action) -> [Effect] {
         reduce(state: state, action: action)
     }
@@ -1045,6 +1125,7 @@ public enum Reducer {
 
         case .launchCard(let cardId, _, let projectPath, let worktreeName, _, _):
             guard var link = state.links[cardId] else { return [] }
+            state.cardStarts[cardId] = nil
             let projectName = (projectPath as NSString).lastPathComponent
             let effectiveName = (worktreeName?.isEmpty == false) ? worktreeName! : nil
             let tmuxName = LaunchSession.tmuxSafeName(effectiveName != nil
@@ -1068,6 +1149,7 @@ public enum Reducer {
 
         case .resumeCard(let cardId):
             guard var link = state.links[cardId] else { return [] }
+            state.cardStarts[cardId] = nil
             let sid = link.sessionLink?.sessionId ?? link.id
             let tmuxName = link.effectiveAssistant.resumeSessionName(sessionId: sid)
             // Preserve existing shell sessions as extras
@@ -1155,14 +1237,7 @@ public enum Reducer {
                 link.pinnedSortOrder = firstOrder - 1
                 // Pinning an archived card brings it back: leaving it archived
                 // pins something that stays hidden in All Sessions.
-                if link.manuallyArchived {
-                    link.manuallyArchived = false
-                    if link.column == .allSessions {
-                        link.column = .backlog
-                        // Let reconciliation promote it by real activity.
-                        link.manualOverrides.column = false
-                    }
-                }
+                Self.unarchive(&link)
             } else {
                 if link.pinnedAt == nil { return [] }
                 link.pinnedAt = nil
@@ -1277,6 +1352,13 @@ public enum Reducer {
             state.links[cardId] = link
             effects.insert(.upsertLink(link), at: 0)
             return effects
+
+        case .unarchiveCard(let cardId):
+            guard var link = state.links[cardId], link.manuallyArchived else { return [] }
+            Self.unarchive(&link)
+            link.updatedAt = .now
+            state.links[cardId] = link
+            return [.upsertLink(link)]
 
         case .deleteCard(let cardId):
             guard state.links[cardId] != nil else { return [] }
@@ -1520,6 +1602,31 @@ public enum Reducer {
 
         case .setAppFrontmost(let active):
             state.appIsFrontmost = active
+            return []
+
+        // MARK: Attention
+
+        case .attentionRaised(let request):
+            if let existing = state.attentionRequests[request.id], !existing.isOpen {
+                return []
+            }
+            let isNew = state.attentionRequests[request.id] == nil
+            state.attentionRequests[request.id] = request
+            return isNew ? [.deliverAttention(request)] : [.updateAttention(request)]
+
+        case .attentionResolved(let id, let resolution, let by):
+            guard var request = state.attentionRequests[id], request.isOpen else { return [] }
+            request.resolvedAt = Date()
+            request.resolution = resolution
+            request.resolvedBy = by
+            state.attentionRequests[id] = request
+            return [.withdrawAttention(request)]
+
+        case .attentionPruned(let before):
+            state.attentionRequests = state.attentionRequests.filter { _, request in
+                guard let resolvedAt = request.resolvedAt else { return true }
+                return resolvedAt >= before
+            }
             return []
 
         // MARK: DMs
@@ -1807,7 +1914,7 @@ public enum Reducer {
 
         case .cancelLaunch(let cardId):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
+            state.cardStarts[cardId] = nil
             let tmuxName = link.tmuxLink?.sessionName
             link.isLaunching = nil
             link.tmuxLink = nil
@@ -2155,16 +2262,28 @@ public enum Reducer {
 
         // MARK: Async Completions
 
+        case .handoverProgress(let cardId, let progress):
+            if let progress {
+                if state.cardStarts[cardId] != .moving(progress) { state.cardStarts[cardId] = .moving(progress) }
+            } else if case .moving = state.cardStarts[cardId] {
+                state.cardStarts[cardId] = nil
+            }
+            return []
+
+        case .cardStartReported(let cardId, let report):
+            if state.cardStarts[cardId] != report { state.cardStarts[cardId] = report }
+            return []
+
         case .launchProgress(let cardId, let message):
             guard var link = state.links[cardId], link.isLaunching == true else { return [] }
-            state.launchProgress[cardId] = message
+            state.cardStarts[cardId] = .step(message)
             link.updatedAt = .now
             state.links[cardId] = link
             return []
 
         case .launchCompleted(let cardId, let tmuxName, let sessionLink, let worktreeLink, let isRemote):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
+            state.cardStarts[cardId] = nil
             let existingExtras = link.tmuxLink?.extraSessions
             link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: existingExtras)
             if let sl = sessionLink { link.sessionLink = sl }
@@ -2181,7 +2300,7 @@ public enum Reducer {
 
         case .launchTmuxReady(let cardId):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
+            state.cardStarts[cardId] = nil
             // Clear isLaunching so the UI shows the terminal immediately.
             // tmuxLink was already set by launchCard — we just flip the flag.
             link.isLaunching = nil
@@ -2192,17 +2311,17 @@ public enum Reducer {
 
         case .launchFailed(let cardId, let error):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
             link.tmuxLink = nil
             link.isLaunching = nil
             link.updatedAt = .now
             state.links[cardId] = link
+            state.cardStarts[cardId] = .failed("Launch failed: \(error)")
             state.notice = Notice("Launch failed: \(error)")
             return [.upsertLink(link)]
 
         case .resumeCompleted(let cardId, let tmuxName, let isRemote):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
+            state.cardStarts[cardId] = nil
             let existingExtras = link.tmuxLink?.extraSessions
             link.tmuxLink = TmuxLink(sessionName: tmuxName, extraSessions: existingExtras)
             link.isRemote = isRemote
@@ -2214,11 +2333,11 @@ public enum Reducer {
 
         case .resumeFailed(let cardId, let error):
             guard var link = state.links[cardId] else { return [] }
-            state.launchProgress[cardId] = nil
             link.tmuxLink = nil
             link.isLaunching = nil
             link.updatedAt = .now
             state.links[cardId] = link
+            state.cardStarts[cardId] = .failed("Resume failed: \(error)")
             state.notice = Notice("Resume failed: \(error)")
             return [.upsertLink(link)]
 
@@ -2285,14 +2404,18 @@ public enum Reducer {
 
         // MARK: Background Reconciliation
 
-        case .agtopQueuesScanned(let queues):
+        case .rushQueuesScanned(let queues):
             let nonEmpty = queues.filter { !$0.value.isEmpty }
-            if state.agtopQueues != nonEmpty { state.agtopQueues = nonEmpty }
+            if state.rushQueues != nonEmpty { state.rushQueues = nonEmpty }
             return []
 
-        case .agtopQueueRead(let sessionName, let queue):
-            if state.agtopQueues[sessionName] ?? [] != queue {
-                state.agtopQueues[sessionName] = queue.isEmpty ? nil : queue
+        case .rushNeedsScanned(let needs):
+            if state.rushNeeds != needs { state.rushNeeds = needs }
+            return []
+
+        case .rushQueueRead(let sessionName, let queue):
+            if state.rushQueues[sessionName] ?? [] != queue {
+                state.rushQueues[sessionName] = queue.isEmpty ? nil : queue
             }
             return []
 
@@ -2409,7 +2532,7 @@ public enum Reducer {
                         // reporting progress, and a resume whose old
                         // transcript only says the session it replaces ended.
                         let activity = result.activityMap[existing.sessionLink?.sessionId ?? ""]
-                        let stillReporting = state.launchProgress[link.id] != nil
+                        let stillReporting = state.launchStep(link.id) != nil
                         if let activity, activity != .ended, activity != .stale, existing.remote == nil, !stillReporting {
                             // Activity detected — clear isLaunching, let column recomputation run
                             var cleared = existing
@@ -2755,6 +2878,7 @@ public enum Reducer {
             guard var link = state.links[cardId], link.ownerMachine == state.localMachineId,
                   !state.localMachineId.isEmpty
             else { return [] }
+            state.cardStarts[cardId] = nil
             link.migrating = nil
             link.tmuxLink = nil
             link.remote = nil
@@ -2947,13 +3071,22 @@ public final class BoardStore: @unchecked Sendable {
         self.sessionStore = sessionStore
     }
 
-    /// The queues of the agtop hosts in a session scan, by session name.
-    nonisolated static func agtopQueues(in sessions: [TmuxSession]) -> [String: [String]] {
+    /// The queues of the rush hosts in a session scan, by session name.
+    nonisolated static func rushQueues(in sessions: [TmuxSession]) -> [String: [String]] {
         var queues: [String: [String]] = [:]
         for session in sessions {
-            if let queue = session.agtopQueue, !queue.isEmpty { queues[session.name] = queue }
+            if let queue = session.rushQueue, !queue.isEmpty { queues[session.name] = queue }
         }
         return queues
+    }
+
+    /// What the blocked rush hosts in a session scan wait on, by session name.
+    nonisolated static func rushNeeds(in sessions: [TmuxSession]) -> [String: String] {
+        var needs: [String: String] = [:]
+        for session in sessions {
+            if let need = session.rushNeeds, !need.isEmpty { needs[session.name] = need }
+        }
+        return needs
     }
 
     /// Dispatch an action. Reducer runs synchronously, effects run async.
@@ -3342,7 +3475,8 @@ public final class BoardStore: @unchecked Sendable {
             let tLiveness = ph.begin("tmuxLiveness")
             if let tmuxAdapter, let live = try? await tmuxAdapter.listSessions() {
                 dispatch(.tmuxLivenessScanned(live: Set(live.map(\.name))))
-                dispatch(.agtopQueuesScanned(Self.agtopQueues(in: live)))
+                dispatch(.rushQueuesScanned(Self.rushQueues(in: live)))
+                dispatch(.rushNeedsScanned(Self.rushNeeds(in: live)))
             }
             ph.end(tLiveness, "tmuxLiveness")
 
@@ -3531,7 +3665,8 @@ public final class BoardStore: @unchecked Sendable {
             ph.end(t2, "tmux", detail: "\(tmuxSessions.count) sessions")
             let tDeaths = ph.begin("tmuxDeathScan")
             if tmuxAdapter != nil {
-                dispatch(.agtopQueuesScanned(Self.agtopQueues(in: tmuxSessions)))
+                dispatch(.rushQueuesScanned(Self.rushQueues(in: tmuxSessions)))
+                dispatch(.rushNeedsScanned(Self.rushNeeds(in: tmuxSessions)))
                 let currentNames = Set(tmuxSessions.map(\.name))
                 let home = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")
                 // The disk snapshot covers the first pass of a fresh app run:

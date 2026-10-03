@@ -354,6 +354,23 @@ final class ChatAndTerminalTests: KanbanUITestCase {
         }
     }
 
+    /// A pasted log of thousands of lines and a code block holding one line
+    /// of JSON hundreds of KB long open in seconds, cut with a way to show
+    /// the rest, and the app keeps answering: going back works at once.
+    func testAHugeChatOpensWithoutStalling() throws {
+        let card = app.buttons["card-card_huge"]
+        XCTAssertTrue(app.buttons["card-card_wait"].waitForExistence(timeout: 30))
+        for _ in 0..<6 where !card.isHittable { app.swipeUp() }
+        let start = Date()
+        card.tap()
+        XCTAssertTrue(app.buttons["showWholeMessage"].firstMatch.waitForExistence(timeout: 30), "long messages are not cut")
+        shot("52-huge-chat")
+        goBack()
+        XCTAssertTrue(app.buttons["newTask"].waitForExistence(timeout: 30), "the board did not come back")
+        let took = Date().timeIntervalSince(start)
+        XCTAssertLessThan(took, 30, "opening and leaving the huge chat took \(took) s")
+    }
+
     // MARK: Terminal
 
     func testTerminalScrollsTmuxHistory() throws {

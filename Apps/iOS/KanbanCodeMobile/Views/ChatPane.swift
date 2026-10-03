@@ -13,6 +13,7 @@ struct ChatPane: View {
     @State private var isSending = false
     @State private var sendError: String?
     @State private var notice: String?
+    @State private var secretOffer: PendingSecretOffer?
     @State private var sentCount = 0
     @State private var queueActions: Set<String> = []
     @State private var showPhotoPicker = false
@@ -228,17 +229,30 @@ struct ChatPane: View {
                         self.notice = nil
                     }
             }
-            if card.isLive {
+            if secretOffer != nil {
+                VaultSecretOfferCard(offer: Binding(get: { secretOffer! }, set: { secretOffer = $0 }),
+                                     onSave: saveOfferedSecrets, onSendAsIs: sendOfferAsIs)
+            }
+            if card.isLive, card.sessionStatus?.kind != .machine {
                 composer
             } else {
+                // The same status the Mac shows in the card: a start or a
+                // move in flight, a failed start, a machine that is away.
+                let status = card.sessionStatus
                 HStack {
-                    Text("Session not running")
+                    if let status, status.kind == .starting || status.kind == .moving {
+                        ProgressView()
+                    }
+                    Text(status?.text ?? "Session not running")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(status?.kind == .failed ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
+                        .accessibilityIdentifier("sessionStatus")
                     Spacer()
-                    Button("Resume", systemImage: "play.fill", action: onResume)
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("resumeBar")
+                    if status == nil || status?.canResume == true {
+                        Button("Resume", systemImage: "play.fill", action: onResume)
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("resumeBar")
+                    }
                 }
             }
         }
@@ -491,8 +505,53 @@ struct ChatPane: View {
         return true
     }
 
+    /// Sends the draft, or first offers to save the secrets it carries.
     private func send(_ mode: RemotePromptRequest.Mode) {
         let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard secretOffer == nil, !isSending else { return }
+        guard !text.isEmpty, !SecretDetector.find(in: text).isEmpty, let client = board.client else {
+            deliver(text, mode)
+            return
+        }
+        isSending = true
+        Task {
+            let names = (try? await client.vaultSecretNames()) ?? []
+            let proposals = SecretDetector.proposals(in: text, existingNames: names)
+            isSending = false
+            if proposals.isEmpty {
+                deliver(text, mode)
+            } else {
+                composerFocused = false
+                withAnimation(.snappy) { secretOffer = PendingSecretOffer(text: text, mode: mode, proposals: proposals) }
+            }
+        }
+    }
+
+    private func sendOfferAsIs() {
+        guard let offer = secretOffer else { return }
+        secretOffer = nil
+        deliver(offer.text, offer.mode)
+    }
+
+    private func saveOfferedSecrets() {
+        guard var offer = secretOffer, !offer.isSaving, let client = board.client else { return }
+        offer.isSaving = true
+        offer.error = nil
+        secretOffer = offer
+        Task {
+            let result = await PhoneVault.save(offer, client: client)
+            if let error = result.error {
+                // What was saved stays referenced; the rest stays offered.
+                secretOffer = PendingSecretOffer(text: result.text, mode: offer.mode, proposals: result.remaining, error: error)
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                return
+            }
+            secretOffer = nil
+            deliver(result.text, offer.mode)
+        }
+    }
+
+    private func deliver(_ text: String, _ mode: RemotePromptRequest.Mode) {
         let images = draft.remoteImages
         guard !text.isEmpty || !images.isEmpty, let client = board.client, !isSending else { return }
         isSending = true
@@ -648,13 +707,39 @@ struct WorkingIndicator: View {
 struct MessageView: View {
     let message: RemoteMessage
     @State private var expanded = false
+    @State private var showsWhole = false
+
+    /// Characters of a message shown before "Show the whole message": a
+    /// pasted log or a dump runs to hundreds of KB, which the phone lays out
+    /// slowly and the user rarely reads in full.
+    static let shownLimit = 20_000
+
+    /// The message as shown: cut at `shownLimit` until the user asks for all of it.
+    private var text: String {
+        guard !showsWhole, message.text.utf16.count > Self.shownLimit else { return message.text }
+        return String(message.text.prefix(Self.shownLimit)) + "\n…"
+    }
+
+    private var isCut: Bool { !showsWhole && message.text.utf16.count > Self.shownLimit }
 
     var body: some View {
+        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
+            content
+            if isCut {
+                Button("Show the whole message (\(message.text.count.formatted()) characters)") { showsWhole = true }
+                    .font(.caption.weight(.medium))
+                    .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+                    .accessibilityIdentifier("showWholeMessage")
+            }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         switch message.role {
         case .user:
             HStack {
                 Spacer(minLength: 48)
-                SelectableText(text: SelectableTextStyle.plain(message.text, color: .white))
+                SelectableText(text: SelectableTextStyle.plain(text, color: .white))
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
@@ -663,7 +748,7 @@ struct MessageView: View {
                     .foregroundStyle(.white)
             }
         case .assistant:
-            MarkdownText(text: message.text)
+            MarkdownText(text: text)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .tool:
             Button {
@@ -672,7 +757,7 @@ struct MessageView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "wrench.and.screwdriver")
                         .font(.caption2)
-                    Text(message.text)
+                    Text(text)
                         .font(.caption.monospaced())
                         .lineLimit(expanded ? nil : 1)
                         .multilineTextAlignment(.leading)
@@ -685,7 +770,7 @@ struct MessageView: View {
             }
             .buttonStyle(.plain)
         case .system:
-            SelectableText(text: SelectableTextStyle.plain(message.text, font: .preferredFont(forTextStyle: .caption1),
+            SelectableText(text: SelectableTextStyle.plain(text, font: .preferredFont(forTextStyle: .caption1),
                                                            color: .secondaryLabel),
                            alignment: .center)
                 .frame(maxWidth: .infinity)
@@ -709,11 +794,20 @@ struct MarkdownText: View {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .code(let code):
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        SelectableText(text: SelectableTextStyle.plain(
-                            code, font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .footnote).pointSize, weight: .regular)
-                        ), wraps: false)
-                        .padding(10)
+                    let styled = SelectableTextStyle.plain(
+                        code, font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .footnote).pointSize, weight: .regular)
+                    )
+                    Group {
+                        if Self.wrapsCode(code) {
+                            SelectableText(text: styled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(10)
+                        } else {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                SelectableText(text: styled, wraps: false)
+                                    .padding(10)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
@@ -726,6 +820,13 @@ struct MarkdownText: View {
                 }
             }
         }
+    }
+
+    /// Code with a line too long to scroll sideways (minified JSON, a
+    /// base64 blob) wraps: unwrapped it would be a text view hundreds of
+    /// thousands of points wide.
+    static func wrapsCode(_ code: String) -> Bool {
+        code.split(separator: "\n", omittingEmptySubsequences: false).contains { $0.utf16.count > 2_000 }
     }
 
     private var blocks: [Block] {

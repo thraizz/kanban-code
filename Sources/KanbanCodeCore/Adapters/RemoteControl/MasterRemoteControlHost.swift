@@ -8,27 +8,30 @@ import Observation
 public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendable {
     private let engine: MasterEngine
     private let store: BoardStore
-    /// Esc to a session, as the stop button does (agtop: its interrupt).
+    /// Esc to a session, as the stop button does (rush: its interrupt).
     private let sendEscape: @Sendable (String) async throws -> Void
     /// Runs tmux commands on the server that holds the session.
     private let runTmux: @Sendable ([[String]], String) async -> Void
-    /// agtop cards queue and send through agtop itself: the agtop of the
+    /// rush cards queue and send through rush itself: the rush of the
     /// machine that hosts the session.
-    private let agtopFor: @Sendable (String) throws -> AgtopCliAdapter
+    private let rushFor: @Sendable (String) throws -> RushCliAdapter
     private let queueWatch = QueueWatchFlag()
+    /// How long a resume request waits for the start to succeed or fail
+    /// before it answers with the card as it is. Below the clients' 30 s.
+    public var resumeOutcomeWait: TimeInterval = 20
 
     @MainActor
     public init(engine: MasterEngine,
-                agtop: AgtopCliAdapter? = nil,
+                rush: RushCliAdapter? = nil,
                 runTmux: (@Sendable ([[String]], String) async -> Void)? = nil,
                 sendEscape: (@Sendable (String) async throws -> Void)? = nil) {
         self.engine = engine
         self.store = engine.store
         let tmux = engine.tmux
-        if let agtop {
-            self.agtopFor = { _ in agtop }
+        if let rush {
+            self.rushFor = { _ in rush }
         } else {
-            self.agtopFor = { session in try tmux.agtop(forSession: session) }
+            self.rushFor = { session in try tmux.rush(forSession: session) }
         }
         self.runTmux = runTmux ?? { commands, session in
             guard let adapter = try? tmux.adapter(for: session) else { return }
@@ -45,13 +48,17 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
                 cards: store.state.cards,
                 projects: store.state.configuredProjects,
                 liveSessions: store.state.tmuxSessions,
-                agtopQueues: store.state.agtopQueues,
+                rushQueues: store.state.rushQueues,
                 machine: store.state.localMachineIdentity,
                 machineNames: store.state.peerMachineNames
             )
         }
-        await watchAgtopQueues()
+        await watchRushQueues()
         return board
+    }
+
+    public func machines() async -> [RemoteMachineEntry] {
+        await MainActor.run { store.state.remoteMachines }
     }
 
     @MainActor
@@ -64,7 +71,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
 
     @MainActor
     private func remoteCard(_ cardId: String) throws -> RemoteCard {
-        RemoteBoardMapper.card(try card(cardId), liveSessions: store.state.tmuxSessions, agtopQueues: store.state.agtopQueues,
+        RemoteBoardMapper.card(try card(cardId), liveSessions: store.state.tmuxSessions, rushQueues: store.state.rushQueues,
                                machine: store.state.localMachineIdentity, machineNames: store.state.peerMachineNames)
     }
 
@@ -101,6 +108,13 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     public func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard {
         var projectPath = await MainActor.run {
             RemoteBoardMapper.resolveProject(request.project, in: store.state.configuredProjects)?.path
+        }
+        if projectPath == nil, let peer = await peerTaskClient(request.machine) {
+            // A project this master does not know, for another master: that
+            // master creates and runs the card.
+            var task = request
+            task.machine = "here"
+            return try await forwarded { try await peer.createTask(task) }
         }
         if projectPath == nil, Self.isRepositoryURL(request.project) {
             // A peer launching here names the repository by its origin.
@@ -171,12 +185,12 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         let (session, busy) = try await MainActor.run { try liveSession(cardId) }
         let imagePaths = try RemotePromptImages.write(images, to: RemotePromptImages.promptDirectory)
         let mode = request.mode ?? .queue
-        if let agtopId = AgtopSessionName.agtopId(fromName: session) {
-            // agtop queues a message sent mid-turn itself, and `now` hands it
-            // to Claude mid-turn; the card's own queue is not used. agtop
+        if let rushId = RushSessionName.rushId(fromName: session) {
+            // rush queues a message sent mid-turn itself, and `now` hands it
+            // to Claude mid-turn; the card's own queue is not used. rush
             // puts each image right after its [Image #N] marker.
-            try await agtopFor(session).send(id: agtopId, text: request.text, imagePaths: imagePaths, now: mode == .now)
-            await readAgtopQueue(session: session, agtopId: agtopId)
+            try await rushFor(session).send(id: rushId, text: request.text, imagePaths: imagePaths, now: mode == .now)
+            await readRushQueue(session: session, rushId: rushId)
             return
         }
         if mode == .now && busy {
@@ -198,8 +212,8 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         if let owner = await ownerClient(cardId) {
             return try await forwarded { try await owner.sendQueuedPromptNow(cardId: cardId, promptId: promptId) }
         }
-        if promptId.hasPrefix("agtop-") {
-            try await agtopQueueAction(cardId: cardId, promptId: promptId, send: true)
+        if RemoteBoardMapper.isRushPromptId(promptId) {
+            try await rushQueueAction(cardId: cardId, promptId: promptId, send: true)
             return
         }
         let (session, busy) = try await MainActor.run { () throws -> (String, Bool) in
@@ -218,8 +232,8 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         if let owner = await ownerClient(cardId) {
             return try await forwarded { try await owner.removeQueuedPrompt(cardId: cardId, promptId: promptId) }
         }
-        if promptId.hasPrefix("agtop-") {
-            try await agtopQueueAction(cardId: cardId, promptId: promptId, send: false)
+        if RemoteBoardMapper.isRushPromptId(promptId) {
+            try await rushQueueAction(cardId: cardId, promptId: promptId, send: false)
             return
         }
         try await MainActor.run {
@@ -232,14 +246,14 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         if let owner = await ownerClient(cardId) {
             return try await forwarded { try await owner.editQueuedPrompt(cardId: cardId, promptId: promptId, text: text) }
         }
-        if promptId.hasPrefix("agtop-") {
-            // agtop has no edit: the old message leaves the queue and the new
+        if RemoteBoardMapper.isRushPromptId(promptId) {
+            // rush has no edit: the old message leaves the queue and the new
             // text joins it (a busy host queues what it is sent).
-            try await agtopQueueAction(cardId: cardId, promptId: promptId, send: false)
+            try await rushQueueAction(cardId: cardId, promptId: promptId, send: false)
             let session = try await MainActor.run { try liveSession(cardId).session }
-            guard let agtopId = AgtopSessionName.agtopId(fromName: session) else { return }
-            try await agtopFor(session).send(id: agtopId, text: text)
-            await readAgtopQueue(session: session, agtopId: agtopId)
+            guard let rushId = RushSessionName.rushId(fromName: session) else { return }
+            try await rushFor(session).send(id: rushId, text: text)
+            await readRushQueue(session: session, rushId: rushId)
             return
         }
         try await MainActor.run {
@@ -281,72 +295,84 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         return prompt
     }
 
-    // MARK: agtop queue
+    // MARK: rush queue
 
-    /// Sends now, or drops, a message queued in the card's agtop host.
-    private func agtopQueueAction(cardId: String, promptId: String, send: Bool) async throws {
+    /// Sends now, or drops, a message queued in the card's rush host.
+    private func rushQueueAction(cardId: String, promptId: String, send: Bool) async throws {
         let (session, queue) = try await MainActor.run { () throws -> (String, [String]) in
             let (session, _) = try liveSession(cardId)
-            return (session, store.state.agtopQueues[session] ?? [])
+            return (session, store.state.rushQueues[session] ?? [])
         }
-        guard let agtopId = AgtopSessionName.agtopId(fromName: session) else {
+        guard let rushId = RushSessionName.rushId(fromName: session) else {
             throw RemoteHostError.notFound("card \(cardId) has no queued prompt \(promptId)")
         }
-        // The queue as the phone saw it may be older than agtop's.
+        // The queue as the phone saw it may be older than rush's.
         var current = queue
-        if RemoteBoardMapper.agtopQueueIndex(of: promptId, in: current) == nil,
-           let info = try? await agtopFor(session).info(id: agtopId) {
+        if RemoteBoardMapper.rushQueueIndex(of: promptId, in: current) == nil,
+           let info = try? await rushFor(session).info(id: rushId) {
             current = info.queue
         }
-        guard let index = RemoteBoardMapper.agtopQueueIndex(of: promptId, in: current) else {
-            await readAgtopQueue(session: session, agtopId: agtopId)
+        guard let index = RemoteBoardMapper.rushQueueIndex(of: promptId, in: current) else {
+            await readRushQueue(session: session, rushId: rushId)
             throw RemoteHostError.notFound("card \(cardId) has no queued prompt \(promptId); it may have been sent already")
         }
         do {
             if send {
-                try await agtopFor(session).sendQueued(id: agtopId, index: index, was: current[index])
+                try await rushFor(session).sendQueued(id: rushId, index: index, was: current[index])
             } else {
-                try await agtopFor(session).removeQueued(id: agtopId, index: index, was: current[index])
+                try await rushFor(session).removeQueued(id: rushId, index: index, was: current[index])
             }
-        } catch let error as AgtopCommandFailed where error.message.contains("already been sent") {
-            await readAgtopQueue(session: session, agtopId: agtopId)
+        } catch let error as RushCommandFailed where error.message.contains("already been sent") {
+            await readRushQueue(session: session, rushId: rushId)
             throw RemoteHostError.notFound("card \(cardId) has no queued prompt \(promptId); it was sent already")
         }
-        await readAgtopQueue(session: session, agtopId: agtopId)
+        await readRushQueue(session: session, rushId: rushId)
     }
 
-    /// Reads one agtop host's queue into the store, then keeps watching
+    /// Reads one rush host's queue into the store, then keeps watching
     /// while any host has something queued.
-    private func readAgtopQueue(session: String, agtopId: String) async {
-        guard let info = try? await agtopFor(session).info(id: agtopId) else { return }
-        await MainActor.run { store.dispatch(.agtopQueueRead(sessionName: session, queue: info.queue)) }
-        await watchAgtopQueues()
+    private func readRushQueue(session: String, rushId: String) async {
+        guard let info = try? await rushFor(session).info(id: rushId) else { return }
+        await MainActor.run { store.dispatch(.rushQueueRead(sessionName: session, queue: info.queue)) }
+        await watchRushQueues()
     }
 
-    /// While an agtop host has messages queued, reads its queue every two
-    /// seconds, so they leave the phone when agtop sends them. The session
+    /// While a rush host has messages queued, reads its queue every two
+    /// seconds, so they leave the phone when rush sends them. The session
     /// scan also reads them, but only as often as the board reconciles.
-    private func watchAgtopQueues() async {
-        let queued = await MainActor.run { !store.state.agtopQueues.isEmpty }
+    private func watchRushQueues() async {
+        let queued = await MainActor.run { !store.state.rushQueues.isEmpty }
         guard queued, queueWatch.claim() else { return }
         Task { [weak self] in
             defer { self?.queueWatch.release() }
             while let self, !Task.isCancelled {
-                let sessions = await MainActor.run { Array(self.store.state.agtopQueues.keys) }
+                let sessions = await MainActor.run { Array(self.store.state.rushQueues.keys) }
                 if sessions.isEmpty { return }
                 try? await Task.sleep(for: .seconds(2))
                 for session in sessions {
-                    guard let id = AgtopSessionName.agtopId(fromName: session) else { continue }
-                    let queue = (try? await self.agtopFor(session).info(id: id))?.queue ?? []
-                    await MainActor.run { self.store.dispatch(.agtopQueueRead(sessionName: session, queue: queue)) }
+                    guard let id = RushSessionName.rushId(fromName: session) else { continue }
+                    let queue = (try? await self.rushFor(session).info(id: id))?.queue ?? []
+                    await MainActor.run { self.store.dispatch(.rushQueueRead(sessionName: session, queue: queue)) }
                 }
             }
         }
     }
 
     public func scrollTerminal(sessionName: String, lines: Int) async {
-        guard !AgtopSessionName.isAgtop(sessionName) else { return }
+        guard !RushSessionName.isRush(sessionName) else { return }
         await runTmux(RemoteTerminalScroll.tmuxCommands(session: sessionName, lines: lines), sessionName)
+    }
+
+    public func attention() async -> [AttentionRequest] {
+        await MainActor.run { store.state.openAttentionRequests }
+    }
+
+    public func resolveAttention(id: String, resolution: String, by: String) async throws {
+        try await engine.resolveAttention(id: id, resolution: resolution, by: by)
+    }
+
+    public func reportPresence(_ presence: MacPresence) async {
+        await engine.attentionCenter?.reportPresence(presence)
     }
 
     public func interrupt(cardId: String) async throws {
@@ -367,10 +393,31 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         if let owner = await ownerClient(cardId) {
             return try await forwarded { try await owner.resume(cardId: cardId) }
         }
-        let current = try await MainActor.run { try remoteCard(cardId) }
-        if current.isLive { return current }
+        let (current, running) = try await MainActor.run { () throws -> (RemoteCard, Bool) in
+            if let moving = engine.stillMovingHere(cardId) { throw RemoteHostError.conflict(moving) }
+            // A session this master just started is not in the last tmux
+            // scan yet: a second resume would start it over.
+            let status = try card(cardId).sessionStatus
+            let running: Bool = switch status {
+            case .live, .starting: true
+            default: false
+            }
+            return (try remoteCard(cardId), running)
+        }
+        if current.isLive || running { return current }
         await MainActor.run { engine.resumeRemoteCard(cardId) }
-        try? await Task.sleep(for: .milliseconds(200))
+        // The caller may be another master or a phone that shows nothing of
+        // this board: a start that fails is its answer, not a line in a log
+        // here. A start still running after the wait answers with the card.
+        let deadline = Date().addingTimeInterval(resumeOutcomeWait)
+        repeat {
+            try? await Task.sleep(for: .milliseconds(200))
+            let (failure, launching) = await MainActor.run {
+                (store.state.startFailure(cardId), store.state.links[cardId]?.isLaunching == true)
+            }
+            if let failure { throw RemoteHostError.conflict(failure) }
+            if !launching { break }
+        } while Date() < deadline
         return try await MainActor.run { try remoteCard(cardId) }
     }
 
@@ -414,18 +461,58 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
 
     public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
         try await MainActor.run { () throws -> RemoteCard in
-            _ = try card(cardId)
+            if update.pinned != nil, try card(cardId).link.parentCardId != nil {
+                throw RemoteHostError.conflict("card \(cardId) is a subagent; pin its parent")
+            }
             if let name = update.name?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty {
                 store.dispatch(.renameCard(cardId: cardId, name: name))
             }
             if let column = update.column, let target = KanbanCodeColumn(rawValue: column.rawValue) {
                 store.dispatch(.moveCard(cardId: cardId, to: target))
             }
-            if update.archived == true {
-                store.dispatch(.archiveCard(cardId: cardId))
+            switch update.archived {
+            case true?: store.dispatch(.archiveCard(cardId: cardId))
+            case false?: store.dispatch(.unarchiveCard(cardId: cardId))
+            case nil: break
+            }
+            if let pinned = update.pinned {
+                store.dispatch(.setCardPinned(cardId: cardId, isPinned: pinned))
             }
             return try remoteCard(cardId)
         }
+    }
+
+    /// Deletes an archived card the way the Mac's Delete Card does: with its
+    /// subagents, its sessions and its conversation file. A card on the
+    /// board is archived first, as on the Mac.
+    public func deleteCard(cardId: String) async throws {
+        try await MainActor.run { () throws -> Void in
+            let link = try card(cardId).link
+            guard link.manuallyArchived else {
+                throw RemoteHostError.conflict("card \(cardId) is on the board; archive it before deleting it")
+            }
+            guard link.source != .githubIssue else {
+                throw RemoteHostError.conflict("card \(cardId) is a GitHub issue; it stays archived")
+            }
+            store.dispatch(.deleteCard(cardId: cardId))
+        }
+    }
+
+    public func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval {
+        _ = try await MainActor.run { try card(cardId) }
+        do {
+            return try await engine.removeCardWorktree(cardId: cardId)
+        } catch let error as WorktreeRemovalError {
+            throw RemoteHostError.conflict(error.message)
+        }
+    }
+
+    public func discoverBranches(cardId: String) async throws {
+        if let owner = await ownerClient(cardId) {
+            return try await forwarded { try await owner.discoverBranches(cardId: cardId) }
+        }
+        _ = try await MainActor.run { try card(cardId) }
+        await engine.discoverBranches(cardId: cardId)
     }
 
     public func moveCard(cardId: String, to target: String) async throws -> RemoteCard {
@@ -446,6 +533,14 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     /// the card go there.
     private func ownerClient(_ cardId: String) async -> RemoteClient? {
         await engine.ownerClient(forCard: cardId)
+    }
+
+    /// A client of the peer master `machine` names, when it names one.
+    private func peerTaskClient(_ machine: String?) async -> RemoteClient? {
+        guard let machine = machine?.trimmingCharacters(in: .whitespacesAndNewlines), !machine.isEmpty else { return nil }
+        let peer = await MainActor.run { engine.isLocalMachine(machine) ? nil : engine.peerMachine(named: machine) }
+        guard let peer else { return nil }
+        return await engine.peerClient(machineId: peer.id)
     }
 
     /// Runs a call on the owner, turning its answer into this server's.
@@ -488,11 +583,11 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         }
     }
 
-    /// The command a viewer runs for a session of this master: agtop's own
-    /// UI for agtop, a tmux attach otherwise.
+    /// The command a viewer runs for a session of this master: rush's own
+    /// UI for rush, a tmux attach otherwise.
     public static func localCommand(forSession sessionName: String) -> [String] {
-        if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
-            return AgtopCliAdapter.openCommand(id: agtopId)
+        if let rushId = RushSessionName.rushId(fromName: sessionName) {
+            return RushCliAdapter.openCommand(id: rushId)
         }
         return [ShellCommand.findExecutable("tmux") ?? "tmux", "attach-session", "-t", sessionName]
     }
@@ -516,9 +611,10 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         withObservationTracking {
             _ = store.state.cards
             _ = store.state.tmuxSessions
-            _ = store.state.agtopQueues
+            _ = store.state.rushQueues
             _ = store.state.configuredProjects
             _ = store.state.peerStatuses
+            _ = store.state.attentionRequests
         } onChange: {
             continuation.yield()
             Task { @MainActor in observe(store: store, continuation: continuation, alive: alive) }
@@ -534,7 +630,7 @@ private final class BoardChangeFlag: @unchecked Sendable {
     func stop() { lock.withLock { alive = false } }
 }
 
-/// One agtop queue watcher at a time.
+/// One rush queue watcher at a time.
 private final class QueueWatchFlag: @unchecked Sendable {
     private let lock = NSLock()
     private var running = false

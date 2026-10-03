@@ -25,12 +25,15 @@ agent: kanban remote ... ──┘   :7780, tailnet     └─ ~/.claude transcr
 
 ## Endpoints
 
-JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-26T10:00:00.000Z`). A card leaves out `isLive`, `isBusy` and `archived` when false, `queuedPromptCount` when 0, `queuedPrompts`, `terminals` and `prs` when empty, and every null field; read a missing key as that default. Responses over 8 KB are gzipped (`Content-Encoding: gzip`) when the request sends `Accept-Encoding: gzip`.
+JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-26T10:00:00.000Z`). A card leaves out `isLive`, `isBusy`, `archived` and `pinned` when false, `queuedPromptCount` when 0, `queuedPrompts`, `terminals` and `prs` when empty, and every null field; read a missing key as that default. Responses over 8 KB are gzipped (`Content-Encoding: gzip`) when the request sends `Accept-Encoding: gzip`.
 
 `GET /v1/health` lists `features`, the additions to API version 1 this server has. A client checks for one before using it; a server without the list has none of them:
 - `images`: `images` on prompts and tasks.
 - `queue`: `queuedPrompts` on cards and the `/v1/cards/{id}/queue/{promptId}` routes.
 - `terminalScroll`: the `scroll` terminal control frame.
+- `machines`: `GET /v1/machines`, and `machine` on tasks.
+- `cardActions`: `pinned` on cards, `pinned` and `archived: false` on `PATCH /v1/cards/{id}`, and `DELETE /v1/cards/{id}`.
+- `worktrees`: `POST /v1/cards/{id}/worktree/remove` and `POST /v1/cards/{id}/discover`.
 
 | Method and path | Scope | Returns |
 |---|---|---|
@@ -39,6 +42,7 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `GET /v1/board?all=1` | any | `RemoteBoard` |
 | `GET /v1/cards/{id}` | any | `RemoteCard` |
 | `GET /v1/cards/{id}/transcript?limit=50&before=<cursor>` | any | `RemoteTranscript`, oldest first |
+| `GET /v1/machines` | any | `RemoteMachineList`: this master (`kind` `this`), the other masters and the ssh machines |
 | `POST /v1/tasks` | any | `RemoteTaskRequest` → `RemoteCard`, 201 |
 | `POST /v1/cards/{id}/prompt` | any | `RemotePromptRequest` → 204 |
 | `POST /v1/cards/{id}/queue/{promptId}` | any | 204 |
@@ -46,8 +50,11 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `DELETE /v1/cards/{id}/queue/{promptId}` | any | 204 |
 | `POST /v1/cards/{id}/interrupt` | any | 204 |
 | `POST /v1/cards/{id}/resume` | any | `RemoteCard` |
-| `PATCH /v1/cards/{id}` | any | `RemoteCardUpdate` (`name`, `column`, `archived`) → `RemoteCard` |
+| `PATCH /v1/cards/{id}` | any | `RemoteCardUpdate` (`name`, `column`, `archived`, `pinned`) → `RemoteCard` |
+| `DELETE /v1/cards/{id}` | any | 204; 409 for a card that is not archived |
 | `POST /v1/cards/{id}/move` | any | `RemoteMoveRequest` → `RemoteCard` |
+| `POST /v1/cards/{id}/worktree/remove` | full | `RemoteWorktreeRemoval` (`machine`, `cardDeleted`) |
+| `POST /v1/cards/{id}/discover` | any | 204 |
 | `GET /v1/cards/{id}/handover` | any | `RemoteHandoverInfo` |
 | `GET /v1/cards/{id}/transcript/raw?offset=0&limit=4194304` | any | transcript bytes, `X-Transcript-Size` header |
 | `GET /v1/links?since=&epoch=`, `POST /v1/links/changed`, `GET /v1/peers` | any | peer sync |
@@ -62,14 +69,16 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 
 Behaviour:
 - `board` and `events` return the working set: no archived cards, no All Sessions cards, and only the 30 most recent Done cards (by `lastActivity`, else `updatedAt`). `?all=1` returns every card.
-- `POST /v1/tasks` resolves `project` as a project path first, then as a project name (case-insensitive). An unknown project is a 400 that lists the known names. The card launches with the app's defaults for that project: runtime (`tmux`, or `agtop` for rush), skip permissions, and the command template. `machine` picks where it runs: `mac`, or the name of an ssh machine, a boxd machine or a peer master. An ssh machine that runs a paired master is that master: the card is handed to it. Without it the card runs where the New Task dialog would start it for that project.
+- `POST /v1/tasks` resolves `project` as a project path first, then as a project name (case-insensitive). An unknown project is a 400 that lists the known names. The card launches with the app's defaults for that project: runtime (`tmux`, or `agtop` for rush, its name before the rename, which older clients expect), skip permissions, and the command template. `machine` picks where it runs: `mac`, `local` or `here` for the master that answers, its own name from `GET /v1/machines`, or the name of an ssh machine, a boxd machine or a peer master. An ssh machine that runs a paired master is that master: the card is handed to it. Without it the card runs where the New Task dialog would start it for that project.
 - `prompt` with `mode: queue` delivers the text when the current turn ends, or at once when the session is idle. `mode: now` interrupts the turn first. A card with no live session returns 409 until it is resumed.
 - `prompt` and `tasks` take `images`: up to 6 `RemoteImage` objects, `{"mediaType": "image/png", "data": "<base64>"}`, each at most 5 MiB decoded, PNG, JPEG, GIF or WebP (the server reads the format from the bytes). `text` may be empty when there are images. The Mac writes them to files and sends them the way its own chat does: pasted into Claude in tmux, `--image` for rush. A bad image fails the whole request with 400. An older server ignores `images` and sends the text alone, so check the `images` feature first.
 - A prompt's `text` places each image with an `[Image #N]` marker, N counting from 1 in `images` order, as in Claude Code. The server renumbers the markers in text order, reorders `images` to match and drops an image no marker names. Text with no marker keeps every image, after the text. In the transcript, a user message shows its images as those markers (images sent by file path too); a message whose images have no markers ends with `[image]` or `[N images]`.
 - A card's `queuedPrompts` lists the prompts waiting for the turn to end, oldest first, each with `id`, `text` and `imageCount`. `POST /v1/cards/{id}/queue/{promptId}` sends one now, interrupting the turn when one runs; `DELETE` on the same path drops it. Both return 404 when the prompt is no longer queued (sent or removed).
-- rush cards use rush's own queue. `mode: queue` hands the prompt to `rush session send` at once and rush holds it while Claude works; `mode: now` is `rush session send --now`, which gives it to Claude mid-turn without stopping the turn. Images always go at once. The card's `queuedPrompts` come from rush's queue (ids `agtop-<n>-<hash>`), read on every session scan and every 2 seconds while something is queued, and `/queue/{promptId}` runs `rush queue send|remove <id> <n> --was <text>` (`agtop session queue <id> send|remove` where only agtop is installed).
+- rush cards use rush's own queue. `mode: queue` hands the prompt to `rush session send` at once and rush holds it while Claude works; `mode: now` is `rush session send --now`, which gives it to Claude mid-turn without stopping the turn. Images always go at once. The card's `queuedPrompts` come from rush's queue (ids `agtop-<n>-<hash>`; `rush-<n>-<hash>` is accepted too), read on every session scan and every 2 seconds while something is queued, and `/queue/{promptId}` runs `rush queue send|remove <id> <n> --was <text>` (`agtop session queue <id> send|remove` where only agtop is installed).
 - `transcript` pages back with `before=<olderCursor>` of the previous page; `olderCursor` is null at the start of the conversation.
 - `resume` on a card that never ran launches it.
+- `PATCH /v1/cards/{id}` does what the Mac's card menu does. `archived: true` archives the card and ends its sessions; `archived: false` puts an archived card back in the backlog, from where activity moves it. `pinned: true` pins it on top of the board and brings an archived card back; a subagent card cannot be pinned (409). `DELETE` removes an archived card with its subagents, sessions and conversation file, as Delete Card on the Mac; a card still on the board, or an archived GitHub issue, is refused with 409.
+- `worktree/remove` runs where the worktree is: on this master's disk, over ssh on the ssh machine that runs the card, or on the master that owns the card (the request is forwarded there). Then the card loses its worktree, or is deleted when it has no session. A card on a disposable boxd machine is left alone: the worktree goes with the machine. A failure is a 409 that names the machine: `Worktree cleanup on <machine> failed: <git's answer>`. `discover` re-scans the card for pushed branches and pull requests on the owning master.
 - `/v1/events` (also `?all=1`) sends a `board` event with the whole board on connect, then `cards` events at most once per second: `upserted` holds the cards whose value changed or that joined the set, `removed` the ids that left it (archived, moved out of the recent Done, deleted), and `projects` the project list when it changed. A client applies them by id (`RemoteEvent.apply(to:)` in RemoteKit). A text frame `{"type":"resync"}` from the client gets a whole `board` again; so does every new connection. A `ping` event arrives every 20 seconds.
 - `terminal` without `session` opens the card's primary terminal. A terminal that is not running returns 409.
 
@@ -83,6 +92,7 @@ The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: 
 - One machine is one choice. An ssh machine of Settings > Remote whose host is a paired peer (the ssh target host is the peer URL host, or the names match) is shown once, in the launch dialogs, Continue on, the API and `kancode://move`, and running a card there hands it to that master, so it keeps going while this Mac is off. A card that already ran there over ssh moves to that master on its next resume: the ssh session ends first, and the master continues in the same folder with the transcript it already has (`machineCwd` in `handover`), uncommitted work included. Until then it stays owned by the Mac, labelled with the Mac as its master.
 - The Mac keeps a copy of each foreign card's transcript under `~/.kanban-code/peers/<machine>/transcripts/` for its chat view. When a peer is offline its cards stay on the board, marked offline.
 - Shared card fields (name, column, order, pin, archive, prompt, pull requests...) merge per field: each carries its own stamp in `fieldRevs`, and the newer stamp wins, so edits of different fields on two masters both stay.
+- A card archived on one master has its sessions ended by the master that owns it, when that master reads the archive. Removing its worktree (the cleanup offered after an archive) runs on the owner too, through `worktree/remove`.
 - Liveness, turn state and the queue of a foreign card (rush's queue included) come from its owner's board, read every few seconds. Send now, edit (`PATCH /queue/{promptId}`), remove and new prompts go to the owner.
 - A master that runs all the time (`kanban-code-server`, `alwaysOn` in its identity) polls GitHub for the pull requests of every card while it is online, and writes them on cards other masters own; the others do not poll. With no such master online, the master with the lowest machine id polls. Masters send the repository (`host/owner/name`) of their project paths with the links, so the poller needs no checkout of them.
 - The always-on master is the channels home: channels and DMs live in its `~/.kanban-code/channels/`. Another master mirrors that directory (appends by offset, the rest whole, deletions follow; `read-state.json` and `drafts.json` stay local), writes `channels-home.json` for its CLI, and sends every channel write there: its `kanban channel`/`kanban dm` commands and its UI go through `POST /v1/cli`. The first time a Mac pairs with a home that has no channels, it copies its own there. Channel messages for a card another master runs are queued on that master (through the command inbox from the CLI).
@@ -105,7 +115,7 @@ Settings > Sync keeps the agent setup the same on every master. The list lives i
 The command runs in a pseudo-terminal on the Mac.
 - Binary frames carry bytes both ways: the terminal's output to the client, keystrokes to the terminal.
 - A text frame `{"type":"resize","cols":N,"rows":M}` resizes the pseudo-terminal.
-- A text frame `{"type":"scroll","lines":N}` scrolls a tmux terminal's history, up when N is positive, as the Mac's own terminal does with the wheel: tmux copy-mode, left again on reaching the bottom. agtop ignores it; it turns on mouse reporting, so a client scrolls it with wheel events (`CSI < 64;col;row M` up, `65` down) in the byte stream. An older server types unknown text frames into the terminal, so send `scroll` only when health lists `terminalScroll`.
+- A text frame `{"type":"scroll","lines":N}` scrolls a tmux terminal's history, up when N is positive, as the Mac's own terminal does with the wheel: tmux copy-mode, left again on reaching the bottom. rush ignores it; it turns on mouse reporting, so a client scrolls it with wheel events (`CSI < 64;col;row M` up, `65` down) in the byte stream. An older server types unknown text frames into the terminal, so send `scroll` only when health lists `terminalScroll`.
 - Closing the socket ends that one viewer process. The session itself keeps running.
 
 ## Clients

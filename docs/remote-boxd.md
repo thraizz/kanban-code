@@ -191,11 +191,11 @@ A session on a machine renders like a local one. The assistant gets `COLORTERM=t
 
 ### rush
 
-[rush](https://github.com/0xdeafcafe/rush) was named agtop before a rename. The app runs `rush` and falls back to `agtop` on a machine that has only the older build; the setting value and the `agtop-<id>` session names keep the old name.
+[rush](https://github.com/0xdeafcafe/rush) was named agtop before a rename. The app runs `rush` and falls back to `agtop` on a machine that has only the older build. New hosts get the session name `rush-<id>`, also passed as `--meta kanban_session=rush-<id>`; a host without that meta was started before the rename and keeps `agtop-<id>`. The settings value and the remote board runtime stay `agtop` on the wire, since older builds read only that. On the Mac and on a master box, `rush session start` gets `--binary <absolute path of claude>`, so a host rush restarts later from a process with a bare PATH still finds claude; a card on an ssh machine leaves the lookup to that machine.
 
 When Settings > Assistants runs Claude on rush and the machine has `rush` (or `agtop`) on its PATH (checked when the bridge connects), a card launched or resumed there runs on the machine's rush instead of tmux:
 
-- `rush session start --agent claude|send|info|interrupt|stop` and `rush queue send|remove` run on the machine through the bridge. A prompt goes on stdin (`--prompt-file -`); images are copied to `~/.kanban-code/tmp/agtop/` there first. With agtop the queue commands are `agtop session queue <id> send|remove`, and `start` takes no `--agent`.
+- `rush session start --agent claude|send|info|interrupt|stop` and `rush queue send|remove` run on the machine through the bridge. A prompt goes on stdin (`--prompt-file -`); images are copied to `~/.kanban-code/tmp/rush/` there first. With agtop the queue commands are `agtop session queue <id> send|remove`, and `start` takes no `--agent`.
 - The terminal runs `ssh -tt <target> -- rush open <id>` (`agtop open <id> --solo` with agtop), opened again when it is quit or the connection drops.
 - The session list of the machine includes the live hosts this Mac started there (the names it assigned), with their queues. Hosts another master runs on the same machine are left out.
 - A resume first ends the card's tmux sessions, so the conversation never runs twice. A card whose tmux session is still alive on the machine keeps it: it attaches as before, and moves to rush on the next resume after that session ends.
@@ -209,8 +209,8 @@ The app logs a warning when the commit in the machine's `rush --version` differs
 
 A card moves between the Mac and a machine through a resume on the other side, from the resume dialog ("Run on"), from `kanbancode://move/<cardId>?to=mac|<machine>`, or, for a new task, from the `machine` field of `POST /v1/tasks`.
 
-- To a machine: the session on the Mac (tmux or agtop) ends first, so the conversation never runs in two places, then the transcript is pushed as described above and `claude --resume` starts there.
-- To the Mac: on an ssh machine every tmux session of the card is killed and the app waits up to 10 seconds for the last transcript lines to reach the mirror; a boxd machine is stopped as before. The resume then runs on the Mac from the mirror, in the card's runtime (agtop or tmux), and a worktree that only existed on the machine is created from origin.
+- To a machine: the session on the Mac (tmux or rush) ends first, so the conversation never runs in two places, then the transcript is pushed as described above and `claude --resume` starts there.
+- To the Mac: on an ssh machine every tmux session of the card is killed and the app waits up to 10 seconds for the last transcript lines to reach the mirror; a boxd machine is stopped as before. The resume then runs on the Mac from the mirror, in the card's runtime (rush or tmux), and a worktree that only existed on the machine is created from origin.
 
 The launch dialogs list, under "Run on", this Mac and then the machines of the mode: in the SSH machines mode each ssh machine with whether it answers over ssh, in the boxd mode the boxd machines. A card already on a machine the mode does not list still gets that machine offered. The pick of the last launch of a project is offered again while it exists.
 

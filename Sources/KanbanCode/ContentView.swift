@@ -240,22 +240,15 @@ struct ContentView: View {
         return settings.enabledAssistants
     }
 
-    static func loadPushoverConfig() -> (client: PushoverClient?, mode: PushoverMode) {
-        let settingsPath = (NSHomeDirectory() as NSString)
-            .appendingPathComponent(".kanban-code/settings.json")
-        guard let data = try? Data(contentsOf: URL(fileURLWithPath: settingsPath)),
-              let settings = try? JSONDecoder().decode(Settings.self, from: data) else {
-            return (nil, .disabled)
+    /// Tells the attention policy which tab of the open card is on screen.
+    private func reportPresenceTab() {
+        let tab: String
+        switch detailTab {
+        case .terminal: tab = "terminal"
+        case .history: tab = "chat"
+        default: tab = detailTab.rawValue
         }
-
-        let mode = settings.notifications.pushoverMode
-        guard mode != .disabled,
-              let token = settings.notifications.pushoverToken,
-              let user = settings.notifications.pushoverUserKey,
-              !token.isEmpty, !user.isEmpty else {
-            return (nil, .disabled)
-        }
-        return (PushoverClient(token: token, userKey: user), mode)
+        MacPresenceMonitor.shared.setTab(tab)
     }
 
     private func updateRegisteredAssistants(_ enabled: [CodingAssistant]) {
@@ -297,39 +290,16 @@ struct ContentView: View {
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
             onForkCard: { cardId, _ in presentForkDialog(cardId: cardId) },
-            onCopyResumeCmd: { cardId in
-                guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
-                var cmd = ""
-                if let projectPath = card.link.projectPath {
-                    cmd += "cd \(projectPath) && "
-                }
-                if let sessionId = card.link.sessionLink?.sessionId {
-                    cmd += card.link.effectiveAssistant.resumeCommand(
-                        sessionId: sessionId,
-                        skipPermissions: false,
-                        modelOverride: card.link.modelOverride
-                    )
-                }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(cmd, forType: .string)
-            },
+            onCopyResumeCmd: { cardId in copyResumeCommand(cardId: cardId) },
             onCopyConversationMarkdown: { cardId in copyConversationMarkdown(cardId: cardId) },
             onShowSubagents: { cardId in showSubagents(for: cardId) },
             onTrimSession: { cardId in presentDialog(.confirmTrimSession(cardId: cardId)) },
-            onDiscoverCard: { cardId in
-                Task {
-                    store.dispatch(.setBusy(cardId: cardId, busy: true))
-                    if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: cardId) {
-                        store.dispatch(.createManualTask(updatedLink))
-                    }
-                    await store.reconcile()
-                    store.dispatch(.setBusy(cardId: cardId, busy: false))
-                }
-            },
+            onDiscoverCard: { cardId in discoverBranches(cardId: cardId) },
             onCleanupWorktree: { cardId in Task { await cleanupWorktree(cardId: cardId) } },
             canCleanupWorktree: { cardId in
                 guard let link = store.state.links[cardId] else { return false }
                 return canCleanupWorktree(
+                    cardId: cardId,
                     branch: link.worktreeLink?.branch,
                     manuallyArchived: link.manuallyArchived,
                     activeBranchCounts: cleanupBranchCounts
@@ -392,22 +362,7 @@ struct ContentView: View {
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
             onForkCard: { cardId, _ in presentForkDialog(cardId: cardId) },
-            onCopyResumeCmd: { cardId in
-                guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
-                var cmd = ""
-                if let projectPath = card.link.projectPath {
-                    cmd += "cd \(projectPath) && "
-                }
-                if let sessionId = card.link.sessionLink?.sessionId {
-                    cmd += card.link.effectiveAssistant.resumeCommand(
-                        sessionId: sessionId,
-                        skipPermissions: false,
-                        modelOverride: card.link.modelOverride
-                    )
-                }
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(cmd, forType: .string)
-            },
+            onCopyResumeCmd: { cardId in copyResumeCommand(cardId: cardId) },
             onCopyConversationMarkdown: { cardId in copyConversationMarkdown(cardId: cardId) },
             onShowSubagents: { cardId in showSubagents(for: cardId) },
             onTrimSession: { cardId in presentDialog(.confirmTrimSession(cardId: cardId)) },
@@ -417,20 +372,12 @@ struct ContentView: View {
             onSetSelfCompactContextThreshold: { cardId, threshold in
                 store.dispatch(.setSelfCompactContextThreshold(cardId: cardId, thresholdTokens: threshold))
             },
-            onDiscoverCard: { cardId in
-                Task {
-                    store.dispatch(.setBusy(cardId: cardId, busy: true))
-                    if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: cardId) {
-                        store.dispatch(.createManualTask(updatedLink))
-                    }
-                    await store.reconcile()
-                    store.dispatch(.setBusy(cardId: cardId, busy: false))
-                }
-            },
+            onDiscoverCard: { cardId in discoverBranches(cardId: cardId) },
             onCleanupWorktree: { cardId in Task { await cleanupWorktree(cardId: cardId) } },
             canCleanupWorktree: { cardId in
                 guard let link = store.state.links[cardId] else { return false }
                 return canCleanupWorktree(
+                    cardId: cardId,
                     branch: link.worktreeLink?.branch,
                     manuallyArchived: link.manuallyArchived,
                     activeBranchCounts: cleanupBranchCounts
@@ -508,24 +455,18 @@ struct ContentView: View {
             }
     }
 
-    /// The state of the machine of a card, for the resume bar of its detail.
-    private func machineState(of card: KanbanCodeCard) -> RemoteMachineState? {
-        card.link.remote.flatMap { store.state.remoteMachineStates[$0.machineName] }
-    }
-
-    /// Cmd+Enter on a card: the machine when a live session waits on a
-    /// paused one, the assistant otherwise.
+    /// Cmd+Enter on a card: what its status bar offers, the machine when a
+    /// live session waits on a paused one, the assistant otherwise.
     func resumeCardOrMachine(cardId: String) {
-        if let card = store.state.cards.first(where: { $0.id == cardId }),
-           let remote = card.link.remote,
-           RemoteMachineOverlay.state(
-               remote: remote, machineState: machineState(of: card), hasLiveSession: card.link.tmuxLink != nil,
-               isRemote: card.link.isRemote
-           ).canResume {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
+        switch card.sessionStatus {
+        case .machine(let state) where state.canResume:
             resumeMachine(for: cardId)
+        case .ended, .failed:
+            resumeCard(cardId: cardId)
+        default:
             return
         }
-        resumeCard(cardId: cardId)
     }
 
     /// "Resume machine" on a card. The machine comes back first. A paused
@@ -574,7 +515,6 @@ struct ContentView: View {
                     startCard(cardId: card.id)
                 }
             },
-            remoteMachineState: machineState(of: card),
             onResumeMachine: { resumeMachine(for: card.id) },
             onRename: { name in
                 store.dispatch(.renameCard(cardId: card.id, name: name))
@@ -659,16 +599,7 @@ struct ContentView: View {
             onUpdateBrowserTab: { tabId, url, title in
                 store.dispatch(.updateBrowserTab(cardId: card.id, tabId: tabId, url: url, title: title))
             },
-            onDiscover: {
-                Task {
-                    store.dispatch(.setBusy(cardId: card.id, busy: true))
-                    if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: card.id) {
-                        store.dispatch(.createManualTask(updatedLink))
-                    }
-                    await store.reconcile()
-                    store.dispatch(.setBusy(cardId: card.id, busy: false))
-                }
-            },
+            onDiscover: { discoverBranches(cardId: card.id) },
             onUpdatePrompt: { body, imagePaths in
                 store.dispatch(.updatePrompt(cardId: card.id, body: body, imagePaths: imagePaths))
             },
@@ -691,8 +622,7 @@ struct ContentView: View {
                 get: { isExpandedDetail },
                 set: { isExpandedDetail = $0 }
             ),
-            isDroppingImage: $isDroppingImage,
-            launchStatus: store.state.launchProgress[card.id]
+            isDroppingImage: $isDroppingImage
         )
     }
 
@@ -889,11 +819,11 @@ struct ContentView: View {
                 if let card = store.state.selectedCard,
                    let sessionName = card.link.tmuxLink?.sessionName {
                     ImageDropZone(isTargeted: $isDroppingImage) { imageData in
-                        if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
+                        if let rushId = RushSessionName.rushId(fromName: sessionName) {
                             var image = ImageAttachment(data: imageData)
                             Task {
                                 guard let path = try? image.saveToTemp() else { return }
-                                try? await self.tmuxAdapter.agtop(forSession: sessionName).send(id: agtopId, text: "", imagePaths: [path])
+                                try? await self.tmuxAdapter.rush(forSession: sessionName).send(id: rushId, text: "", imagePaths: [path])
                             }
                             return
                         }
@@ -984,7 +914,10 @@ struct ContentView: View {
                     onLaunch: { editedPrompt, createWorktree, worktreeBranch, runRemotely, skipPermissions, commandOverride, images, selectedServiceId in
                         let machineChoice = pendingMachineChoice
                         pendingMachineChoice = nil
-                        if config.isResume {
+                        if config.isResume, let target = engine.movePick(
+                            forForeignCard: config.cardId, runRemotely: runRemotely, machineChoice: machineChoice) {
+                            engine.moveCardReporting(config.cardId, to: target)
+                        } else if config.isResume {
                             executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, machineChoice: machineChoice)
                         } else {
                             let wtName: String? = createWorktree ? (worktreeBranch ?? config.worktreeName ?? "") : nil
@@ -1004,9 +937,7 @@ struct ContentView: View {
                     settingsStore: settingsStore,
                     onComplete: {
                         showOnboarding = false
-                        let (pushover, mode) = Self.loadPushoverConfig()
-                        let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient(), pushoverMode: mode)
-                        orchestrator.updateNotifier(newNotifier)
+                        NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
                     }
                 )
             }
@@ -1022,6 +953,7 @@ struct ContentView: View {
                     )
                 }
             }
+            .modifier(AttentionDetailPresenter(store: store))
             .sheet(isPresented: $showProcessManager) {
                 ProcessManagerView(
                     store: store,
@@ -1110,7 +1042,7 @@ struct ContentView: View {
     /// Archiving a card with a boxd machine destroys the machine, so the
     /// dialog says so.
     private func presentArchiveDialog(cardId: String) {
-        if store.state.links[cardId]?.remote?.mode == .boxd {
+        if store.state.runsOnDisposableMachine(cardId) {
             presentDialog(.confirmArchiveWithMachine(cardId: cardId))
         } else {
             presentDialog(.confirmArchive(cardId: cardId))
@@ -1272,7 +1204,12 @@ struct ContentView: View {
                 Text("This creates a duplicate session you can resume independently.")
             }
         case .confirmCheckpoint: Text("Everything after this point will be removed. A .bkp backup will be created.")
-        case .confirmWorktreeCleanup(_, let status): Text(worktreeCleanupMessage(status))
+        case .confirmWorktreeCleanup(let cardId, let status):
+            if let machine = worktreeMachineName(cardId: cardId) {
+                Text("This card has a worktree on \(machine). Do you want to remove it there?")
+            } else {
+                Text(worktreeCleanupMessage(status))
+            }
         case .confirmMoveToProject(_, _, let name): Text("Move this card to \(name)?")
         case .confirmMoveToFolder(_, let folderPath, let parentProjectPath, let displayName):
             let relative = folderPath.hasPrefix(parentProjectPath + "/")
@@ -1315,7 +1252,7 @@ struct ContentView: View {
     private func offerWorktreeCleanupIfNeeded(card: KanbanCodeCard?) {
         guard let card, let wt = card.link.worktreeLink,
               !wt.path.isEmpty, wt.path.contains("/.claude/worktrees/"),
-              canCleanupWorktree(branch: wt.branch, manuallyArchived: true) else { return }
+              canCleanupWorktree(cardId: card.id, branch: wt.branch, manuallyArchived: true) else { return }
         Task { @MainActor in
             async let status = GitWorktreeAdapter().cleanupStatus(worktreePath: wt.path)
             try? await Task.sleep(for: .milliseconds(300))
@@ -1356,6 +1293,7 @@ struct ContentView: View {
             mutagen: store.state.globalRemoteSettings,
             boxd: store.state.remoteMode.runsOnMachines ? (store.state.boxdSettings ?? BoxdSettings()) : nil,
             cardMachine: machine,
+            ownerMachine: cardId.flatMap { store.state.ownerMachineChoice(cardId: $0) },
             cardMachineState: machine.flatMap { store.state.remoteMachineStates[$0] }
                 ?? link?.remote?.pausedReason.map { RemoteMachineState.paused($0) },
             // Only a card that has run before has a last run to follow.
@@ -1427,8 +1365,13 @@ struct ContentView: View {
             }
     }
 
-    private var boardWithHandlers: some View {
+    private var boardWithPresence: some View {
         boardWithAlerts
+            .onChange(of: detailTab, initial: true) { reportPresenceTab() }
+    }
+
+    private var boardWithHandlers: some View {
+        boardWithPresence
             .task {
                 (NSApp.delegate as? AppDelegate)?.register(channelShareController: shareController)
                 // Show onboarding wizard on first launch
@@ -1467,6 +1410,7 @@ struct ContentView: View {
                 if HookManager.refreshHookScript() {
                     KanbanCodeLog.info("hooks", "hook script refreshed to current release")
                 }
+                VaultHook.installWhereHooked()
                 systemTray.setup(store: store)
                 await store.loadSettingsAndCache()
                 // Remote cards route their tmux names to their machines before
@@ -1615,10 +1559,6 @@ struct ContentView: View {
                     await store.loadSettingsAndCache()
                     await store.reconcile()
                     applyAppearance()
-                    // Refresh notifier so Pushover credentials changes take effect immediately
-                    let (pushover, mode) = Self.loadPushoverConfig()
-                    let newNotifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient(), pushoverMode: mode)
-                    orchestrator.updateNotifier(newNotifier)
                     // Update registry for enabled/disabled assistants
                     if let settings = try? await settingsStore.read() {
                         updateRegisteredAssistants(settings.enabledAssistants)
@@ -2362,20 +2302,7 @@ struct ContentView: View {
         ]
 
         // Card actions, so they only appear with a card open.
-        if let cardId = store.state.selectedCardId, store.state.links[cardId] != nil {
-            cmds.append(CommandItem(
-                "Rename Card", icon: "pencil",
-                shortcut: AppShortcut.renameCard.displayString
-            ) {
-                NotificationCenter.default.post(name: .renameSelectedCard, object: nil)
-            })
-            cmds.append(CommandItem(
-                "Archive Card", icon: "archivebox",
-                shortcut: AppShortcut.archiveCard.displayString
-            ) { [self] in
-                presentArchiveDialog(cardId: cardId)
-            })
-        }
+        cmds.append(contentsOf: selectedCardPaletteCommands)
 
         // Project switching
         let visibleProjects = store.state.configuredProjects.filter(\.visible)
@@ -2393,6 +2320,36 @@ struct ContentView: View {
             }
         }
 
+        return cmds
+    }
+
+    /// Every action the card menus offer for the open card, read from the
+    /// same catalog, plus the card shortcuts that have no menu item.
+    private var selectedCardPaletteCommands: [CommandItem] {
+        guard let card = store.state.selectedCard else { return [] }
+        let catalog = CardActionCatalog(
+            card: card,
+            actions: cardMenuActions(for: card, onArchive: { presentArchiveDialog(cardId: card.id) }),
+            showBranchInfo: true,
+            availableProjects: projectList,
+            enabledAssistants: assistantRegistry.available,
+            environment: .live(for: card)
+        )
+        var cmds = catalog.paletteEntries.map { entry in
+            CommandItem(id: entry.id, entry.title, icon: entry.icon, shortcut: entry.shortcut?.displayString, action: entry.run)
+        }
+        if !cmds.contains(where: { $0.id == "card-action:delete" }), card.link.source != .githubIssue {
+            cmds.append(CommandItem(
+                id: "card-action:delete", "Delete Card", icon: "trash",
+                shortcut: AppShortcut.deleteCard.displayString
+            ) { [self] in presentDialog(.confirmDelete(cardId: card.id)) })
+        }
+        if card.link.tmuxLink != nil {
+            cmds.append(CommandItem(
+                id: "card-action:newTerminal", "New Terminal Tab", icon: "plus.rectangle",
+                shortcut: AppShortcut.newTerminal.displayString
+            ) { [self] in createExtraTerminal(cardId: card.id) })
+        }
         return cmds
     }
 
@@ -2469,6 +2426,75 @@ struct ContentView: View {
         }
     }
 
+    // MARK: - Card Actions
+
+    /// The card actions the toolbar menu and the command palette run. The
+    /// detail view's own menu builds its set with the sheets it owns, and
+    /// this one asks it for those through `.cardDetailRequest`.
+    private func cardMenuActions(for card: KanbanCodeCard, onArchive: (() -> Void)?) -> CardActionsMenuActions {
+        let cardId = card.id
+        let requestDetail: (CardDetailRequest) -> () -> Void = { request in
+            { NotificationCenter.default.post(name: .cardDetailRequest, object: nil, userInfo: ["cardId": cardId, "request": request.rawValue]) }
+        }
+        return CardActionsMenuActions(
+            onStart: { startCard(cardId: cardId) },
+            onResume: { resumeCard(cardId: cardId) },
+            onFork: { keepWorktree in forkCard(cardId: cardId, keepWorktree: keepWorktree) },
+            onRenameRequest: { renamingCardId = cardId },
+            onSetPinned: { isPinned in
+                store.dispatch(.setCardPinned(cardId: cardId, isPinned: isPinned))
+            },
+            onSetSelfCompactContextThreshold: { threshold in
+                store.dispatch(.setSelfCompactContextThreshold(cardId: cardId, thresholdTokens: threshold))
+            },
+            onCopyResumeCmd: { copyResumeCommand(cardId: cardId) },
+            onCopyConversationMarkdown: { copyConversationMarkdown(cardId: cardId) },
+            subagentCount: subagentCount(for: cardId),
+            onShowSubagents: { showSubagents(for: cardId) },
+            onTrimSession: { presentDialog(.confirmTrimSession(cardId: cardId)) },
+            onCheckpoint: requestDetail(.checkpoint),
+            onAddLink: { showAddLinkCardId = cardId },
+            onUnlink: { linkType in store.dispatch(.unlinkFromCard(cardId: cardId, linkType: linkType)) },
+            onDiscover: { discoverBranches(cardId: cardId) },
+            onCleanupWorktree: { Task { await cleanupWorktree(cardId: cardId) } },
+            canCleanupWorktree: canCleanupWorktree(for: card),
+            onArchive: onArchive,
+            onDelete: { presentDialog(.confirmDelete(cardId: cardId)) },
+            onMoveToProject: { path in
+                let name = projectList.first(where: { $0.path == path })?.name ?? (path as NSString).lastPathComponent
+                presentDialog(.confirmMoveToProject(cardId: cardId, projectPath: path, projectName: name))
+            },
+            onMoveToFolder: { selectFolderForMove(cardId: cardId) },
+            onMigrateAssistant: { target in
+                presentDialog(.confirmMigration(cardId: cardId, targetAssistant: target, recentTurnLimit: nil))
+            },
+            onShowPromptHistory: requestDetail(.promptHistory),
+            onShowVault: requestDetail(.vault)
+        )
+    }
+
+    /// Copies the shell command that resumes the card's session in its project.
+    private func copyResumeCommand(cardId: String) {
+        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
+        var cmd = ""
+        if let projectPath = card.link.projectPath {
+            cmd += "cd \(projectPath) && "
+        }
+        if let sessionId = card.link.sessionLink?.sessionId {
+            cmd += card.link.effectiveAssistant.resumeCommand(
+                sessionId: sessionId,
+                skipPermissions: false,
+                modelOverride: card.link.modelOverride
+            )
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(cmd, forType: .string)
+    }
+
+    private func discoverBranches(cardId: String) {
+        Task { await engine.discoverBranches(cardId: cardId) }
+    }
+
     // MARK: - Expanded Actions Menu
 
     private func expandedActionsMenu(for card: KanbanCodeCard) -> some View {
@@ -2489,61 +2515,7 @@ struct ContentView: View {
             Divider()
             CardActionsMenu(
                 card: card,
-                actions: CardActionsMenuActions(
-                    onStart: { startCard(cardId: card.id) },
-                    onResume: { resumeCard(cardId: card.id) },
-                    onFork: { keepWorktree in forkCard(cardId: card.id, keepWorktree: keepWorktree) },
-                    onRenameRequest: { renamingCardId = card.id },
-                    onSetPinned: { isPinned in
-                        store.dispatch(.setCardPinned(cardId: card.id, isPinned: isPinned))
-                    },
-                    onSetSelfCompactContextThreshold: { threshold in
-                        store.dispatch(.setSelfCompactContextThreshold(cardId: card.id, thresholdTokens: threshold))
-                    },
-                    onCopyResumeCmd: {
-                        var cmd = ""
-                        if let pp = card.link.projectPath { cmd += "cd \(pp) && " }
-                        if let sid = card.link.sessionLink?.sessionId {
-                            cmd += card.link.effectiveAssistant.resumeCommand(
-                                sessionId: sid,
-                                skipPermissions: false,
-                                modelOverride: card.link.modelOverride
-                            )
-                        }
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(cmd, forType: .string)
-                    },
-                    onCopyConversationMarkdown: { copyConversationMarkdown(cardId: card.id) },
-                    subagentCount: subagentCount(for: card.id),
-                    onShowSubagents: { showSubagents(for: card.id) },
-                    onTrimSession: { presentDialog(.confirmTrimSession(cardId: card.id)) },
-                    onCheckpoint: {
-                        detailTab = .history
-                        // CardDetailView picks up checkpointMode from its own menu
-                        // but from here we just navigate to history tab
-                    },
-                    onAddLink: { showAddLinkCardId = card.id },
-                    onUnlink: { linkType in store.dispatch(.unlinkFromCard(cardId: card.id, linkType: linkType)) },
-                    onDiscover: {
-                        Task {
-                            store.dispatch(.setBusy(cardId: card.id, busy: true))
-                            if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: card.id) {
-                                store.dispatch(.createManualTask(updatedLink))
-                            }
-                            await store.reconcile()
-                            store.dispatch(.setBusy(cardId: card.id, busy: false))
-                        }
-                    },
-                    onCleanupWorktree: { Task { await cleanupWorktree(cardId: card.id) } },
-                    canCleanupWorktree: canCleanupWorktree(for: card),
-                    onArchive: nil,
-                    onDelete: { presentDialog(.confirmDelete(cardId: card.id)) },
-                    onMoveToProject: { path in store.dispatch(.moveCardToProject(cardId: card.id, projectPath: path)) },
-                    onMoveToFolder: { selectFolderForMove(cardId: card.id) },
-                    onMigrateAssistant: { target in
-                        presentDialog(.confirmMigration(cardId: card.id, targetAssistant: target, recentTurnLimit: nil))
-                    }
-                ),
+                actions: cardMenuActions(for: card, onArchive: nil),
                 showBranchInfo: true,
                 availableProjects: projectList,
                 enabledAssistants: assistantRegistry.available

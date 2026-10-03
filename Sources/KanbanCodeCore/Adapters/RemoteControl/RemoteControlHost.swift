@@ -10,6 +10,9 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// `before` when given.
     func transcript(cardId: String, limit: Int, before: String?) async throws -> RemoteTranscript
 
+    /// The machines a task can run on, this master first.
+    func machines() async -> [RemoteMachineEntry]
+
     /// Creates a card and, unless `launch` is false, starts its session.
     func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard
 
@@ -28,12 +31,12 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     func resume(cardId: String) async throws -> RemoteCard
 
     /// The command a remote terminal runs for one of the card's terminals,
-    /// as argv: `agtop open <id> --solo` for agtop, `tmux attach -t <name>`
+    /// as argv: `rush open <id>` for rush (`agtop open <id> --solo` for agtop), `tmux attach -t <name>`
     /// for tmux.
     func terminalCommand(cardId: String, sessionName: String) async throws -> [String]
 
     /// Scrolls a tmux terminal's history for a remote viewer (up when
-    /// `lines` is positive). agtop terminals scroll through mouse reporting
+    /// `lines` is positive). rush terminals scroll through mouse reporting
     /// instead and ignore this.
     func scrollTerminal(sessionName: String, lines: Int) async
 
@@ -51,9 +54,19 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// apply here whichever master owns the card, and sync to the others.
     func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard
 
+    /// Deletes an archived card; a card still on the board is refused (409).
+    func deleteCard(cardId: String) async throws
+
     /// Continues the card elsewhere: another master (ownership moves there),
     /// a machine this master drives, or back here.
     func moveCard(cardId: String, to target: String) async throws -> RemoteCard
+
+    /// Removes the card's worktree on the machine that holds it and drops
+    /// the worktree from the card (the card itself when it has no session).
+    func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval
+
+    /// Re-scans the card for pushed branches and pull requests.
+    func discoverBranches(cardId: String) async throws
 
     /// Replaces the text of a queued prompt.
     func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws
@@ -66,9 +79,21 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     func channelFile(path: String, offset: Int) async throws -> Data
     /// Creates a file of `channels/` that does not exist yet; false when it does.
     func seedChannelFile(path: String, data: Data) async throws -> Bool
+
+    /// Open attention requests, oldest first.
+    func attention() async -> [AttentionRequest]
+
+    /// Answers an attention request in its session (or for the vault) and
+    /// clears it on every device. `by` names the device acting.
+    func resolveAttention(id: String, resolution: String, by: String) async throws
+
+    /// Presence the Mac reported, for the escalation of the requests here.
+    func reportPresence(_ presence: MacPresence) async
 }
 
 extension RemoteControlHost {
+    public func machines() async -> [RemoteMachineEntry] { [] }
+
     public func rawTranscript(cardId: String, offset: Int, limit: Int) async throws -> RemoteRawTranscript {
         throw RemoteHostError.notFound("this host does not serve raw transcripts")
     }
@@ -83,6 +108,18 @@ extension RemoteControlHost {
 
     public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
         throw RemoteHostError.notFound("this host does not edit cards")
+    }
+
+    public func deleteCard(cardId: String) async throws {
+        throw RemoteHostError.notFound("this host does not delete cards")
+    }
+
+    public func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval {
+        throw RemoteHostError.notFound("this host does not remove worktrees")
+    }
+
+    public func discoverBranches(cardId: String) async throws {
+        throw RemoteHostError.notFound("this host does not discover branches")
     }
 
     public func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws {
@@ -104,6 +141,14 @@ extension RemoteControlHost {
     public func seedChannelFile(path: String, data: Data) async throws -> Bool {
         throw RemoteHostError.notFound("this host does not serve channels")
     }
+
+    public func attention() async -> [AttentionRequest] { [] }
+
+    public func resolveAttention(id: String, resolution: String, by: String) async throws {
+        throw RemoteHostError.notFound("this host has no attention requests")
+    }
+
+    public func reportPresence(_ presence: MacPresence) async {}
 }
 
 /// A host call that failed for a reason the client should see, with the

@@ -322,7 +322,7 @@ public enum LinkSync {
     public static func allowsForeignEdits(_ action: Action) -> Bool {
         switch action {
         case .moveCard, .renameCard, .setCardPinned, .setSelfCompactContextThreshold, .setCardModel,
-             .archiveCard, .deleteCard, .reorderCard, .reorderPinnedCard, .updatePrompt,
+             .archiveCard, .unarchiveCard, .deleteCard, .reorderCard, .reorderPinnedCard, .updatePrompt,
              .addIssueLinkToCard, .addPRToCard, .markPRMerged, .unlinkFromCard, .createManualTask:
             return true
         default:
@@ -529,11 +529,21 @@ extension Reducer {
         let tombstonesPruned = outcome.tombstones.count != state.tombstones.count
         guard !outcome.changedIds.isEmpty || tombstonesPruned else { return [] }
 
+        let before = state.links
         state.links = outcome.links
         state.tombstones = outcome.tombstones
         for id in outcome.changedIds.sorted() { state.markSyncChanged(id) }
 
         var effects: [Effect] = []
+        // A card this master runs, archived on another master: its sessions
+        // end here, as an archive here ends them.
+        for id in outcome.changedIds.sorted() {
+            guard let link = state.links[id], link.manuallyArchived, before[id]?.manuallyArchived == false,
+                  link.ownerMachine == nil || link.ownerMachine == state.localMachineId,
+                  let tmux = link.tmuxLink else { continue }
+            effects.append(.killTmuxSessions(tmux.allSessionNames))
+            effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
+        }
         for link in outcome.deletedOwned {
             state.deletedCardIds.insert(link.id)
             if let sessionId = link.sessionLink?.sessionId { state.deletedSessionIds.insert(sessionId) }

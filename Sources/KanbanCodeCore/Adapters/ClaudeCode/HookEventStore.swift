@@ -63,11 +63,23 @@ public actor HookEventStore {
             return nil
         }
         let timestamp = (obj["timestamp"] as? String).flatMap { parseTimestamp($0) } ?? Date()
+        let eventName = obj["event"] as? String ?? "unknown"
+        // Notification lines carry the hook payload: its type tells a
+        // permission prompt from the idle reminder.
+        var notificationType = obj["notificationType"] as? String
+        var message = obj["message"] as? String
+        if eventName == "Notification", let b64 = obj["payloadB64"] as? String, !b64.isEmpty,
+           let payloadData = Data(base64Encoded: b64),
+           let payload = try? JSONSerialization.jsonObject(with: payloadData) as? [String: Any] {
+            notificationType = notificationType ?? payload["notification_type"] as? String
+            message = message ?? payload["message"] as? String
+        }
         return HookEvent(
             sessionId: sessionId,
-            eventName: obj["event"] as? String ?? "unknown",
+            eventName: eventName,
             transcriptPath: obj["transcriptPath"] as? String,
-            notificationType: obj["notificationType"] as? String,
+            notificationType: notificationType,
+            message: message,
             source: obj["source"] as? String,
             timestamp: timestamp
         )

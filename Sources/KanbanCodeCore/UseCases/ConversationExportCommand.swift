@@ -108,6 +108,12 @@ public struct ConversationExportCommand: Sendable, Equatable {
     /// mirrors for a card another master owns, or a Claude session file found
     /// by id under `~/.claude/projects`.
     func transcriptPath(for link: Link) -> String? {
+        Self.transcriptPath(for: link, kanbanHome: home)
+    }
+
+    /// The card's transcript on this machine, as `transcriptPath(for:)`
+    /// finds it, with `kanbanHome` defaulting to `~/.kanban-code`.
+    public static func transcriptPath(for link: Link, kanbanHome home: String?) -> String? {
         let fm = FileManager.default
         if let path = link.sessionLink?.sessionPath, fm.fileExists(atPath: path) { return path }
         guard let sessionId = link.sessionLink?.sessionId, !sessionId.isEmpty else { return nil }

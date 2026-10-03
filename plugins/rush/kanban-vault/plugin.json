@@ -1,0 +1,10 @@
+{
+  "name": "kanban-vault",
+  "description": "Asks before a message holding a secret (an API key, a token, a password in a URL) goes, and saves it to Kanban Code's vault: the message then goes with {{vault:NAME}} in its place, and agents use it through kv run. Needs Kanban Code's kv.",
+  "version": "1",
+  "command": ["kanban-vault"],
+  "ui": ["input", "intercept", "notify"],
+  "exec": { "kv": ["~/.local/bin/kv"] },
+  "memoryMB": 64,
+  "requires": { "os": ["darwin"] }
+}

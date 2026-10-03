@@ -18,7 +18,6 @@ struct OnboardingWizard: View {
     @State private var navigatingForward = true
     @State private var runningSessions: [CodingAssistant: Int] = [:]
     @State private var killedSessions: Set<CodingAssistant> = []
-    @State private var renderMarkdownImage = false
     @State private var wizardServiceName: [CodingAssistant: String] = [:]
     @State private var wizardServiceLauncher: [CodingAssistant: String] = [:]
     @State private var wizardServiceModel: [CodingAssistant: String] = [:]
@@ -571,42 +570,6 @@ struct OnboardingWizard: View {
                         .font(.app(.caption))
                         .foregroundStyle(.tertiary)
 
-                    Divider()
-                        .padding(.vertical, 4)
-
-                    Toggle("Render full output as markdown image", isOn: $renderMarkdownImage)
-                        .disabled(pushoverToken.isEmpty || pushoverUserKey.isEmpty)
-
-                    if pushoverToken.isEmpty || pushoverUserKey.isEmpty {
-                        Text("Enter Pushover credentials above to enable this option.")
-                            .font(.app(.caption))
-                            .foregroundStyle(.tertiary)
-                } else if renderMarkdownImage {
-                    Group {
-                        statusCheckRow("pandoc", done: status?.pandocAvailable ?? false)
-                        statusCheckRow("wkhtmltoimage", done: status?.wkhtmltoimageAvailable ?? false)
-                    }
-
-                    if !(status?.pandocAvailable ?? false) {
-                        Text("brew install pandoc")
-                            .font(.app(.caption, design: .monospaced))
-                            .foregroundStyle(.orange)
-                            .textSelection(.enabled)
-                    }
-
-                    if !(status?.wkhtmltoimageAvailable ?? false) {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("wkhtmltopdf is no longer in Homebrew. Install it manually:")
-                                .font(.app(.caption))
-                                .foregroundStyle(.secondary)
-                            Link("Download wkhtmltox-0.12.6-2.macos-cocoa.pkg",
-                                 destination: URL(string: "https://github.com/wkhtmltopdf/packaging/releases/download/0.12.6-2/wkhtmltox-0.12.6-2.macos-cocoa.pkg")!)
-                                .font(.app(.caption, design: .monospaced))
-                        }
-                    }
-
-                    recheckButton
-                }
                 } // end if pushoverEnabled
             }
             .padding(24)
@@ -616,7 +579,6 @@ struct OnboardingWizard: View {
                 pushoverEnabled = settings.notifications.pushoverEnabled
                 pushoverToken = settings.notifications.pushoverToken ?? ""
                 pushoverUserKey = settings.notifications.pushoverUserKey ?? ""
-                renderMarkdownImage = settings.notifications.renderMarkdownImage
             }
         }
         .onDisappear {
@@ -625,7 +587,6 @@ struct OnboardingWizard: View {
                 settings.notifications.pushoverMode = pushoverEnabled ? .enabled : .disabled
                 settings.notifications.pushoverToken = pushoverToken.isEmpty ? nil : pushoverToken
                 settings.notifications.pushoverUserKey = pushoverUserKey.isEmpty ? nil : pushoverUserKey
-                settings.notifications.renderMarkdownImage = renderMarkdownImage
                 try? await settingsStore.write(settings)
             }
         }

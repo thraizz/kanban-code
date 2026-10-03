@@ -3,7 +3,7 @@ import SwiftTerm
 import KanbanCodeRemoteKit
 
 /// SwiftTerm's view for a remote terminal. With mouse reporting on, SwiftTerm
-/// turns a pan into a button-1 drag, which agtop reads as a click where the
+/// turns a pan into a button-1 drag, which rush reads as a click where the
 /// finger landed; `TerminalController` scrolls on a pan instead. It also
 /// reads the screen out to accessibility.
 final class RemoteTerminalView: TerminalView {
@@ -62,14 +62,14 @@ final class TerminalController: NSObject, TerminalViewDelegate, UIGestureRecogni
 
     /// How a vertical pan scrolls the terminal.
     enum ScrollMode {
-        /// The program reads the mouse (agtop, or tmux with mouse on): wheel
+        /// The program reads the mouse (rush, or tmux with mouse on): wheel
         /// events at the finger.
         case wheel
         /// A tmux client on the alternate screen: the Mac scrolls its history.
         case server
     }
 
-    /// Lines agtop scrolls per wheel event, so the content follows the finger.
+    /// Lines rush scrolls per wheel event, so the content follows the finger.
     static let linesPerWheel = 3
 
     override init() {

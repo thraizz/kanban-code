@@ -1,9 +1,8 @@
 import Foundation
-import KanbanCodeCore
 
 /// What the assistant tab shows over a live session whose boxd machine is
 /// not connected.
-enum RemoteMachineOverlayState: Equatable {
+public enum RemoteMachineOverlayState: Equatable, Sendable {
     /// The machine is connected, or the card has no machine: the terminal shows.
     case none
     /// The machine is in standby or stopped. A person brings it back.
@@ -17,7 +16,7 @@ enum RemoteMachineOverlayState: Equatable {
     case reconnecting(attempt: Int)
 
     /// Whether the overlay offers a resume.
-    var canResume: Bool {
+    public var canResume: Bool {
         switch self {
         case .paused, .unreachable: true
         case .none, .resuming, .reconnecting: false
@@ -26,14 +25,14 @@ enum RemoteMachineOverlayState: Equatable {
 
     /// Whether the terminal stays on screen under a banner instead of
     /// giving way to the transcript.
-    var keepsTerminal: Bool {
+    public var keepsTerminal: Bool {
         if case .reconnecting = self { return true }
         return false
     }
 }
 
 /// What follows once "Resume machine" brought the machine of a card back.
-enum MachineResumeFollowUp: Equatable {
+public enum MachineResumeFollowUp: Equatable {
     /// The tmux session survived the pause: the terminal attaches to it.
     case attach
     /// The session is gone, as after a stopped machine boots: the assistant
@@ -42,24 +41,24 @@ enum MachineResumeFollowUp: Equatable {
     /// Nothing to resume, or a resume is already running.
     case nothing
 
-    static func decide(link: Link, sessionAlive: Bool) -> MachineResumeFollowUp {
+    public static func decide(link: Link, sessionAlive: Bool) -> MachineResumeFollowUp {
         if sessionAlive { return .attach }
         guard link.sessionLink != nil, link.isLaunching != true else { return .nothing }
         return .resumeAssistant(sessionName: sessionName(for: link))
     }
 
     /// The tmux session a resume of the card creates on its machine.
-    static func sessionName(for link: Link) -> String {
+    public static func sessionName(for link: Link) -> String {
         let sessionId = link.sessionLink?.sessionId ?? link.id
         return link.effectiveAssistant.resumeSessionName(sessionId: sessionId)
     }
 }
 
-enum RemoteMachineOverlay {
+public enum RemoteMachineOverlay {
     /// The overlay for a card, from what the app knows about its machine.
     /// The supervisor state wins; the pause reason stored on the link stands
     /// in for it when the supervisor has not reported yet, right after start.
-    static func state(
+    public static func state(
         remote: RemoteLink?,
         machineState: RemoteMachineState?,
         hasLiveSession: Bool,
@@ -79,7 +78,7 @@ enum RemoteMachineOverlay {
     }
 
     /// The line shown next to the resume button.
-    static func text(
+    public static func text(
         for state: RemoteMachineOverlayState,
         remote: RemoteLink,
         lastActivity: Date?
@@ -118,7 +117,7 @@ enum RemoteMachineOverlay {
         }
     }
 
-    static func durationText(minutes: Int) -> String {
+    public static func durationText(minutes: Int) -> String {
         if minutes % 60 == 0 {
             let hours = minutes / 60
             return hours == 1 ? "1h" : "\(hours)h"

@@ -12,6 +12,10 @@ struct BoardScreen: View {
     @State private var showNewTask = false
     @State private var showAddMac = false
     @State private var showMachines = false
+    @State private var showArchived = false
+    @State private var showAttention = false
+    @State private var attentionFocus: String?
+    @State private var actions: CardActionController
     @State private var expandedSections: Set<String> = []
     /// Project name the board is narrowed to, "" for every project.
     @AppStorage("projectFilter.fleet") private var projectFilter = ""
@@ -21,6 +25,7 @@ struct BoardScreen: View {
 
     init(fleet: FleetModel) {
         self.fleet = fleet
+        _actions = State(initialValue: CardActionController(fleet: fleet))
     }
 
     /// The only master, when there is one.
@@ -37,6 +42,7 @@ struct BoardScreen: View {
                 .navigationDestination(for: String.self) { id in
                     FleetCardScreen(cardId: id, fleet: fleet)
                 }
+                .cardActions(actions)
         }
         .task { fleet.start() }
         .onChange(of: path.isEmpty) { _, isEmpty in
@@ -53,6 +59,28 @@ struct BoardScreen: View {
         }
         .sheet(isPresented: $showMachines) {
             MachinesView(fleet: fleet)
+        }
+        .sheet(isPresented: $showArchived) {
+            ArchivedCardsSheet(fleet: fleet)
+        }
+        .sheet(isPresented: $showAttention) {
+            AttentionListView(fleet: fleet, openCard: { id in path = [id] }, focusId: attentionFocus)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .openAttention)) { note in
+            attentionFocus = note.object as? String
+            showAttention = true
+        }
+    }
+
+    @ViewBuilder private var attentionSection: some View {
+        let count = fleet.attention.count
+        if count > 0 {
+            Section {
+                AttentionBanner(count: count) {
+                    attentionFocus = nil
+                    showAttention = true
+                }
+            }
         }
     }
 
@@ -105,6 +133,7 @@ struct BoardScreen: View {
                 }
             } else {
                 List {
+                    attentionSection
                     machineStatusSection
                     ForEach(sections, id: \.id) { section in
                         Section {
@@ -116,6 +145,7 @@ struct BoardScreen: View {
                                             machine: fleet.showsMachines ? entry.machineName : nil,
                                             machineOffline: !entry.master.isOnline)
                                 }
+                                .contextMenu { CardActionsMenu(entry: entry, controller: actions) }
                                 .accessibilityIdentifier("card-\(entry.card.id)")
                             }
                             if search.isEmpty && section.cards.count > Self.columnPreviewCount {
@@ -167,18 +197,24 @@ struct BoardScreen: View {
         }
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
-                Picker("Project", selection: $projectFilter) {
-                    Text("All projects").tag("")
-                    ForEach(projects) { project in
-                        Text(project.name).tag(project.name)
+                if !projects.isEmpty {
+                    Picker("Project", selection: $projectFilter) {
+                        Text("All projects").tag("")
+                        ForEach(projects) { project in
+                            Text(project.name).tag(project.name)
+                        }
                     }
                 }
+                Section {
+                    Button("Archived cards", systemImage: "archivebox") { showArchived = true }
+                        .accessibilityIdentifier("showArchived")
+                }
             } label: {
-                Label("Project", systemImage: projectFilter.isEmpty
+                Label("Board", systemImage: projectFilter.isEmpty
                       ? "line.3.horizontal.decrease.circle" : "line.3.horizontal.decrease.circle.fill")
             }
-            .disabled(projects.isEmpty)
-            .accessibilityIdentifier("projectFilter")
+            .disabled(fleet.onlineMasters.isEmpty && projects.isEmpty)
+            .accessibilityIdentifier("boardMenu")
         }
         ToolbarItem(placement: .topBarTrailing) {
             Button {

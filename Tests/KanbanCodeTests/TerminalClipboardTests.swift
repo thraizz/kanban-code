@@ -22,7 +22,7 @@ private final class ClipboardRecorder: TerminalViewDelegate {
 @Suite("Terminal clipboard")
 @MainActor
 struct TerminalClipboardTests {
-    /// agtop draws its own selection and copies it with OSC 52 when a drag
+    /// rush draws its own selection and copies it with OSC 52 when a drag
     /// ends. The Mac view has to pass that on to its delegate, which owns
     /// the pasteboard.
     @Test("OSC 52 from the program reaches the view's delegate")

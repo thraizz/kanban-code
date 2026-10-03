@@ -25,7 +25,9 @@ final class AppComposition {
     let engine: MasterEngine
     let peerSync: PeerSync
     let agentSync: AgentSyncEngine
+    let vault: VaultService
     let transcriptMirror: PeerTranscriptMirror
+    let attentionCenter: AttentionCenter
 
     private init() {
         let claudeDiscovery = ClaudeCodeSessionDiscovery()
@@ -100,17 +102,12 @@ final class AppComposition {
             tmuxAdapter: tmux
         )
 
-        // Load Pushover from settings.json, wrap in CompositeNotifier with macOS fallback
-        let (pushover, pushoverMode) = ContentView.loadPushoverConfig()
-        let notifier = CompositeNotifier(primary: pushover, fallback: MacOSNotificationClient(), pushoverMode: pushoverMode)
-
         let orch = BackgroundOrchestrator(
             discovery: discovery,
             coordinationStore: coordination,
             activityDetector: activityDetector,
             tmux: tmux,
             prTracker: GhCliAdapter(),
-            notifier: notifier,
             registry: registry
         )
 
@@ -168,11 +165,19 @@ final class AppComposition {
             registry: registry,
             platform: Self.platform()
         )
+        engine.platform.discoverBranches = { [weak boardStore] cardId in
+            guard let boardStore else { return }
+            boardStore.dispatch(.setBusy(cardId: cardId, busy: true))
+            if let updatedLink = await orch.discoverBranchesForCard(cardId: cardId) {
+                boardStore.dispatch(.createManualTask(updatedLink))
+            }
+            await boardStore.reconcile()
+            boardStore.dispatch(.setBusy(cardId: cardId, busy: false))
+        }
         // The machine identity is on the board before the first reconcile,
         // so every card this Mac stamps carries it.
         let identity = MachineIdentityStore().loadOrCreate(defaultName: RemoteControlServer.defaultHostName)
         boardStore.dispatch(.localMachineLoaded(identity))
-        orch.localMachineId = identity.id
         let peerSync = PeerSync(identity: identity, peers: Self.readPeers()) { [weak boardStore] action in
             await MainActor.run { boardStore?.dispatch(action) }
         }
@@ -191,10 +196,73 @@ final class AppComposition {
         }
         let agentSync = AgentSyncEngine(identity: identity) { [peerSync] in await peerSync.syncPeers() }
         Task.detached { await agentSync.run() }
+        let vault = VaultService(
+            kanbanHome: NSHomeDirectory() + "/.kanban-code",
+            keys: KeychainVaultKeyProvider(),
+            machine: identity.name,
+            approvals: StoreVaultApprovals(store: boardStore),
+            cardTitle: { [weak boardStore] id in await MainActor.run { boardStore?.vaultCardTitle(id) } },
+            cardPrompts: { [weak boardStore] id in
+                guard let link = await MainActor.run(body: { boardStore?.vaultCardLink(id) }) else { return nil }
+                return CardPromptReader.read(link: link, kanbanHome: NSHomeDirectory() + "/.kanban-code")
+            },
+            cardSessions: { [weak boardStore] in await MainActor.run { boardStore?.vaultCardSessions() ?? [:] } },
+            peers: { await peerSync.configuredPeers() }
+        )
+        Task { await vault.start() }
+
+        // Decisions agents wait on: Mac notification, then the phone.
+        let notifications = Self.readNotificationSettings()
+        let presence = MacPresenceMonitor.shared
+        presence.start()
+        Task { @MainActor [weak boardStore] in
+            guard let boardStore else { return }
+            await presence.follow(store: boardStore)
+        }
+        let attentionCenter = AttentionCenter(
+            settings: notifications.attentionPolicy,
+            mac: DockAttentionNotifier(MacAttentionNotificationClient()),
+            phone: notifications.phoneSender,
+            localPresence: { presence.snapshot() },
+            cardName: { [weak boardStore] id in
+                await MainActor.run { id.flatMap { boardStore?.state.links[$0]?.displayTitle } }
+            },
+            localMachineId: { identity.id },
+            stateFile: NSHomeDirectory() + "/.kanban-code/attention-deliveries.json")
+        engine.attentionCenter = attentionCenter
+        Task { await effectHandler.setAttentionDelivery(attentionCenter) }
+        orch.onAttentionHook = { [weak engine] event in
+            await MainActor.run { engine?.handleAttentionHook(event) }
+        }
+        Task { await attentionCenter.start() }
+        Task { await engine.runAttentionMonitor() }
+        Task { await engine.runAttentionPeerSync(presence: { presence.snapshot() }) }
+        NotificationCenter.default.addObserver(forName: .kanbanCodeSettingsChanged, object: nil, queue: .main) { _ in
+            let notifications = Self.readNotificationSettings()
+            Task { await attentionCenter.configure(settings: notifications.attentionPolicy, phone: notifications.phoneSender) }
+        }
+        AppServices.resolveAttention = { [weak engine] id, resolution in
+            guard let engine else { return }
+            do {
+                try await engine.resolveAttention(id: id, resolution: resolution, by: "mac")
+            } catch {
+                KanbanCodeLog.warn("attention", "Resolving \(id) from the Mac failed: \(error)")
+            }
+        }
+        AppServices.answerCard = { [weak engine] cardId, answer in
+            guard let engine else { return false }
+            do {
+                return try await engine.answerOpenRequest(cardId: cardId, answer: answer, by: "mac")
+            } catch {
+                KanbanCodeLog.warn("attention", "Answering card \(cardId) from the chat failed: \(error)")
+                return false
+            }
+        }
         RemoteControlController.shared.attach(
             engine: engine,
             peerServer: BoardPeerLinksServer(store: boardStore, peerSync: peerSync),
             syncEngine: agentSync,
+            vault: vault,
             settingsStore: settings
         )
 
@@ -208,8 +276,17 @@ final class AppComposition {
         self.engine = engine
         self.peerSync = peerSync
         self.agentSync = agentSync
+        self.vault = vault
         self.transcriptMirror = mirror
+        self.attentionCenter = attentionCenter
         KanbanCodeLog.info("app", "services composed machine=\(identity.name) (\(identity.id))")
+    }
+
+    /// Settings > Notifications, read straight from the file.
+    static func readNotificationSettings() -> NotificationSettings {
+        let path = NSHomeDirectory() + "/.kanban-code/settings.json"
+        let settings = FileManager.default.contents(atPath: path).flatMap { try? JSONDecoder().decode(Settings.self, from: $0) }
+        return settings?.notifications ?? NotificationSettings()
     }
 
     /// Settings > Peers, read straight from the file.

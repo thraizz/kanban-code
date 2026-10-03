@@ -15,8 +15,18 @@ public enum KanbanCodeLog {
         return dir
     }()
 
+    /// Test runs log to their own file, so the app's log only holds what
+    /// the app did.
+    static let isTestRun: Bool = {
+        let env = ProcessInfo.processInfo.environment
+        let name = ProcessInfo.processInfo.processName
+        return env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil
+            || name == "xctest" || name.hasSuffix("PackageTests") || name == "swiftpm-testing-helper"
+            || Bundle.main.bundlePath.hasSuffix(".xctest")
+    }()
+
     private static let logPath: String = {
-        let path = (logDir as NSString).appendingPathComponent("kanban-code.log")
+        let path = (logDir as NSString).appendingPathComponent(isTestRun ? "kanban-code-tests.log" : "kanban-code.log")
         rotateIfNeeded(path: path)
         return path
     }()

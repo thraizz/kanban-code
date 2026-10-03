@@ -419,6 +419,42 @@ struct AgentSyncEngineTests {
         #expect(read(box + "/.claude/commands/ship.md") == "ship it")
     }
 
+    @Test func loginFilesNeverTravelWhateverTheExcludes() async throws {
+        let mac = tempDir(), box = tempDir()
+        let macId = MachineIdentity(id: "machine_mac", name: "mac")
+        let boxId = MachineIdentity(id: "machine_box", name: "box", alwaysOn: true)
+        let transport = LoopbackTransport()
+        let entries = [
+            SyncEntry(mode: .mirror, path: "~/.claude"),
+            SyncEntry(mode: .mirror, path: "~/.codex/"),
+            SyncEntry(mode: .mirror, path: "~/.claude/.credentials.json"),
+        ]
+        let a = try engine(home: mac, identity: macId, peer: boxId, transport: transport, entries: entries)
+        let b = try engine(home: box, identity: boxId, peer: macId, transport: transport, entries: entries)
+        transport.engines = [macId.id: a, boxId.id: b]
+
+        write(mac + "/.claude/.credentials.json", "{\"claudeAiOauth\":{}}")
+        write(mac + "/.claude/CLAUDE.md", "rules")
+        write(mac + "/.codex/auth.json", "{\"tokens\":{}}")
+        write(mac + "/.codex/config.toml", "model = 1")
+        await a.round()
+        await b.round()
+        #expect(read(box + "/.claude/CLAUDE.md") == "rules")
+        #expect(read(box + "/.codex/config.toml") == "model = 1")
+        #expect(!FileManager.default.fileExists(atPath: box + "/.claude/.credentials.json"))
+        #expect(!FileManager.default.fileExists(atPath: box + "/.codex/auth.json"))
+        #expect(await a.file(entryId: entries[0].id, path: ".credentials.json") == nil)
+    }
+
+    @Test func loginFileExcludesAreRelativeToTheEntry() {
+        #expect(SyncConfig.loginFileExcludes(entryPath: "~") == [".claude/.credentials.json", ".codex/auth.json"])
+        #expect(SyncConfig.loginFileExcludes(entryPath: "~/.claude/") == [".credentials.json"])
+        #expect(SyncConfig.loginFileExcludes(entryPath: "~/.codex") == ["auth.json"])
+        #expect(SyncConfig.loginFileExcludes(entryPath: "~/.claude/skills").isEmpty)
+        #expect(SyncConfig.isLoginFile(entryPath: "~/.codex/auth.json"))
+        #expect(!SyncConfig.isLoginFile(entryPath: "~/.codex/config.toml"))
+    }
+
     @Test func handEditOfSyncJsonAppliesAndTravels() async throws {
         let mac = tempDir(), box = tempDir()
         let macId = MachineIdentity(id: "machine_mac", name: "mac")

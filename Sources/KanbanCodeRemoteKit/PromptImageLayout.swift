@@ -5,7 +5,7 @@ import Foundation
 /// The UI stores image position as plain text markers such as `[Image #1]`,
 /// on the Mac and on the phone. When sending to assistants that support
 /// image paste, those markers are replaced by clipboard image paste events;
-/// agtop takes the text with its markers and the images as files. Other
+/// rush takes the text with its markers and the images as files. Other
 /// assistants receive markdown image references at the same positions.
 public enum PromptImageLayout {
     public static let markerPrefix = "[Image #"

@@ -321,6 +321,12 @@ public enum HookManager {
             extra=",\\"source\\":\\"$start_source\\""
         fi
     fi
+    # A Notification carries its type (permission_prompt, idle_prompt, ...)
+    # and text; the whole payload goes along, base64 so quotes survive.
+    if [ "$hook_event" = "Notification" ]; then
+        payload_b64=$(printf '%s' "$input" | base64 | tr -d '\\n')
+        extra="$extra,\\"payloadB64\\":\\"$payload_b64\\""
+    fi
 
     # Notification carries a type (permission_prompt, idle_prompt, ...) that
     # tells a blocking permission prompt apart from an idle reminder.

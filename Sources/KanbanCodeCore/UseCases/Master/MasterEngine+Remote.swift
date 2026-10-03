@@ -43,7 +43,9 @@ extension MasterEngine {
             }
             return
         }
-        let choice = platform.remoteMachineChoice(machine, projectPath)
+        // The platform knows this master only as "mac".
+        let target = machine.map { isLocalMachine($0) ? "mac" : $0 }
+        let choice = platform.remoteMachineChoice(target, projectPath)
         let skipPermissions = platform.skipPermissions()
         Task {
             let settings = try? await settingsStore.read()

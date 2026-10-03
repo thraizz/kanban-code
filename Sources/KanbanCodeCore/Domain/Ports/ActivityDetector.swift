@@ -6,6 +6,9 @@ public struct HookEvent: Sendable {
     public let eventName: String // UserPromptSubmit, Stop, Notification, PreToolUse, etc.
     public let transcriptPath: String?
     public let notificationType: String?
+    /// Notification only: the text Claude shows, e.g. "Claude needs your
+    /// permission to use Bash".
+    public let message: String?
     /// SessionStart only: startup, resume, clear, or compact. Tells a real
     /// fresh start apart from a compaction of a live session.
     public let source: String?
@@ -16,6 +19,7 @@ public struct HookEvent: Sendable {
         eventName: String,
         transcriptPath: String? = nil,
         notificationType: String? = nil,
+        message: String? = nil,
         source: String? = nil,
         timestamp: Date = .now
     ) {
@@ -23,6 +27,7 @@ public struct HookEvent: Sendable {
         self.eventName = eventName
         self.transcriptPath = transcriptPath
         self.notificationType = notificationType
+        self.message = message
         self.source = source
         self.timestamp = timestamp
     }

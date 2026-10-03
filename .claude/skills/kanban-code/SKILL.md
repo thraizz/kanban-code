@@ -157,6 +157,14 @@ kanban channel send standup "PR #42 merged. unblocks anyone waiting on the auth 
 - `kanban self-compact - <<'EOF' … EOF` — compact your own session and hand yourself a post-compact continuation message. Always pass that handoff; without it you wake up with only the digest.
 - Read `kanban --help` in full. Do not pipe it through `head` or `tail`; the command list continues past the first screen.
 
+## Secrets (kv)
+
+Secrets live in the Kanban Code vault; use `kv` instead of reading `.env` files (docs/vault.md in the Kanban Code repo).
+
+- `kv run NAME [NAME..] --reason "..." -- <cmd>` runs a command with the secrets in its env. `kv request NAME --reason "..."` asks once for the card's whole task. `kv aws <profile>` gives AWS credentials. `kv ls` lists names and tiers.
+- Some releases wait for Rogerio's approval. His phone shows "<your card> wants to use <secret>" and, under it, only your `--reason`. Write it as one short plain sentence a human understands: what you want to do and why. Good: `--reason "Deploy the langwatch staging app to check the fix for the login bug"`. Bad: `--reason "change aws:lw-dev: rules"` (too terse), `--reason "kubectl apply -f x.yaml"` (a command; the command is shown separately). kv refuses reasons like the bad ones with exit code 2.
+- Exit code 77 means denied. Do not retry the same request in a loop; ask with a better reason or tell the user.
+
 ## What NOT to do
 
 - Don't loop on polling `kanban channel history` — broadcasts are pushed to your pane automatically. Only poll history if you're debugging.

@@ -11,6 +11,7 @@ struct QueuedPromptDialog: View {
     @State private var promptText: String
     @State private var sendAutomatically: Bool
     @State private var images: [ImageAttachment]
+    @State private var secretOffer = VaultSecretOffer()
 
     init(
         isPresented: Binding<Bool>,
@@ -47,15 +48,19 @@ struct QueuedPromptDialog: View {
                 placeholder: "Type the next prompt for \(assistant.displayName)...",
                 maxHeight: 300,
                 onSubmit: submit,
-                onEscape: { isPresented = false }
+                onEscape: { if secretOffer.isActive { secretOffer.decline() } else { isPresented = false } }
             )
+
+            if secretOffer.isActive && !secretOffer.proposals.isEmpty {
+                VaultSecretOfferBar(offer: secretOffer)
+            }
 
             Toggle("Send automatically when \(assistant.displayName) finishes", isOn: $sendAutomatically)
                 .font(.app(.callout))
 
             HStack {
                 Spacer()
-                Button("Cancel") { isPresented = false }
+                Button("Cancel") { if secretOffer.isActive { secretOffer.decline() } else { isPresented = false } }
                     .keyboardShortcut(.cancelAction)
                 Button(existingPrompt != nil ? "Save" : "Add", action: submit)
                     .keyboardShortcut(.defaultAction)
@@ -68,10 +73,13 @@ struct QueuedPromptDialog: View {
     }
 
     private func submit() {
+        if secretOffer.isActive { secretOffer.accept(); return }
         let trimmed = promptText.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         lastSendAutomatically = sendAutomatically
-        onSave(trimmed, sendAutomatically, images)
-        isPresented = false
+        secretOffer.submit(trimmed) { final in
+            onSave(final, sendAutomatically, images)
+            isPresented = false
+        }
     }
 }

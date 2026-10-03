@@ -120,6 +120,7 @@ public final class PeerTranscriptMirror {
         PeerCardState(
             isLive: card.isLive,
             isBusy: card.isBusy,
-            queue: card.queuedPrompts.map { QueuedPrompt(id: $0.id, body: $0.text, sendAutomatically: true) })
+            queue: card.queuedPrompts.map { QueuedPrompt(id: $0.id, body: $0.text, sendAutomatically: true) },
+            status: card.sessionStatus)
     }
 }

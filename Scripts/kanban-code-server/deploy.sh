@@ -16,15 +16,21 @@ HOST="${1:-root@51.159.202.175}"
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REMOTE_DIR="Projects/kanban-server"
 
-git -C "$ROOT" archive --format=tar HEAD | ssh "$HOST" \
-  "mkdir -p $REMOTE_DIR && cd $REMOTE_DIR && find . -mindepth 1 -maxdepth 1 ! -name .build -exec rm -rf {} + && tar x"
+TARBALL="/tmp/kanban-code-src-$$.tar"
+git -C "$ROOT" archive --format=tar HEAD | ssh "$HOST" "cat > $TARBALL"
 
-ssh "$HOST" bash -s <<REMOTE
+# One deploy at a time: two at once race on the source tree, the SwiftPM
+# build folder and the CLI copy, and starve the host of memory.
+ssh "$HOST" flock /tmp/kanban-code-deploy.lock bash -s <<REMOTE
 set -euo pipefail
 export PATH=/opt/swift/usr/bin:\$PATH
+mkdir -p $REMOTE_DIR
 cd $REMOTE_DIR
-swift build -c release --product kanban-code-server --static-swift-stdlib
-swift build -c release --product kanban-code-export --static-swift-stdlib
+find . -mindepth 1 -maxdepth 1 ! -name .build -exec rm -rf {} +
+tar xf $TARBALL
+rm -f $TARBALL
+swift build -c release -j 4 --product kanban-code-server --static-swift-stdlib
+swift build -c release -j 4 --product kanban-code-export --static-swift-stdlib
 install -m 0755 .build/release/kanban-code-server /usr/local/bin/kanban-code-server
 install -m 0755 .build/release/kanban-code-export /usr/local/bin/kanban-code-export
 install -m 0644 Scripts/kanban-code-server/kanban-code-server.service /etc/systemd/system/kanban-code-server.service
@@ -39,12 +45,15 @@ echo
 cd cli
 pnpm install --frozen-lockfile
 pnpm build
-rm -rf ~/.kanban-code/cli.new
-mkdir -p ~/.kanban-code/cli.new
-cp -a dist package.json node_modules docs ~/.kanban-code/cli.new/
+NEW=\$(mktemp -d ~/.kanban-code/cli.new.XXXXXX)
+cp -a dist package.json node_modules docs "\$NEW"/
+chmod 755 "\$NEW"
 rm -rf ~/.kanban-code/cli.old
 if [ -d ~/.kanban-code/cli ]; then mv ~/.kanban-code/cli ~/.kanban-code/cli.old; fi
-mv ~/.kanban-code/cli.new ~/.kanban-code/cli
-rm -rf ~/.kanban-code/cli.old
+mv "\$NEW" ~/.kanban-code/cli
+rm -rf ~/.kanban-code/cli.old ~/.kanban-code/cli.new
 /usr/bin/node ~/.kanban-code/cli/dist/kanban.js --version
+mkdir -p ~/.local/bin
+printf '#!/bin/sh\nexec /usr/bin/node /root/.kanban-code/cli/dist/kv.js "\$@"\n' > ~/.local/bin/kv
+chmod 755 ~/.local/bin/kv
 REMOTE

@@ -253,6 +253,19 @@ public actor AgentSyncEngine {
 
     func root(_ entry: SyncEntry) -> String { SyncHome.expand(entry.path, home: home) }
 
+    /// The entry's own excludes plus the login files, which only the login
+    /// sync writes.
+    func mirrorExcludes(_ entry: SyncEntry) -> SyncExcludes {
+        SyncExcludes(entry.excludes + SyncConfig.loginFileExcludes(entryPath: entry.path))
+    }
+
+    /// Whether `path` of a mirror is a login file (or the whole mirror is).
+    func isLoginFile(_ entry: SyncEntry, path: String) -> Bool {
+        if SyncConfig.isLoginFile(entryPath: entry.path) { return true }
+        let login = SyncExcludes(SyncConfig.loginFileExcludes(entryPath: entry.path))
+        return scanner(rewriteHome: false).isExcluded(rel: path, excludes: login, only: nil)
+    }
+
     private func scanner(rewriteHome: Bool) -> SyncScanner {
         SyncScanner(home: home, machineId: identity.id, rewriteHome: rewriteHome)
     }
@@ -269,9 +282,10 @@ public actor AgentSyncEngine {
         for entry in config.entries where entry.enabled {
             switch entry.mode {
             case .mirror:
+                if SyncConfig.isLoginFile(entryPath: entry.path) { continue }
                 let before = manifests[entry.id] ?? [:]
                 let after = scanner(rewriteHome: true).scan(
-                    root: root(entry), excludes: SyncExcludes(entry.excludes), previous: before)
+                    root: root(entry), excludes: mirrorExcludes(entry), previous: before)
                 if after != before {
                     manifests[entry.id] = after
                     saveManifest(entry.id)
@@ -328,7 +342,8 @@ public actor AgentSyncEngine {
     public func file(entryId: String, path: String) -> Data? {
         guard let entry = config.entries.first(where: { $0.id == entryId && $0.enabled }), entry.mode != .git,
               let item = manifests[entryId]?[path], !item.deleted, item.kind == .file,
-              !path.hasPrefix("/"), !path.split(separator: "/").contains("..")
+              !path.hasPrefix("/"), !path.split(separator: "/").contains(".."),
+              entry.mode != .mirror || !isLoginFile(entry, path: path)
         else { return nil }
         return scanner(rewriteHome: entry.mode == .mirror).content(root: root(entry), rel: path)
     }
@@ -358,7 +373,8 @@ public actor AgentSyncEngine {
         scanAll()
         var changedLocally = false
         for entry in config.entries where entry.enabled && entry.mode == .mirror {
-            guard let theirs = remote.manifests[entry.id] else { continue }
+            guard var theirs = remote.manifests[entry.id] else { continue }
+            theirs = theirs.filter { !isLoginFile(entry, path: $0.key) }
             let (applied, failed) = await apply(
                 entry: entry, actions: SyncPlanner.plan(local: manifests[entry.id] ?? [:], remote: theirs),
                 peer: peer, rewriteHome: true)

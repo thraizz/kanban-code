@@ -36,8 +36,8 @@ public actor ImageSender {
         pollInterval: Duration = .milliseconds(500),
         timeout: Duration? = nil
     ) async throws {
-        // An agtop host takes messages as soon as it runs, and queues them.
-        if AgtopSessionName.isAgtop(sessionName) { return }
+        // A rush host takes messages as soon as it runs, and queues them.
+        if RushSessionName.isRush(sessionName) { return }
         // Gemini, Codex and OpenCode can take longer to start (auth checks,
         // banners, model setup, MCP servers).
         let slowStart: Set<CodingAssistant> = [.gemini, .codex, .opencode]

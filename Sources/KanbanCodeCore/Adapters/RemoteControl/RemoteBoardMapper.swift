@@ -8,14 +8,14 @@ public enum RemoteBoardMapper {
         cards: [KanbanCodeCard],
         projects: [Project],
         liveSessions: Set<String>,
-        agtopQueues: [String: [String]] = [:],
+        rushQueues: [String: [String]] = [:],
         machine: MachineIdentity? = nil,
         machineNames: [String: String] = [:],
         generatedAt: Date = Date()
     ) -> RemoteBoard {
         RemoteBoard(
             cards: cards.map {
-                card($0, liveSessions: liveSessions, agtopQueues: agtopQueues, machine: machine, machineNames: machineNames)
+                card($0, liveSessions: liveSessions, rushQueues: rushQueues, machine: machine, machineNames: machineNames)
             }.sorted(by: order),
             projects: projects.map { RemoteProject(path: $0.path, name: $0.name) },
             generatedAt: generatedAt,
@@ -31,19 +31,19 @@ public enum RemoteBoardMapper {
         return a.id < b.id
     }
 
-    /// `agtopQueues` holds the queues of live agtop hosts by session name:
-    /// an agtop card lists its host's queue ahead of any prompt the app
+    /// `rushQueues` holds the queues of live rush hosts by session name:
+    /// a rush card lists its host's queue ahead of any prompt the app
     /// itself holds for it.
     ///
     /// `machine` is the serving master: a card with no `ownerMachine` is
     /// its own. `machineNames` names the other masters by id.
     public static func card(_ card: KanbanCodeCard, liveSessions: Set<String>,
-                            agtopQueues: [String: [String]] = [:],
+                            rushQueues: [String: [String]] = [:],
                             machine: MachineIdentity? = nil,
                             machineNames: [String: String] = [:]) -> RemoteCard {
         let link = card.link
-        let hostQueue = link.tmuxLink.flatMap { agtopQueues[$0.sessionName] } ?? []
-        let queued = hostQueue.enumerated().map { RemoteQueuedPrompt(id: agtopPromptId(index: $0.offset, text: $0.element), text: $0.element) }
+        let hostQueue = link.tmuxLink.flatMap { rushQueues[$0.sessionName] } ?? []
+        let queued = hostQueue.enumerated().map { RemoteQueuedPrompt(id: rushPromptId(index: $0.offset, text: $0.element), text: $0.element) }
             + (link.queuedPrompts ?? []).map {
                 RemoteQueuedPrompt(id: $0.id, text: $0.body, imageCount: $0.imagePaths?.count ?? 0)
             }
@@ -67,24 +67,34 @@ public enum RemoteBoardMapper {
             queuedPrompts: queued,
             parentCardId: link.parentCardId,
             archived: link.manuallyArchived,
+            pinned: link.isPinned,
             lastActivity: link.lastActivity,
             updatedAt: link.updatedAt,
             machineId: owner,
-            machineName: owner.flatMap { $0 == machine?.id ? machine?.name : machineNames[$0] }
+            machineName: owner.flatMap { $0 == machine?.id ? machine?.name : machineNames[$0] },
+            sessionStatus: card.sessionStatus.remote(for: link)
         )
     }
 
-    /// The id of a message queued in an agtop host: its place and a hash of
-    /// its text, so it can be found again after the queue moved.
-    public static func agtopPromptId(index: Int, text: String) -> String {
+    /// The id of a message queued in a rush host: its place and a hash of
+    /// its text, so it can be found again after the queue moved. The ids
+    /// start with "agtop-", the name rush had before it was renamed, since
+    /// masters and phones on older builds look for that prefix; "rush-" is
+    /// read as well.
+    public static func rushPromptId(index: Int, text: String) -> String {
         "agtop-\(index)-\(String(fnv1a(text), radix: 16))"
     }
 
+    /// Whether `id` names a message queued in a rush host.
+    public static func isRushPromptId(_ id: String) -> Bool {
+        id.hasPrefix("agtop-") || id.hasPrefix("rush-")
+    }
+
     /// The place in `queue` of the message `id` names, preferring the place
-    /// it had; nil when it is no longer queued or `id` is not an agtop one.
-    public static func agtopQueueIndex(of id: String, in queue: [String]) -> Int? {
+    /// it had; nil when it is no longer queued or `id` is not a rush one.
+    public static func rushQueueIndex(of id: String, in queue: [String]) -> Int? {
         let parts = id.split(separator: "-")
-        guard parts.count == 3, parts[0] == "agtop", let index = Int(parts[1]) else { return nil }
+        guard parts.count == 3, parts[0] == "agtop" || parts[0] == "rush", let index = Int(parts[1]) else { return nil }
         let hash = String(parts[2])
         let matches = { (i: Int) in String(fnv1a(queue[i]), radix: 16) == hash }
         if queue.indices.contains(index), matches(index) { return index }
@@ -105,12 +115,12 @@ public enum RemoteBoardMapper {
         guard let tmux = link.tmuxLink, tmux.isShellOnly != true else {
             return link.remote != nil ? .machine : .none
         }
-        if AgtopSessionName.isAgtop(tmux.sessionName) { return .agtop }
+        if RushSessionName.isRush(tmux.sessionName) { return .rush }
         if link.remote != nil { return .machine }
         return .tmux
     }
 
-    /// The assistant session of the card is running (tmux, agtop or a machine).
+    /// The assistant session of the card is running (tmux, rush or a machine).
     public static func isLive(_ link: Link, liveSessions: Set<String>) -> Bool {
         guard let tmux = link.tmuxLink, tmux.isShellOnly != true, tmux.isPrimaryDead != true else { return false }
         return liveSessions.contains(tmux.sessionName)
@@ -163,6 +173,24 @@ extension AppState {
     /// This master, once its identity is loaded.
     public var localMachineIdentity: MachineIdentity? {
         localMachineId.isEmpty ? nil : MachineIdentity(id: localMachineId, name: localMachineName, alwaysOn: localMachineAlwaysOn ? true : nil)
+    }
+
+    /// The machines a remote task can name: this master first, then the
+    /// machines of `machineChoices`.
+    public var remoteMachines: [RemoteMachineEntry] {
+        var out: [RemoteMachineEntry] = []
+        if let local = localMachineIdentity {
+            out.append(RemoteMachineEntry(id: local.id, name: local.name, kind: .this, online: true, alwaysOn: local.alwaysOn))
+        }
+        for choice in machineChoices {
+            if let master = choice.master {
+                out.append(RemoteMachineEntry(id: master.id, name: choice.name, kind: .master,
+                                              online: choice.masterOnline, alwaysOn: master.alwaysOn))
+            } else {
+                out.append(RemoteMachineEntry(name: choice.name, kind: .ssh))
+            }
+        }
+        return out
     }
 
     /// Names of the peer masters seen so far, by machine id.

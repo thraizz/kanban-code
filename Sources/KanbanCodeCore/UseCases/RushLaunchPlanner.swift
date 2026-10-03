@@ -1,9 +1,9 @@
 import Foundation
 
-/// Decides whether a card's session runs on agtop, and builds the
-/// `agtop session start` request for it.
-public enum AgtopLaunchPlanner {
-    /// Why a card set to agtop still runs on tmux, or nil when it runs on agtop.
+/// Decides whether a card's session runs on rush, and builds the
+/// `rush session start` request for it.
+public enum RushLaunchPlanner {
+    /// Why a card set to rush still runs on tmux, or nil when it runs on rush.
     public enum Fallback: Equatable, Sendable {
         case notClaude
         case remote
@@ -22,8 +22,8 @@ public enum AgtopLaunchPlanner {
 
     public enum Choice: Equatable, Sendable {
         case tmux
-        case agtop
-        /// The card is set to agtop but runs on tmux.
+        case rush
+        /// The card is set to rush but runs on tmux.
         case fallback(Fallback)
     }
 
@@ -32,22 +32,22 @@ public enum AgtopLaunchPlanner {
         runtime: SessionRuntime,
         remote: Bool,
         commandOverride: String?,
-        agtopInstalled: Bool
+        rushInstalled: Bool
     ) -> Choice {
-        guard runtime == .agtop else { return .tmux }
+        guard runtime == .rush else { return .tmux }
         if assistant != .claude { return .fallback(.notClaude) }
         if remote { return .fallback(.remote) }
         if let commandOverride, !commandOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .fallback(.commandOverride)
         }
-        if !agtopInstalled { return .fallback(.notInstalled) }
-        return .agtop
+        if !rushInstalled { return .fallback(.notInstalled) }
+        return .rush
     }
 
-    /// The command agtop runs in place of `claude`, or nil when plain
+    /// The command rush runs in place of `claude`, or nil when plain
     /// `claude` does. A command template or an API service launcher wraps
-    /// the CLI, so agtop gets a script that runs the wrapped command with
-    /// agtop's own arguments appended.
+    /// the CLI, so rush gets a script that runs the wrapped command with
+    /// rush's own arguments appended.
     public static func wrapperCommand(template: String?, service: APIService?) -> String? {
         var parts: [String] = []
         if let launcher = service?.launcherPrefix { parts.append(launcher) }
@@ -56,6 +56,21 @@ public enum AgtopLaunchPlanner {
         let bare = parts.joined(separator: " ")
         let wrapped = CodingAssistant.applyCommandTemplate(bare, template: template)
         return wrapped == CodingAssistant.claude.cliCommand ? nil : wrapped
+    }
+
+    /// What rush runs in place of `claude`: the wrapper script when there
+    /// is one, else the absolute path of `claude` on this machine, so a host
+    /// that rush restarts later from a process with a bare PATH still finds
+    /// it. Nil when the host runs on another machine or `claude` is not
+    /// found here; rush then looks `claude` up on its own PATH.
+    public static func binary(
+        wrapper: String?,
+        remote: Bool,
+        findExecutable: (String) -> String?
+    ) -> String? {
+        if let wrapper { return wrapper }
+        guard !remote else { return nil }
+        return findExecutable(CodingAssistant.claude.cliCommand)
     }
 
     /// A shell script that runs `command` with the arguments it is given.
@@ -83,8 +98,8 @@ public enum AgtopLaunchPlanner {
         skipPermissions: Bool,
         model: String?,
         binary: String?
-    ) -> AgtopStartRequest {
-        AgtopStartRequest(
+    ) -> RushStartRequest {
+        RushStartRequest(
             cwd: cwd,
             sessionId: sessionId,
             resume: resume,
@@ -95,7 +110,7 @@ public enum AgtopLaunchPlanner {
             model: model,
             permissionMode: skipPermissions ? "bypassPermissions" : nil,
             binary: binary,
-            meta: ["kanban_card": cardId]
+            meta: ["kanban_card": cardId, RushSessionName.metaKey: RushSessionName.name(sessionId: sessionId)]
         )
     }
 }

@@ -45,6 +45,18 @@ final class NWRemoteByteStream: RemoteByteStream, @unchecked Sendable {
     func cancel() {
         nw.cancel()
     }
+
+    var peer: RemotePeerAddress? {
+        guard case .hostPort(let host, let port) = nw.endpoint else { return nil }
+        let text: String
+        switch host {
+        case .ipv4(let a): text = "\(a)"
+        case .ipv6(let a): text = "\(a)"
+        case .name(let n, _): text = n
+        @unknown default: text = "\(host)"
+        }
+        return RemotePeerAddress(host: text, port: Int(port.rawValue))
+    }
 }
 
 final class NWRemoteListener: RemoteListener, @unchecked Sendable {

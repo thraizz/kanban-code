@@ -1598,4 +1598,33 @@ struct WorktreeRootTests {
         #expect(first.first { $0.id == "card_flip" }?.worktreeLink == nil)
         #expect(first == second)
     }
+
+    @Test("a rush host goes to the card of its conversation, never as an extra tab of a card in the same folder")
+    func rushHostMatchedBySession() {
+        // A resume in flight names its session; the host that appears meanwhile is not an extra.
+        let resuming = Link(
+            id: "card_resuming", name: "Resuming", projectPath: "/project", column: .inProgress,
+            sessionLink: SessionLink(sessionId: "9262728b-9d19-456e-908c-6849e1dfccf9"),
+            tmuxLink: TmuxLink(sessionName: "claude-9262728b"), isLaunching: true)
+        // Another card in the same folder must not pick it up by path.
+        let neighbour = Link(id: "card_neighbour", name: "Neighbour", projectPath: "/project", column: .waiting,
+                             sessionLink: SessionLink(sessionId: "11111111-2222"))
+        // A card that lost its session name gets its host back by session.
+        let orphan = Link(id: "card_orphan", name: "Orphan", projectPath: "/elsewhere", column: .waiting,
+                          sessionLink: SessionLink(sessionId: "abcdef01-0000"))
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [],
+            tmuxSessions: [
+                TmuxSession(name: "rush-9262728b", path: "/project"),
+                TmuxSession(name: "rush-abcdef01", path: "/somewhere"),
+            ],
+            didScanTmux: true
+        )
+        let result = Dictionary(uniqueKeysWithValues: CardReconciler.reconcile(
+            existing: [resuming, neighbour, orphan], snapshot: snapshot).map { ($0.id, $0) })
+        #expect(result["card_resuming"]?.tmuxLink?.sessionName == "claude-9262728b")
+        #expect(result["card_resuming"]?.tmuxLink?.extraSessions == nil)
+        #expect(result["card_neighbour"]?.tmuxLink == nil)
+        #expect(result["card_orphan"]?.tmuxLink?.sessionName == "rush-abcdef01")
+    }
 }

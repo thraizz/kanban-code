@@ -209,9 +209,9 @@ describe("self-compact identity outside tmux", () => {
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /Sent \/compact to sess-remote/);
 
-    const log = waitForLog(logPath, /set-buffer -b kc-\d+-\d+ -- Continue later\./);
+    const log = waitForLog(logPath, /set-buffer -b kc-\d+-\d+ -- \[Self-compact follow-up from this card\]: Continue later\./);
     assert.match(log, /send-keys -t sess-remote Escape/);
     assert.match(log, /set-buffer -b kc-\d+-\d+ -- \/compact/);
-    assert.match(log, /set-buffer -b kc-\d+-\d+ -- Continue later\./);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- \[Self-compact follow-up from this card\]: Continue later\./);
   });
 });

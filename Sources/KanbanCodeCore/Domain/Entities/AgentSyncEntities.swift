@@ -98,6 +98,26 @@ public struct SyncConfig: Codable, Sendable, Equatable {
         "*.sync-prev", ".DS_Store",
     ]
 
+    /// Exclude patterns, relative to a mirror at `entryPath` (`~/...`), for
+    /// the login files the login sync owns. A mirror never carries them,
+    /// whatever its excludes say: two mechanisms writing one login make the
+    /// copies fight.
+    public static func loginFileExcludes(entryPath: String) -> [String] {
+        var root = entryPath
+        while root.count > 1, root.hasSuffix("/") { root.removeLast() }
+        return AssistantLoginKind.allCases.compactMap { kind in
+            let file = "~/" + kind.remoteRelativePath
+            if root == "~" { return kind.remoteRelativePath }
+            guard file.hasPrefix(root + "/") else { return nil }
+            return String(file.dropFirst(root.count + 1))
+        }
+    }
+
+    /// Whether the mirror at `entryPath` is itself a login file.
+    public static func isLoginFile(entryPath: String) -> Bool {
+        AssistantLoginKind.allCases.contains { "~/" + $0.remoteRelativePath == entryPath }
+    }
+
     public static let defaults = SyncConfig(entries: [
         SyncEntry(mode: .git, path: "~/Projects/skills"),
         SyncEntry(mode: .git, path: "~/Projects/skills-private"),

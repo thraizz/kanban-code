@@ -7,8 +7,8 @@ struct CommandItem: Identifiable {
     let shortcut: String?
     let action: () -> Void
 
-    init(_ title: String, icon: String, shortcut: String? = nil, action: @escaping () -> Void) {
-        self.id = "cmd:\(title)"
+    init(id: String? = nil, _ title: String, icon: String, shortcut: String? = nil, action: @escaping () -> Void) {
+        self.id = id ?? "cmd:\(title)"
         self.title = title
         self.icon = icon
         self.shortcut = shortcut

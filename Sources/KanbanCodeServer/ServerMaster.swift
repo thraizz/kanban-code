@@ -7,7 +7,7 @@ import Glibc
 
 /// The service graph and loops of a headless master: the same BoardStore and
 /// master engine the Mac app drives, over the kanban home of this machine,
-/// plus peer sync. Sessions run here on agtop or tmux, as the settings say.
+/// plus peer sync. Sessions run here on rush or tmux, as the settings say.
 @MainActor
 final class ServerMaster {
     let home: String
@@ -18,7 +18,10 @@ final class ServerMaster {
     let identity: MachineIdentity
     let peerSync: PeerSync
     let agentSync: AgentSyncEngine
+    let vault: VaultService
     let reconciles: Bool
+    let effectHandler: EffectHandler
+    var attentionCenter: AttentionCenter?
 
     init(home: String, reconciles: Bool) {
         self.home = home
@@ -46,9 +49,9 @@ final class ServerMaster {
         let tmux = RoutingTmuxAdapter()
         let effectHandler = EffectHandler(
             coordinationStore: coordination,
-            tmuxAdapter: tmux,
-            notifier: Self.notifier(settings)
+            tmuxAdapter: tmux
         )
+        self.effectHandler = effectHandler
         let store = BoardStore(
             effectHandler: effectHandler,
             discovery: discovery,
@@ -75,11 +78,8 @@ final class ServerMaster {
             activityDetector: activityDetector,
             tmux: tmux,
             prTracker: GhCliAdapter(),
-            notifier: Self.notifier(settings),
             registry: registry
         )
-        orchestrator.localMachineId = identity.id
-        orchestrator.notifiesUnlinkedSessions = false
         orchestrator.setDispatch { [weak store] action in store?.dispatch(action) }
         self.orchestrator = orchestrator
 
@@ -102,6 +102,14 @@ final class ServerMaster {
             platform: platform
         )
 
+        engine.platform.discoverBranches = { [weak store] cardId in
+            guard let store else { return }
+            if let updatedLink = await orchestrator.discoverBranchesForCard(cardId: cardId) {
+                store.dispatch(.createManualTask(updatedLink))
+            }
+            await store.reconcile()
+        }
+
         peerSync = PeerSync(identity: identity, peers: settings?.peers ?? []) { [weak store] action in
             await MainActor.run { store?.dispatch(action) }
         }
@@ -110,17 +118,43 @@ final class ServerMaster {
         agentSync = AgentSyncEngine(kanbanHome: home, identity: identity) { [peerSync] in
             await peerSync.syncPeers()
         }
+        vault = VaultService(
+            kanbanHome: home,
+            keys: FileVaultKeyProvider(path: VaultStore.defaultDirectory(kanbanHome: home) + "/identity.txt"),
+            machine: identity.name,
+            approvals: StoreVaultApprovals(store: store),
+            cardTitle: { [weak store] id in await MainActor.run { store?.vaultCardTitle(id) } },
+            cardPrompts: { [weak store] id in
+                guard let link = await MainActor.run(body: { store?.vaultCardLink(id) }) else { return nil }
+                return CardPromptReader.read(link: link, kanbanHome: home)
+            },
+            cardSessions: { [weak store] in await MainActor.run { store?.vaultCardSessions() ?? [:] } },
+            peers: { [peerSync] in await peerSync.configuredPeers() }
+        )
     }
 
-    /// Pushover when configured, nothing otherwise: a headless host has no
-    /// notification center.
-    nonisolated static func notifier(_ settings: Settings?) -> NotifierPort? {
-        guard let notifications = settings?.notifications,
-              notifications.pushoverMode != .disabled,
-              let token = notifications.pushoverToken, let user = notifications.pushoverUserKey,
-              !token.isEmpty, !user.isEmpty
-        else { return nil }
-        return PushoverClient(token: token, userKey: user)
+    /// Attention requests from this host go to the phone only: there is no
+    /// screen here. The Mac's reported presence decides when it alerts.
+    private func startAttention(settings: Settings?) {
+        let notifications = settings?.notifications ?? NotificationSettings()
+        let store = self.store
+        let center = AttentionCenter(
+            settings: notifications.attentionPolicy,
+            phone: notifications.phoneSender,
+            cardName: { id in await MainActor.run { id.flatMap { store.state.links[$0]?.displayTitle } } },
+            localMachineId: { [identity] in identity.id },
+            stateFile: (home as NSString).appendingPathComponent("attention-deliveries.json"))
+        attentionCenter = center
+        engine.attentionCenter = center
+        let effectHandler = self.effectHandler
+        Task { await effectHandler.setAttentionDelivery(center) }
+        let engine = self.engine
+        orchestrator.onAttentionHook = { event in
+            await MainActor.run { engine.handleAttentionHook(event) }
+        }
+        Task { await center.start() }
+        Task { await engine.runAttentionMonitor() }
+        Task { await engine.runAttentionPeerSync() }
     }
 
     /// Loads the board, then runs the loops until the task is cancelled.
@@ -134,6 +168,8 @@ final class ServerMaster {
         Task.detached { await peerSync.run() }
         let agentSync = self.agentSync
         Task.detached { await agentSync.run() }
+        await vault.start()
+        startAttention(settings: Self.readSettings(home: home).settings)
         Task { await self.settingsLoop() }
         orchestrator.start()
         let orchestrator = self.orchestrator
@@ -170,6 +206,12 @@ final class ServerMaster {
             }
         }
         _ = HookManager.refreshHookScript()
+        if FileManager.default.fileExists(atPath: NSHomeDirectory() + "/.claude") {
+            _ = try? VaultHook.install()
+        }
+        if FileManager.default.fileExists(atPath: VaultHook.codexHome) {
+            _ = try? VaultHook.installCodex()
+        }
         if !HookManager.isStatusLineInstalled(for: .claude) {
             try? HookManager.installStatusLine(for: .claude)
         }
@@ -183,7 +225,7 @@ final class ServerMaster {
             let current = Self.readSettings(home: home)
             guard current.raw != last.raw, let settings = current.settings else { continue }
             if settings.peers != last.settings?.peers { await peerSync.setPeers(settings.peers) }
-            orchestrator.updateNotifier(Self.notifier(settings))
+            await attentionCenter?.configure(settings: settings.notifications.attentionPolicy, phone: settings.notifications.phoneSender)
             last = current
             await store.loadSettingsAndCache()
         }

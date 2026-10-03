@@ -5,7 +5,8 @@
   "type": "module",
   "packageManager": "pnpm@10.30.3",
   "bin": {
-    "kanban": "./dist/kanban.js"
+    "kanban": "./dist/kanban.js",
+    "kv": "./dist/kv.js"
   },
   "files": [
     "dist/**/*.js",

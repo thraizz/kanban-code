@@ -127,6 +127,15 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
       generatedAt: "2026-09-26T10:00:00.000Z",
     });
   }
+  if (req.method === "GET" && path === "/v1/machines") {
+    return send(res, 200, {
+      machines: [
+        { id: "machine_box", name: "rchaves-platform", kind: "this", online: true, alwaysOn: true },
+        { id: "machine_mac", name: "studio", kind: "master", online: true },
+        { name: "gpu", kind: "ssh" },
+      ],
+    });
+  }
   if (req.method === "POST" && path === "/v1/tasks") {
     const body = await readBody(req);
     if (!["langwatch", "/users/me/projects/langwatch"].includes(String(body.project).toLowerCase())) {
@@ -284,7 +293,7 @@ describe("kanban remote login / whoami / logout", () => {
   test("an unreachable Mac names Tailscale", async () => {
     const r = await run(["login", "http://127.0.0.1:9", "--token", FULL_TOKEN]);
     assert.equal(r.code, 1);
-    assert.match(r.err, /Cannot reach the Kanban Code Mac at http:\/\/127\.0\.0\.1:9/);
+    assert.match(r.err, /Cannot reach Kanban Code at http:\/\/127\.0\.0\.1:9/);
     assert.match(r.err, /Tailscale/);
   });
 
@@ -379,8 +388,8 @@ describe("kanban remote task / send / interrupt / resume", () => {
   test("task sends the contract body with a random worktree", async () => {
     const r = await run(["task", "--project", "langwatch", "--worktree", "--name", "Flaky", "fix", "the", "flaky", "test"]);
     assert.equal(r.code, 0, r.err);
-    assert.deepEqual(state.tasks[0], { project: "langwatch", prompt: "fix the flaky test", name: "Flaky", worktree: "" });
-    assert.match(r.out, /Created card_9NEW "Flaky" in langwatch/);
+    assert.deepEqual(state.tasks[0], { project: "langwatch", prompt: "fix the flaky test", name: "Flaky", worktree: "", machine: "rchaves-platform" });
+    assert.match(r.out, /Created card_9NEW "Flaky" in langwatch on rchaves-platform \(In Progress\)/);
     assert.match(r.out, /transcript card_9NEW --follow/);
   });
 
@@ -397,8 +406,52 @@ describe("kanban remote task / send / interrupt / resume", () => {
       assistant: "codex",
       model: "gpt-5",
       launch: false,
+      machine: "rchaves-platform",
     });
     assert.equal(JSON.parse(r.out).column, "backlog");
+  });
+
+  test("--machine sends the card to another master and says so", async () => {
+    let r = await run(["task", "--project", "langwatch", "--machine", "STUDIO", "fix it"]);
+    assert.equal(r.code, 0, r.err);
+    assert.equal((state.tasks[0] as { machine?: string }).machine, "studio");
+    assert.match(r.out, /in langwatch on studio \(/);
+    r = await run(["task", "--project", "langwatch", "--machine", "mac", "--json", "again"]);
+    assert.equal(r.code, 0, r.err);
+    assert.equal((state.tasks[1] as { machine?: string }).machine, "studio");
+    assert.equal(JSON.parse(r.out).machineName, "studio");
+    state.cards.push(card({ id: "card_7MAC", title: "On the Mac", machineName: "studio" }));
+    const shown = await run(["show", "card_7MAC"]);
+    assert.match(shown.out, /machine:\s+studio/);
+    r = await run(["task", "--project", "langwatch", "--machine", "here", "here"]);
+    assert.equal((state.tasks[2] as { machine?: string }).machine, "rchaves-platform");
+  });
+
+  test("an unknown machine lists the known ones and creates nothing", async () => {
+    const r = await run(["task", "--project", "langwatch", "--machine", "nope", "do it"]);
+    assert.equal(r.code, 1);
+    assert.match(r.err, /No machine 'nope'. Machines: rchaves-platform, studio, gpu/);
+    assert.equal(state.tasks.length, 0);
+  });
+
+  test("--no-launch refuses another machine", async () => {
+    const r = await run(["task", "--project", "langwatch", "--machine", "studio", "--no-launch", "later"]);
+    assert.equal(r.code, 1);
+    assert.match(r.err, /stays on the master this CLI is logged into/);
+    assert.equal(state.tasks.length, 0);
+  });
+
+  test("machines marks the default", async () => {
+    const r = await run(["machines"]);
+    assert.equal(r.code, 0, r.err);
+    assert.match(r.out, /rchaves-platform\s+this master \(default\)\s+online/);
+    assert.match(r.out, /studio\s+master\s+online/);
+    assert.match(r.out, /gpu\s+ssh machine\s+-/);
+  });
+
+  test("task --help states the default machine", async () => {
+    const r = await run(["task", "--help"]);
+    assert.match((r.out + r.err).replace(/\s+/g, " "), /--machine <machine>.*\(default: the master this CLI is logged into\)/);
   });
 
   test("an unknown project shows the server's 400 message", async () => {

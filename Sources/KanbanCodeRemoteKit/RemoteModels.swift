@@ -17,9 +17,17 @@ public enum RemoteAPI {
         public static let queue = "queue"
         /// The `scroll` terminal control frame.
         public static let terminalScroll = "terminalScroll"
+        /// GET /v1/machines, and `machine` on tasks naming this master by
+        /// its own name.
+        public static let machines = "machines"
+        /// `pinned` on cards and on `PATCH /v1/cards/{id}`, `archived: false`
+        /// to unarchive, and `DELETE /v1/cards/{id}`.
+        public static let cardActions = "cardActions"
+        /// `POST /v1/cards/{id}/worktree/remove` and `POST /v1/cards/{id}/discover`.
+        public static let worktrees = "worktrees"
     }
 
-    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll]
+    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees]
 }
 
 /// What a device may do. `full` is a phone: everything, terminals included.
@@ -88,14 +96,25 @@ public enum RemoteColumn: String, Codable, Sendable, CaseIterable {
     }
 }
 
-/// Where a card's main session runs.
+/// Where a card's main session runs. A rush host goes on the wire as
+/// "agtop", the name rush had before it was renamed, since phones and
+/// masters on older builds decode only that; "rush" is read as well.
 public enum RemoteRuntime: String, Codable, Sendable {
     case tmux
-    case agtop
+    case rush = "agtop"
     /// A boxd machine.
     case machine
     /// No session attached.
     case none
+
+    public init(from decoder: Decoder) throws {
+        let value = try decoder.singleValueContainer().decode(String.self)
+        guard let runtime = value == "rush" ? .rush : RemoteRuntime(rawValue: value) else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: decoder.codingPath, debugDescription: "Unknown runtime \(value)"))
+        }
+        self = runtime
+    }
 }
 
 public struct RemotePR: Codable, Sendable, Equatable {
@@ -140,6 +159,43 @@ public struct RemoteMachine: Codable, Sendable, Equatable, Hashable, Identifiabl
     }
 }
 
+/// One machine a task can run on, as GET /v1/machines lists it.
+public struct RemoteMachineEntry: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable {
+        /// The master serving the list; a task runs here when it names no machine.
+        case this
+        /// Another master: a task sent there is handed over and owned by it.
+        case master
+        /// An ssh machine this master drives, with no master of its own.
+        case ssh
+    }
+
+    /// The master's machine id; nil for a plain ssh machine.
+    public var id: String?
+    /// The name `machine` of POST /v1/tasks accepts.
+    public var name: String
+    public var kind: Kind
+    /// Whether the master answered its last pull; nil when unknown (ssh).
+    public var online: Bool?
+    /// A master that runs all the time (`kanban-code-server`).
+    public var alwaysOn: Bool?
+
+    public init(id: String? = nil, name: String, kind: Kind, online: Bool? = nil, alwaysOn: Bool? = nil) {
+        self.id = id
+        self.name = name
+        self.kind = kind
+        self.online = online
+        self.alwaysOn = alwaysOn
+    }
+}
+
+/// GET /v1/machines
+public struct RemoteMachineList: Codable, Sendable, Equatable {
+    public var machines: [RemoteMachineEntry]
+
+    public init(machines: [RemoteMachineEntry]) { self.machines = machines }
+}
+
 public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
     public var id: String
     public var title: String
@@ -163,6 +219,8 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
     public var queuedPrompts: [RemoteQueuedPrompt]
     public var parentCardId: String?
     public var archived: Bool
+    /// Pinned to the top of the board.
+    public var pinned: Bool
     public var lastActivity: Date?
     public var updatedAt: Date
     /// The master that owns the card and runs its session. Prompts, the
@@ -171,14 +229,19 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
     public var machineId: String?
     /// Display name of `machineId`, when the serving master knows it.
     public var machineName: String?
+    /// A start of the session in flight or failed, a move to another
+    /// master, or a machine that is not connected: what the card shows in
+    /// place of its resume button. Nil when the session runs or ended.
+    public var sessionStatus: RemoteSessionStatus?
 
     public init(
         id: String, title: String, column: RemoteColumn, projectPath: String? = nil, projectName: String? = nil,
         branch: String? = nil, worktreePath: String? = nil, assistant: String = "claude", runtime: RemoteRuntime = .none,
         isLive: Bool = false, isBusy: Bool = false, sessionId: String? = nil, terminals: [RemoteTerminal] = [],
         prs: [RemotePR] = [], queuedPromptCount: Int = 0, queuedPrompts: [RemoteQueuedPrompt] = [],
-        parentCardId: String? = nil, archived: Bool = false,
-        lastActivity: Date? = nil, updatedAt: Date, machineId: String? = nil, machineName: String? = nil
+        parentCardId: String? = nil, archived: Bool = false, pinned: Bool = false,
+        lastActivity: Date? = nil, updatedAt: Date, machineId: String? = nil, machineName: String? = nil,
+        sessionStatus: RemoteSessionStatus? = nil
     ) {
         self.id = id
         self.title = title
@@ -198,10 +261,38 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
         self.queuedPrompts = queuedPrompts
         self.parentCardId = parentCardId
         self.archived = archived
+        self.pinned = pinned
         self.lastActivity = lastActivity
         self.updatedAt = updatedAt
         self.machineId = machineId
         self.machineName = machineName
+        self.sessionStatus = sessionStatus
+    }
+}
+
+/// Where the session of a card stands when it neither simply runs nor
+/// simply ended. Every client shows `text` where the resume button goes.
+public struct RemoteSessionStatus: Codable, Sendable, Equatable {
+    public enum Kind: String, Codable, Sendable {
+        /// A launch or resume is in flight; `text` is its step.
+        case starting
+        /// The card moves to another master; `text` says where and how far.
+        case moving
+        /// The session runs on a machine that is not connected.
+        case machine
+        /// The last start failed; `text` says why.
+        case failed
+    }
+
+    public var kind: Kind
+    public var text: String
+    /// Whether a resume is the way on (a failed start, a paused machine).
+    public var canResume: Bool
+
+    public init(kind: Kind, text: String, canResume: Bool = false) {
+        self.kind = kind
+        self.text = text
+        self.canResume = canResume
     }
 }
 
@@ -212,8 +303,8 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
 extension RemoteCard {
     private enum CodingKeys: String, CodingKey {
         case id, title, column, projectPath, projectName, branch, worktreePath, assistant, runtime
-        case isLive, isBusy, sessionId, terminals, prs, queuedPromptCount, queuedPrompts, parentCardId, archived
-        case lastActivity, updatedAt, machineId, machineName
+        case isLive, isBusy, sessionId, terminals, prs, queuedPromptCount, queuedPrompts, parentCardId, archived, pinned
+        case lastActivity, updatedAt, machineId, machineName, sessionStatus
     }
 
     public init(from decoder: Decoder) throws {
@@ -237,10 +328,13 @@ extension RemoteCard {
             queuedPrompts: try c.decodeIfPresent([RemoteQueuedPrompt].self, forKey: .queuedPrompts) ?? [],
             parentCardId: try c.decodeIfPresent(String.self, forKey: .parentCardId),
             archived: try c.decodeIfPresent(Bool.self, forKey: .archived) ?? false,
+            pinned: try c.decodeIfPresent(Bool.self, forKey: .pinned) ?? false,
             lastActivity: try c.decodeIfPresent(Date.self, forKey: .lastActivity),
             updatedAt: try c.decode(Date.self, forKey: .updatedAt),
             machineId: try c.decodeIfPresent(String.self, forKey: .machineId),
-            machineName: try c.decodeIfPresent(String.self, forKey: .machineName)
+            machineName: try c.decodeIfPresent(String.self, forKey: .machineName),
+            // A kind this client does not know yet reads as no status.
+            sessionStatus: (try? c.decodeIfPresent(RemoteSessionStatus.self, forKey: .sessionStatus)) ?? nil
         )
     }
 
@@ -264,10 +358,12 @@ extension RemoteCard {
         if !queuedPrompts.isEmpty { try c.encode(queuedPrompts, forKey: .queuedPrompts) }
         try c.encodeIfPresent(parentCardId, forKey: .parentCardId)
         if archived { try c.encode(true, forKey: .archived) }
+        if pinned { try c.encode(true, forKey: .pinned) }
         try c.encodeIfPresent(lastActivity, forKey: .lastActivity)
         try c.encode(updatedAt, forKey: .updatedAt)
         try c.encodeIfPresent(machineId, forKey: .machineId)
         try c.encodeIfPresent(machineName, forKey: .machineName)
+        try c.encodeIfPresent(sessionStatus, forKey: .sessionStatus)
     }
 }
 
@@ -465,16 +561,21 @@ public struct RemoteEvent: Codable, Sendable, Equatable {
     public var upserted: [RemoteCard]?
     public var removed: [String]?
     public var projects: [RemoteProject]?
+    /// Every open attention request, on `board` frames and on the `cards`
+    /// frame after the list changed; absent when it did not change.
+    public var attention: [AttentionRequest]?
 
     public init(
         type: Kind, board: RemoteBoard? = nil, upserted: [RemoteCard]? = nil,
-        removed: [String]? = nil, projects: [RemoteProject]? = nil
+        removed: [String]? = nil, projects: [RemoteProject]? = nil,
+        attention: [AttentionRequest]? = nil
     ) {
         self.type = type
         self.board = board
         self.upserted = upserted
         self.removed = removed
         self.projects = projects
+        self.attention = attention
     }
 
     /// Applies a `board` or `cards` event to a board the client holds.
@@ -576,5 +677,39 @@ enum RemoteDates {
             return d
         }
         return try? Date(s, strategy: .iso8601)
+    }
+}
+
+// MARK: - Vault
+
+/// One entry of `GET /v1/vault/secrets`; only the name is read here.
+public struct RemoteVaultSecretName: Codable, Sendable, Equatable {
+    public var name: String
+    public init(name: String) { self.name = name }
+}
+
+/// Body of `POST /v1/vault/secrets`.
+public struct RemoteVaultAddRequest: Codable, Sendable, Equatable {
+    public var name: String
+    public var value: String
+    public var tier: String
+    public var rules: String
+    public init(name: String, value: String, tier: String, rules: String) {
+        self.name = name
+        self.value = value
+        self.tier = tier
+        self.rules = rules
+    }
+}
+
+/// The vault's answer: `granted`, `pending` (asked the human) or `denied`.
+public struct RemoteVaultResponse: Codable, Sendable, Equatable {
+    public var status: String
+    public var message: String
+    public var id: String?
+    public init(status: String, message: String, id: String? = nil) {
+        self.status = status
+        self.message = message
+        self.id = id
     }
 }

@@ -144,7 +144,7 @@ public struct Settings: Codable, Sendable {
         subagents = (try? container.decodeIfPresent(SubagentSettings.self, forKey: .subagents)) ?? SubagentSettings()
         assistantCommands = (try? container.decodeIfPresent([String: AssistantCommandTemplate].self, forKey: .assistantCommands)) ?? [:]
         if let raw = try? container.decodeIfPresent([String: String].self, forKey: .assistantRuntimes) {
-            assistantRuntimes = raw.compactMapValues(SessionRuntime.init(rawValue:))
+            assistantRuntimes = raw.compactMapValues { SessionRuntime(stored: $0) }
         } else {
             assistantRuntimes = [:]
         }
@@ -187,7 +187,7 @@ public struct Settings: Codable, Sendable {
     /// not set one. A blank template and the bare placeholder both mean "run
     /// the command as it is built", so both read as nil.
     /// What runs the main session of a new or resumed card. Only Claude can
-    /// run in agtop.
+    /// run in rush.
     public func runtime(for assistant: CodingAssistant) -> SessionRuntime {
         guard assistant == .claude else { return .tmux }
         return assistantRuntimes[assistant.rawValue] ?? .tmux
@@ -388,52 +388,93 @@ public struct GitHubSettings: Codable, Sendable {
     }
 }
 
+/// Whether attention requests go to the phone through Pushover.
 public enum PushoverMode: String, Codable, Sendable, CaseIterable {
     case disabled
     case enabled
-    case whenLidClosed
+
+    public init(from decoder: Decoder) throws {
+        let raw = try decoder.singleValueContainer().decode(String.self)
+        // "whenLidClosed" was a mode before the presence policy; the policy
+        // now decides when the phone alerts.
+        self = raw == PushoverMode.disabled.rawValue ? .disabled : .enabled
+    }
 }
 
-public struct NotificationSettings: Codable, Sendable {
+/// Settings > Notifications: how decisions agents wait on reach Rogerio.
+public struct NotificationSettings: Codable, Sendable, Equatable {
+    /// Notify on the Mac when a request is raised and he is not looking at it.
+    public var macNotifications: Bool
+    /// Phone delivery through Pushover.
     public var pushoverMode: PushoverMode
     public var pushoverToken: String?
     public var pushoverUserKey: String?
-    public var renderMarkdownImage: Bool
+    /// The phone alerts when a request is still open after this long.
+    public var phoneAlertDelaySeconds: Int
+    /// The Mac counts as away after this long without keyboard or mouse input.
+    public var awayAfterSeconds: Int
 
-    /// Backward-compatible convenience: true when pushover should be configured at all.
+    public static let defaultPhoneAlertDelaySeconds = 180
+    public static let defaultAwayAfterSeconds = 120
+
     public var pushoverEnabled: Bool { pushoverMode != .disabled }
 
-    public init(pushoverMode: PushoverMode = .disabled, pushoverToken: String? = nil, pushoverUserKey: String? = nil, renderMarkdownImage: Bool = false) {
+    public init(
+        macNotifications: Bool = true, pushoverMode: PushoverMode = .disabled, pushoverToken: String? = nil,
+        pushoverUserKey: String? = nil, phoneAlertDelaySeconds: Int = NotificationSettings.defaultPhoneAlertDelaySeconds,
+        awayAfterSeconds: Int = NotificationSettings.defaultAwayAfterSeconds
+    ) {
+        self.macNotifications = macNotifications
         self.pushoverMode = pushoverMode
         self.pushoverToken = pushoverToken
         self.pushoverUserKey = pushoverUserKey
-        self.renderMarkdownImage = renderMarkdownImage
+        self.phoneAlertDelaySeconds = phoneAlertDelaySeconds
+        self.awayAfterSeconds = awayAfterSeconds
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
-        // Backward compat: read old Bool pushoverEnabled if pushoverMode is missing
         if let mode = try c.decodeIfPresent(PushoverMode.self, forKey: .pushoverMode) {
             pushoverMode = mode
         } else {
             let legacy = try c.decodeIfPresent(Bool.self, forKey: .pushoverEnabled) ?? false
             pushoverMode = legacy ? .enabled : .disabled
         }
+        macNotifications = try c.decodeIfPresent(Bool.self, forKey: .macNotifications) ?? true
         pushoverToken = try c.decodeIfPresent(String.self, forKey: .pushoverToken)
         pushoverUserKey = try c.decodeIfPresent(String.self, forKey: .pushoverUserKey)
-        renderMarkdownImage = try c.decodeIfPresent(Bool.self, forKey: .renderMarkdownImage) ?? false
+        phoneAlertDelaySeconds = try c.decodeIfPresent(Int.self, forKey: .phoneAlertDelaySeconds) ?? Self.defaultPhoneAlertDelaySeconds
+        awayAfterSeconds = try c.decodeIfPresent(Int.self, forKey: .awayAfterSeconds) ?? Self.defaultAwayAfterSeconds
     }
 
     private enum CodingKeys: String, CodingKey {
-        case pushoverMode, pushoverEnabled, pushoverToken, pushoverUserKey, renderMarkdownImage
+        case macNotifications, pushoverMode, pushoverEnabled, pushoverToken, pushoverUserKey
+        case phoneAlertDelaySeconds, awayAfterSeconds
     }
 
     public func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(macNotifications, forKey: .macNotifications)
         try c.encode(pushoverMode, forKey: .pushoverMode)
         try c.encodeIfPresent(pushoverToken, forKey: .pushoverToken)
         try c.encodeIfPresent(pushoverUserKey, forKey: .pushoverUserKey)
-        try c.encode(renderMarkdownImage, forKey: .renderMarkdownImage)
+        try c.encode(phoneAlertDelaySeconds, forKey: .phoneAlertDelaySeconds)
+        try c.encode(awayAfterSeconds, forKey: .awayAfterSeconds)
+    }
+
+    /// The phone channel these settings configure, or nil when off.
+    public var phoneSender: (any PhonePushSender)? {
+        guard pushoverMode != .disabled, let token = pushoverToken, let user = pushoverUserKey,
+              !token.isEmpty, !user.isEmpty else { return nil }
+        return PushoverAttentionSender(token: token, userKey: user)
+    }
+
+    /// The escalation policy these settings describe.
+    public var attentionPolicy: AttentionPolicySettings {
+        AttentionPolicySettings(
+            macNotifications: macNotifications, phoneEnabled: phoneSender != nil,
+            phoneAlertDelay: TimeInterval(max(0, phoneAlertDelaySeconds)),
+            idleThreshold: TimeInterval(max(30, awayAfterSeconds)))
     }
 }
 

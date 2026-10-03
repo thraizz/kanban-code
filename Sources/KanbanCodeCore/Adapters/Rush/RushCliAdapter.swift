@@ -1,16 +1,28 @@
 import Foundation
 
-/// One agtop host as `agtop session info|list|start --json` prints it.
-public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
+/// One rush host as `rush session info|list|start --json` prints it.
+public struct RushSessionInfo: Decodable, Sendable, Equatable {
     public let id: String
     public let sessionId: String
     public let cwd: String
     public let name: String?
     public let state: String
     public let alive: Bool
+    /// rush ended the host between turns (it rests a few seconds after a
+    /// turn ends). The session is still open: a message wakes it.
+    public var sleeping: Bool
     /// Messages waiting for the turn to end, oldest first; the host sends
     /// them when it ends.
     public let queue: [String]
+    /// The host process and the assistant it runs, for telling which
+    /// session a process belongs to.
+    public var hostPid: Int?
+    public var claudePid: Int?
+    /// `--meta` pairs given at start, e.g. `kanban_card`.
+    public var meta: [String: String]?
+    /// What a blocked session waits on, as rush words it: "asks: <question>"
+    /// for a question, "<Tool> <argument>" for a permission.
+    public var needs: String?
 
     public init(id: String, sessionId: String, cwd: String, name: String? = nil, state: String, alive: Bool,
                 queue: [String] = []) {
@@ -20,10 +32,11 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
         self.name = name
         self.state = state
         self.alive = alive
+        self.sleeping = false
         self.queue = queue
     }
 
-    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, queue }
+    enum CodingKeys: String, CodingKey { case id, sessionId, cwd, name, state, alive, sleeping, queue, hostPid, claudePid, meta, needs }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
@@ -33,15 +46,27 @@ public struct AgtopSessionInfo: Decodable, Sendable, Equatable {
         name = try c.decodeIfPresent(String.self, forKey: .name)
         state = try c.decodeIfPresent(String.self, forKey: .state) ?? "stopped"
         alive = try c.decodeIfPresent(Bool.self, forKey: .alive) ?? false
+        sleeping = (try? c.decodeIfPresent(Bool.self, forKey: .sleeping)) ?? false
         queue = try c.decodeIfPresent([String].self, forKey: .queue) ?? []
+        hostPid = try? c.decodeIfPresent(Int.self, forKey: .hostPid)
+        claudePid = try? c.decodeIfPresent(Int.self, forKey: .claudePid)
+        meta = try? c.decodeIfPresent([String: String].self, forKey: .meta)
+        needs = try? c.decodeIfPresent(String.self, forKey: .needs)
     }
+
+    /// The session is open on its card: its host runs, or rush put it to
+    /// sleep between turns. A stopped one is not.
+    public var isOpen: Bool { alive || sleeping && state != "stopped" }
+
+    /// What the session waits on, while it is blocked.
+    public var blockedOn: String? { alive && state == "blocked" ? needs : nil }
 
     /// Claude is running a turn or waiting on a permission answer.
     public var isBusy: Bool { alive && (state == "working" || state == "blocked" || state == "starting") }
 }
 
-/// What `agtop session start` needs to run a card's Claude session.
-public struct AgtopStartRequest: Sendable, Equatable {
+/// What `rush session start` needs to run a card's Claude session.
+public struct RushStartRequest: Sendable, Equatable {
     public var cwd: String
     public var sessionId: String
     public var resume: Bool
@@ -82,17 +107,17 @@ public struct AgtopStartRequest: Sendable, Equatable {
     }
 }
 
-public struct AgtopCommandFailed: Error, LocalizedError {
+public struct RushCommandFailed: Error, LocalizedError {
     public let arguments: [String]
     public let message: String
 
     public var errorDescription: String? { "rush \(arguments.first ?? "") failed: \(message)" }
 }
 
-/// Drives agtop hosts through the `agtop session` CLI, on this machine or,
+/// Drives rush hosts through the `rush session` CLI, on this machine or,
 /// through a bridge, on a machine that runs cards for this one.
-public final class AgtopCliAdapter: @unchecked Sendable {
-    /// Path of the agtop binary, or nil to look it up on every call.
+public final class RushCliAdapter: @unchecked Sendable {
+    /// Path of the rush binary, or nil to look it up on every call.
     private let executable: String?
     private let scratchDirectory: String
     /// The machine the hosts run on, nil for this one.
@@ -101,13 +126,13 @@ public final class AgtopCliAdapter: @unchecked Sendable {
     public init(executable: String? = nil, scratchDirectory: String? = nil) {
         self.executable = executable
         self.scratchDirectory = scratchDirectory
-            ?? (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/tmp/agtop")
+            ?? (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/tmp/rush")
         self.remote = nil
     }
 
-    /// agtop on another machine: every command goes through `runner`, and
+    /// rush on another machine: every command goes through `runner`, and
     /// image files of this machine are copied into `scratchDirectory` there
-    /// before agtop gets their paths.
+    /// before rush gets their paths.
     public init(remote runner: any RemoteCommandRunner, executable: String, scratchDirectory: String) {
         self.executable = executable
         self.scratchDirectory = scratchDirectory
@@ -169,10 +194,10 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         executable ?? Self.findExecutable()
     }
 
-    /// Arguments for `agtop session start`, the prompt already written to
+    /// Arguments for `rush session start`, the prompt already written to
     /// `promptFile` (`-` for stdin).
     /// rush runs other agents too, so it is told the agent is Claude Code.
-    public static func startArguments(_ request: AgtopStartRequest, promptFile: String?, rush: Bool = false) -> [String] {
+    public static func startArguments(_ request: RushStartRequest, promptFile: String?, rush: Bool = false) -> [String] {
         var args = ["session", "start", "--cwd", request.cwd, "--session-id", request.sessionId]
         if rush { args += ["--agent", "claude"] }
         if request.resume { args.append("--resume") }
@@ -189,7 +214,7 @@ public final class AgtopCliAdapter: @unchecked Sendable {
     }
 
     @discardableResult
-    public func start(_ request: AgtopStartRequest) async throws -> AgtopSessionInfo {
+    public func start(_ request: RushStartRequest) async throws -> RushSessionInfo {
         var request = request
         request.imagePaths = try await machinePaths(of: request.imagePaths)
         let prompt = request.prompt.flatMap { $0.isEmpty ? nil : $0 }
@@ -197,9 +222,9 @@ public final class AgtopCliAdapter: @unchecked Sendable {
             request, promptFile: prompt == nil ? nil : "-", rush: resolvedExecutable().map(Self.isRush) ?? false)
         let result = try await exec(args, stdin: prompt, timeout: 60)
         guard result.succeeded else {
-            throw AgtopCommandFailed(arguments: Array(args.dropFirst()), message: Self.errorMessage(result))
+            throw RushCommandFailed(arguments: Array(args.dropFirst()), message: Self.errorMessage(result))
         }
-        return try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(result.stdout.utf8))
+        return try JSONDecoder().decode(RushSessionInfo.self, from: Data(result.stdout.utf8))
     }
 
     /// Sends a message. A busy session queues it; `now` delivers it mid-turn,
@@ -211,8 +236,25 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         for path in try await machinePaths(of: imagePaths) { args += ["--image", path] }
         let result = try await exec(args, stdin: text, timeout: 60)
         guard result.succeeded else {
-            throw AgtopCommandFailed(arguments: args, message: Self.errorMessage(result))
+            throw RushCommandFailed(arguments: args, message: Self.errorMessage(result))
         }
+    }
+
+    /// Settles what the session waits on: `text` answers its question, a
+    /// tool call waiting for permission is allowed, and `deny` declines
+    /// either (`text` then goes to the agent as the reason). `request` is
+    /// the tool call id the answer is meant for. Returns false when the
+    /// binary has no `session answer` command (agtop, older rush).
+    @discardableResult
+    public func answer(id: String, text: String, deny: Bool = false, request: String? = nil) async throws -> Bool {
+        var args = ["session", "answer", id]
+        if deny { args.append("--deny") }
+        if let request, !request.isEmpty { args += ["--request", request] }
+        let result = try await exec(args, stdin: text, timeout: 30)
+        if result.succeeded { return true }
+        let message = Self.errorMessage(result)
+        if message.contains("unknown session command") { return false }
+        throw RushCommandFailed(arguments: args, message: message)
     }
 
     /// Sends the queued message at `index` now. `was` is its text as last
@@ -239,22 +281,22 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         _ = try await run(["session", "stop", id], timeout: 30)
     }
 
-    /// The host, or nil when agtop has no session with that id.
-    public func info(id: String) async throws -> AgtopSessionInfo? {
+    /// The host, or nil when rush has no session with that id.
+    public func info(id: String) async throws -> RushSessionInfo? {
         let result = try await exec(["session", "info", id, "--json"], stdin: nil, timeout: 15)
         if !result.succeeded {
             if result.stdout.contains("not found") || result.stderr.contains("not found") { return nil }
-            throw AgtopCommandFailed(arguments: ["info", id], message: Self.errorMessage(result))
+            throw RushCommandFailed(arguments: ["info", id], message: Self.errorMessage(result))
         }
-        return try JSONDecoder().decode(AgtopSessionInfo.self, from: Data(result.stdout.utf8))
+        return try JSONDecoder().decode(RushSessionInfo.self, from: Data(result.stdout.utf8))
     }
 
-    /// Every host agtop knows, stopped ones included.
-    public func list() async throws -> [AgtopSessionInfo] {
+    /// Every host rush knows, stopped ones included.
+    public func list() async throws -> [RushSessionInfo] {
         let out = try await run(["session", "list", "--json"], timeout: 15)
         let trimmed = out.trimmingCharacters(in: .whitespacesAndNewlines)
         if trimmed.isEmpty || trimmed == "null" { return [] }
-        return try JSONDecoder().decode([AgtopSessionInfo].self, from: Data(trimmed.utf8))
+        return try JSONDecoder().decode([RushSessionInfo].self, from: Data(trimmed.utf8))
     }
 
     /// `rush --version`, such as `rush b06e734 (Sep 30)`.
@@ -273,7 +315,7 @@ public final class AgtopCliAdapter: @unchecked Sendable {
 
     // MARK: - Helpers
 
-    public static let notInstalled = AgtopCommandFailed(
+    public static let notInstalled = RushCommandFailed(
         arguments: [],
         message: "rush is not installed (go install github.com/0xdeafcafe/rush/cmd/rush@latest)"
     )
@@ -281,12 +323,12 @@ public final class AgtopCliAdapter: @unchecked Sendable {
     private func run(_ args: [String], timeout: TimeInterval) async throws -> String {
         let result = try await exec(args, stdin: nil, timeout: timeout)
         guard result.succeeded else {
-            throw AgtopCommandFailed(arguments: Array(args.dropFirst()), message: Self.errorMessage(result))
+            throw RushCommandFailed(arguments: Array(args.dropFirst()), message: Self.errorMessage(result))
         }
         return result.stdout
     }
 
-    /// Runs agtop with `args`, here or on the machine. Text for stdin goes
+    /// Runs rush with `args`, here or on the machine. Text for stdin goes
     /// through a scratch file here, so a long prompt never fills a pipe.
     private func exec(_ args: [String], stdin: String?, timeout: TimeInterval) async throws -> ShellCommand.Result {
         guard let bin = resolvedExecutable() else { throw Self.notInstalled }
@@ -302,7 +344,7 @@ public final class AgtopCliAdapter: @unchecked Sendable {
         return try await ShellCommand.run("/bin/sh", arguments: ["-c", command], timeout: timeout)
     }
 
-    /// Paths agtop can open: the same paths here, and on a machine a copy of
+    /// Paths rush can open: the same paths here, and on a machine a copy of
     /// each file of this machine (a path that is not a file here is taken
     /// as one on the machine already).
     private func machinePaths(of paths: [String]) async throws -> [String] {

@@ -19,11 +19,17 @@ struct NewTaskSheet: View {
     @State private var error: String?
     @FocusState private var promptFocused: Bool
 
-    /// Online masters with a board, primary first.
+    /// Online masters with a board, primary first: where a task can start.
     private var machines: [BoardModel] { fleet.onlineMasters.filter { $0.board != nil } }
 
+    /// What the machine picker lists: every master with a board, online or
+    /// not. A machine going offline stays in the list, marked, so the menu
+    /// never loses its items while it is open (UIKit aborts on a picker
+    /// menu left with nothing to select).
+    private var pickable: [BoardModel] { fleet.orderedMasters.filter { $0.board != nil } }
+
     private var board: BoardModel? {
-        machines.first { $0.server.id == machineID } ?? machines.first
+        pickable.first { $0.server.id == machineID } ?? machines.first
     }
 
     private var projects: [RemoteProject] { board?.board?.projects ?? [] }
@@ -34,14 +40,17 @@ struct NewTaskSheet: View {
                 if fleet.isMulti {
                     Section {
                         Picker("Machine", selection: $machineID) {
-                            ForEach(machines, id: \.server.id) { master in
-                                Text(master.machineName).tag(Optional(master.server.id))
+                            ForEach(pickable, id: \.server.id) { master in
+                                Text(master.isOnline ? master.machineName : "\(master.machineName), offline")
+                                    .tag(Optional(master.server.id))
                             }
                         }
                         .accessibilityIdentifier("machinePicker")
                     } footer: {
                         let offline = fleet.masters.filter { !$0.isOnline }.map(\.machineName)
-                        if !offline.isEmpty {
+                        if board.map({ !$0.isOnline }) == true {
+                            Text("\(board?.machineName ?? "This machine") is offline. Pick another machine or wait for it to come back.")
+                        } else if !offline.isEmpty {
                             Text("Offline: \(offline.joined(separator: ", ")).")
                         }
                     }
@@ -124,7 +133,7 @@ struct NewTaskSheet: View {
     }
 
     private var canLaunch: Bool {
-        board != nil && projects.contains(where: { $0.path == projectPath })
+        board?.isOnline == true && projects.contains(where: { $0.path == projectPath })
             && !projectPath.isEmpty && !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 

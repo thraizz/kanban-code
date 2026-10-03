@@ -69,7 +69,7 @@ fi
 # quotes/newlines survive) so the daemon can mirror the exact text the agent
 # received once receipt is confirmed.
 payload_b64=""
-if [ "$hook_event" = "UserPromptSubmit" ]; then
+if [ "$hook_event" = "UserPromptSubmit" ] || [ "$hook_event" = "Notification" ]; then
     payload_b64=$(printf '%s' "$input" | base64 | tr -d '\\n')
 fi
 

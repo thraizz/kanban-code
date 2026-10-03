@@ -5,7 +5,7 @@ import KanbanCodeRemoteKit
 
 /// What is typed and attached for one card, kept per Mac and card until it
 /// is sent: across leaving the card, switching tabs and relaunching the app.
-/// Stashes set a message aside for later, as agtop's ctrl+s does.
+/// Stashes set a message aside for later, as rush's ctrl+s does.
 ///
 /// Each image has an `[Image #N]` marker in the text where it goes, as in
 /// Claude Code and the Mac composer. Markers are numbered in text order,
@@ -114,7 +114,7 @@ final class ComposerDraft {
         replace(text: renumbered, images: remaining)
     }
 
-    /// A deletion reaching into a marker takes the whole marker, as agtop
+    /// A deletion reaching into a marker takes the whole marker, as rush
     /// and Claude Code do. Returns the text that makes and the caret offset
     /// in it, or nil for an edit that does not touch a marker.
     func markerDeletion(to newText: String) -> (text: String, caret: Int)? {

@@ -783,6 +783,7 @@ struct ChatInputBar: View {
     @Binding var pastedImages: [Data]
     @FocusState private var isFocused: Bool
     @State private var showQueueDialog = false
+    @State private var secretOffer = VaultSecretOffer()
     @State private var historyIndex: Int = -1 // -1 = current draft, 0 = last sent, 1 = second to last...
     @State private var savedDraft: String = "" // Draft text before history recall
     /// Active @mention query (the partial handle after the last `@`), or nil when
@@ -824,6 +825,7 @@ struct ChatInputBar: View {
             // never covers what the user is typing. Renders ABOVE siblings
             // (Divider, messageList) because it's drawn later in the VStack.
             mentionPopoverSlot
+            secretOfferSlot.padding(.horizontal, 10)
             ircComposer
         }
         .zIndex(10)
@@ -880,7 +882,7 @@ struct ChatInputBar: View {
                     onEnterIntercept: { computeMentionReplacement() },
                     onTabIntercept: { computeMentionReplacement() },
                     onImagePaste: insertPastedImage,
-                    onEscape: { handleEscape() },
+                    onEscape: { escapeOrDecline(handleEscape) },
                     onHeightChange: { height in
                         editorHeight = clampedEditorHeight(height, minHeight: 24, maxHeight: 160)
                     },
@@ -951,6 +953,7 @@ struct ChatInputBar: View {
     // Original card-chat composer (unchanged).
     private var cardBody: some View {
         VStack(spacing: 6) {
+            secretOfferSlot
             ZStack(alignment: .bottomTrailing) {
                 VStack(spacing: 0) {
                     // Image thumbnails inside the prompt box
@@ -980,7 +983,7 @@ struct ChatInputBar: View {
                     onUpArrowAtStart: { recallHistoryUp() },
                     onDownArrowAtStart: { recallHistoryDown() },
                     onImagePaste: insertPastedImage,
-                    onEscape: onEscape,
+                    onEscape: { escapeOrDecline(onEscape) },
                     onHeightChange: { height in
                         editorHeight = clampedEditorHeight(height, minHeight: 36, maxHeight: 160)
                     },
@@ -1205,6 +1208,7 @@ struct ChatInputBar: View {
     }
 
     private func send() {
+        if secretOffer.isActive { secretOffer.accept(); return }
         let normalized = PromptImagePlaceholders.normalize(text: text, images: pastedImages)
         let trimmed = normalized.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
@@ -1215,12 +1219,28 @@ struct ChatInputBar: View {
             try? data.write(to: URL(fileURLWithPath: path))
             imagePaths.append(path)
         }
-        onSend(trimmed, imagePaths)
-        text = ""
-        pastedImages = []
-        usesInlineImageMarkers = false
-        historyIndex = -1
-        savedDraft = ""
+        secretOffer.submit(trimmed) { final in
+            onSend(final, imagePaths)
+            text = ""
+            pastedImages = []
+            usesInlineImageMarkers = false
+            historyIndex = -1
+            savedDraft = ""
+            focusInput()
+        }
+    }
+
+    /// Escape answers No while a secret offer is open.
+    private func escapeOrDecline(_ fallback: (() -> Void)?) {
+        if secretOffer.isActive { secretOffer.decline() } else { fallback?() }
+    }
+
+    @ViewBuilder
+    private var secretOfferSlot: some View {
+        if secretOffer.isActive && !secretOffer.proposals.isEmpty {
+            VaultSecretOfferBar(offer: secretOffer)
+                .padding(.bottom, 6)
+        }
     }
 
     private func recallHistoryUp() -> String? {

@@ -24,10 +24,14 @@ enum RemoteOpenAPI {
       "parameters": [{"$ref": "#/components/parameters/All"}],
       "get": {"summary": "The working set (no archived, no All Sessions, the 30 most recent Done) and projects; all=1 for every card", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Board"}}}}, "401": {"$ref": "#/components/responses/Error"}}}
     },
+    "/v1/machines": {
+      "get": {"summary": "The machines a task can run on: this master (kind this, where a task with no machine runs), the other masters and the ssh machines", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MachineList"}}}}, "401": {"$ref": "#/components/responses/Error"}}}
+    },
     "/v1/cards/{id}": {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "get": {"summary": "One card", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}}},
-      "patch": {"summary": "Rename, move or archive the card: {\"name\", \"column\", \"archived\"}, each optional; syncs to the other masters", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}}}
+      "patch": {"summary": "Rename, move, archive or pin the card: {\"name\", \"column\", \"archived\", \"pinned\"}, each optional; archived false brings an archived card back; syncs to the other masters", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}},
+      "delete": {"summary": "Delete an archived card with its subagents, sessions and conversation file", "responses": {"204": {"description": "deleted"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}
     },
     "/v1/cards/{id}/transcript": {
       "parameters": [
@@ -81,6 +85,14 @@ enum RemoteOpenAPI {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "post": {"summary": "Continue the card on another master (a handover) or machine; {\"to\": \"<machine id or name>\"|\"mac\"}", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Card"}}}}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}
     },
+    "/v1/cards/{id}/worktree/remove": {
+      "parameters": [{"$ref": "#/components/parameters/CardId"}],
+      "post": {"summary": "Remove the card's worktree on the machine that holds it (the owning master runs it), then drop the worktree from the card, or the card when it has no session. Full scope", "responses": {"200": {"description": "{\"machine\", \"cardDeleted\"}"}, "403": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}
+    },
+    "/v1/cards/{id}/discover": {
+      "parameters": [{"$ref": "#/components/parameters/CardId"}],
+      "post": {"summary": "Re-scan the card's conversation for pushed branches and its pull requests, on the owning master", "responses": {"204": {"description": "done"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
     "/v1/cards/{id}/handover": {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "get": {"summary": "What a master adopting the card needs: repository origin, branch, uncommitted changes, transcript size", "responses": {"200": {"description": "RemoteHandoverInfo"}, "404": {"$ref": "#/components/responses/Error"}}}
@@ -116,13 +128,13 @@ enum RemoteOpenAPI {
     "responses": {"Error": {"description": "refused", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}},
     "schemas": {
       "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
-      "Health": {"type": "object", "properties": {"app": {"type": "string"}, "version": {"type": "string"}, "apiVersion": {"type": "integer"}, "hostName": {"type": "string"}, "features": {"type": "array", "items": {"type": "string", "enum": ["images", "queue", "terminalScroll"]}, "description": "what the server supports beyond apiVersion 1; missing on older servers"}}},
+      "Health": {"type": "object", "properties": {"app": {"type": "string"}, "version": {"type": "string"}, "apiVersion": {"type": "integer"}, "hostName": {"type": "string"}, "features": {"type": "array", "items": {"type": "string", "enum": ["images", "queue", "terminalScroll", "machines", "cardActions", "worktrees"]}, "description": "what the server supports beyond apiVersion 1; missing on older servers"}}},
       "Device": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "scope": {"type": "string", "enum": ["full", "agent"]}, "createdAt": {"type": "string", "format": "date-time"}, "lastSeenAt": {"type": ["string", "null"], "format": "date-time"}}},
       "PR": {"type": "object", "properties": {"number": {"type": "integer"}, "url": {"type": ["string", "null"]}, "title": {"type": ["string", "null"]}, "status": {"type": ["string", "null"], "description": "open, draft, merged or closed"}}},
       "Terminal": {"type": "object", "properties": {"sessionName": {"type": "string"}, "label": {"type": "string"}, "isPrimary": {"type": "boolean"}}},
       "Card": {
         "type": "object",
-        "description": "isLive, isBusy and archived are left out when false, queuedPromptCount when 0, queuedPrompts, terminals and prs when empty, null fields always; a missing key means that default.",
+        "description": "isLive, isBusy, archived and pinned are left out when false, queuedPromptCount when 0, queuedPrompts, terminals and prs when empty, null fields always; a missing key means that default.",
         "required": ["id", "title", "column", "assistant", "runtime", "updatedAt"],
         "properties": {
           "id": {"type": "string"},
@@ -133,7 +145,7 @@ enum RemoteOpenAPI {
           "branch": {"type": ["string", "null"]},
           "worktreePath": {"type": ["string", "null"]},
           "assistant": {"type": "string", "description": "claude, codex, gemini or opencode"},
-          "runtime": {"type": "string", "enum": ["tmux", "agtop", "machine", "none"]},
+          "runtime": {"type": "string", "enum": ["tmux", "agtop", "machine", "none"], "description": "agtop: a rush host (rush was named agtop)"},
           "isLive": {"type": "boolean"},
           "isBusy": {"type": "boolean"},
           "sessionId": {"type": ["string", "null"]},
@@ -143,12 +155,14 @@ enum RemoteOpenAPI {
           "queuedPrompts": {"type": "array", "items": {"$ref": "#/components/schemas/QueuedPrompt"}, "description": "oldest first"},
           "parentCardId": {"type": ["string", "null"]},
           "archived": {"type": "boolean"},
+          "pinned": {"type": "boolean"},
           "lastActivity": {"type": ["string", "null"], "format": "date-time"},
           "updatedAt": {"type": "string", "format": "date-time"},
           "machineId": {"type": ["string", "null"], "description": "the master that owns the card; send its prompts, transcript and terminal calls there"},
           "machineName": {"type": ["string", "null"]}
         }
       },
+      "MachineList": {"type": "object", "properties": {"machines": {"type": "array", "items": {"type": "object", "required": ["name", "kind"], "properties": {"id": {"type": "string", "description": "machine id of a master"}, "name": {"type": "string", "description": "what TaskRequest.machine accepts"}, "kind": {"type": "string", "enum": ["this", "master", "ssh"]}, "online": {"type": "boolean"}, "alwaysOn": {"type": "boolean"}}}}}},
       "Machine": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
       "Project": {"type": "object", "properties": {"path": {"type": "string"}, "name": {"type": "string"}}},
       "Board": {"type": "object", "properties": {"cards": {"type": "array", "items": {"$ref": "#/components/schemas/Card"}}, "projects": {"type": "array", "items": {"$ref": "#/components/schemas/Project"}}, "generatedAt": {"type": "string", "format": "date-time"}, "machine": {"$ref": "#/components/schemas/Machine", "description": "the master serving this board"}}},
@@ -165,7 +179,8 @@ enum RemoteOpenAPI {
           "assistant": {"type": "string", "description": "claude, codex, gemini or opencode"},
           "model": {"type": "string"},
           "launch": {"type": "boolean", "description": "false only creates the card in the backlog"},
-          "images": {"type": "array", "maxItems": 6, "items": {"$ref": "#/components/schemas/Image"}}
+          "images": {"type": "array", "maxItems": 6, "items": {"$ref": "#/components/schemas/Image"}},
+          "machine": {"type": "string", "description": "where the card runs: a name from GET /v1/machines, or mac/local/here for this master; omit for the project default"}
         }
       },
       "PromptRequest": {"type": "object", "required": ["text"], "properties": {"text": {"type": "string", "description": "may be empty when images has some"}, "mode": {"type": "string", "enum": ["queue", "now"], "default": "queue"}, "images": {"type": "array", "maxItems": 6, "items": {"$ref": "#/components/schemas/Image"}}}},

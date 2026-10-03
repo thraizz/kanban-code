@@ -72,6 +72,30 @@ final class FleetModel {
 
     var isMulti: Bool { masters.count > 1 }
 
+    /// A decision and the master to answer it on.
+    struct FleetAttention: Identifiable {
+        var id: String { request.id }
+        let request: AttentionRequest
+        let master: BoardModel
+        let cardName: String?
+    }
+
+    /// Open decisions on every master, oldest first. A master that mirrors
+    /// another's request lists it too; the owner's copy wins.
+    var attention: [FleetAttention] {
+        var byId: [String: FleetAttention] = [:]
+        for master in masters {
+            for request in master.attention where request.isOpen {
+                let owns = request.machineId == nil || request.machineId == master.machineId
+                if byId[request.id] == nil || owns {
+                    let name = request.cardId.flatMap { id in cards.first { $0.card.id == id }?.card.title }
+                    byId[request.id] = FleetAttention(request: request, master: master, cardName: name)
+                }
+            }
+        }
+        return byId.values.sorted { $0.request.createdAt < $1.request.createdAt }
+    }
+
     /// Cards name their machine when more than one machine runs them: several
     /// masters paired, or one master listing cards synced from its peers.
     var showsMachines: Bool {

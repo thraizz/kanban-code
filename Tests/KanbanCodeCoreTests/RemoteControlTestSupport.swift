@@ -20,6 +20,9 @@ final class FakeRemoteHost: RemoteControlHost {
         var promptImages: [[RemotePromptImages.Decoded]] = []
         var queueSends: [String] = []
         var scrolls: [(session: String, lines: Int)] = []
+        var attention: [AttentionRequest] = []
+        var resolutions: [(id: String, resolution: String, by: String)] = []
+        var presences: [MacPresence] = []
     }
 
     let state: Mutex<State>
@@ -37,6 +40,33 @@ final class FakeRemoteHost: RemoteControlHost {
         ),
         RemoteCard(id: "card_idle", title: "Ended", column: .waiting, runtime: .none, updatedAt: Date(timeIntervalSince1970: 1_800_000_000)),
     ]
+
+    func attention() async -> [AttentionRequest] {
+        state.withLock { $0.attention }
+    }
+
+    func resolveAttention(id: String, resolution: String, by: String) async throws {
+        let conts = try state.withLock { s -> [AsyncStream<Void>.Continuation] in
+            guard s.attention.contains(where: { $0.id == id }) else { throw RemoteHostError.notFound("no attention request \(id)") }
+            s.attention.removeAll { $0.id == id }
+            s.resolutions.append((id, resolution, by))
+            return Array(s.continuations.values)
+        }
+        conts.forEach { $0.yield() }
+    }
+
+    func reportPresence(_ presence: MacPresence) async {
+        state.withLock { $0.presences.append(presence) }
+    }
+
+    /// Raises a request and wakes the event streams.
+    func raise(_ request: AttentionRequest) {
+        let conts = state.withLock { s in
+            s.attention.append(request)
+            return Array(s.continuations.values)
+        }
+        conts.forEach { $0.yield() }
+    }
 
     func setTerminalCommand(_ argv: [String]) {
         state.withLock { $0.terminalCommand = argv }
@@ -69,6 +99,13 @@ final class FakeRemoteHost: RemoteControlHost {
         let end = before.flatMap(Int.init) ?? all.count
         let start = max(0, end - limit)
         return RemoteTranscript(cardId: cardId, messages: Array(all[start..<end]), olderCursor: start > 0 ? String(start) : nil)
+    }
+
+    func machines() async -> [RemoteMachineEntry] {
+        [
+            RemoteMachineEntry(id: "machine_box", name: "rchaves-platform", kind: .this, online: true, alwaysOn: true),
+            RemoteMachineEntry(id: "machine_mac", name: "studio", kind: .master, online: false),
+        ]
     }
 
     func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard {
@@ -175,7 +212,7 @@ final class RemoteServerFixture: Sendable {
     let fullDevice: RemoteDevice
     let session: URLSession
 
-    init(host: FakeRemoteHost = FakeRemoteHost()) async throws {
+    init(host: FakeRemoteHost = FakeRemoteHost(), vault: VaultService? = nil) async throws {
         dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("remote-control-\(UUID().uuidString)")
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         self.host = host
@@ -187,7 +224,8 @@ final class RemoteServerFixture: Sendable {
         agentToken = agent.token
         server = RemoteControlServer(
             host: host, devices: devices, port: 0, bindAddresses: { [RemoteNetworkAddresses.loopback] },
-            options: .init(pingInterval: 0.4, pushInterval: 0.2, watchInterval: 0.1, appVersion: "test", hostName: "test-mac")
+            options: .init(pingInterval: 0.4, pushInterval: 0.2, watchInterval: 0.1, appVersion: "test", hostName: "test-mac"),
+            vault: vault
         )
         try await server.start()
         let config = URLSessionConfiguration.ephemeral

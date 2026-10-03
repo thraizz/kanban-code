@@ -526,6 +526,24 @@ struct ReducerTests {
         #expect(state.pinnedCards.map(\.id) == ["card_arch1"])
     }
 
+    @Test("unarchiveCard puts an archived card in the backlog for reconcile to place, and leaves other cards alone")
+    func unarchiveCard() {
+        var archived = makeLink(id: "card_ua1", column: .allSessions)
+        archived.manuallyArchived = true
+        archived.manualOverrides.column = true
+        let onBoard = makeLink(id: "card_ua2", column: .inReview)
+        var state = stateWith([archived, onBoard])
+
+        let effects = Reducer.reduce(state: &state, action: .unarchiveCard(cardId: "card_ua1"))
+        #expect(state.links["card_ua1"]?.manuallyArchived == false)
+        #expect(state.links["card_ua1"]?.column == .backlog)
+        #expect(state.links["card_ua1"]?.manualOverrides.column == false)
+        #expect(effects.contains(where: { if case .upsertLink = $0 { return true }; return false }))
+
+        #expect(Reducer.reduce(state: &state, action: .unarchiveCard(cardId: "card_ua2")).isEmpty)
+        #expect(state.links["card_ua2"]?.column == .inReview)
+    }
+
     @Test("Pinning a card that is not archived leaves its column alone")
     func setCardPinnedKeepsColumnWhenNotArchived() {
         let link = makeLink(id: "card_live1", column: .inReview)

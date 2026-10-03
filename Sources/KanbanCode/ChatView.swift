@@ -111,7 +111,11 @@ struct ChatView: View {
                     onCheckpoint: onCheckpoint,
                     githubBaseURL: githubBaseURL,
                     onSendAnswer: { answer in
-                        onSendPrompt(answer, [])
+                        let cardId = cardId
+                        Task { @MainActor in
+                            if let answerCard = AppServices.answerCard, await answerCard(cardId, answer) { return }
+                            onSendPrompt(answer, [])
+                        }
                     }
                 )
 
@@ -604,8 +608,8 @@ private struct ChatMessageList: View {
         while !Task.isCancelled {
             let newBusy: Bool
             do {
-                if let agtopId = AgtopSessionName.agtopId(fromName: session) {
-                    newBusy = try await tmux.agtop(forSession: session).info(id: agtopId)?.isBusy ?? false
+                if let rushId = RushSessionName.rushId(fromName: session) {
+                    newBusy = try await tmux.rush(forSession: session).info(id: rushId)?.isBusy ?? false
                 } else {
                     let output = try await tmux.capturePane(sessionName: session)
                     newBusy = PaneOutputParser.isWorking(output, assistant: assistant)

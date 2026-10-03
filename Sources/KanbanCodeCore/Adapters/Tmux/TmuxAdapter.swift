@@ -69,6 +69,7 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         // Create session with a shell (no command argument).
         // Then send the command via send-keys so the shell stays alive
         // if the command exits — the user can see errors and take charge.
+        await dropInheritedServerEnvironment()
         let args = ["new-session", "-d", "-s", name, "-c", path]
         let result = try await runTmux(args)
         if !result.succeeded {
@@ -92,6 +93,16 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
                 }
             }
         }
+    }
+
+    /// Fails quietly when no server runs yet: the server new-session starts
+    /// then gets this process's own environment, already scrubbed.
+    private func dropInheritedServerEnvironment() async {
+        let tmp = try? await runTmux(["show-environment", "-g", "TMPDIR"])
+        let value = tmp.flatMap { $0.succeeded ? $0.stdout : nil }?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(separator: "=", maxSplits: 1).dropFirst().first.map(String.init)
+        _ = try? await runTmux(InheritedSessionEnvironment.tmuxUnsetArguments(serverTMPDIR: value))
     }
 
     public func killSession(name: String) async throws {

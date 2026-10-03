@@ -88,7 +88,7 @@ Feature: Session Discovery
 
   Scenario: A headless session no card claims stays in All Sessions
     Given a script runs "claude -p" in a project, so its transcript records "entrypoint": "sdk-cli"
-    And no card has its sessionId, and no agtop card is waiting for a session in that project
+    And no card has its sessionId, and no rush card is waiting for a session in that project
     When the discovery process runs
     Then a discovered card is created for the session with headless = true
     And the card is listed in All Sessions only, whatever its activity
@@ -101,10 +101,10 @@ Feature: Session Discovery
     Then the card moves to All Sessions and is not deleted
 
   Scenario: Sessions Kanban runs headless keep their cards
-    Given a card launched on agtop, so its session runs as "claude -p" with "entrypoint": "sdk-cli"
+    Given a card launched on rush, so its session runs as "claude -p" with "entrypoint": "sdk-cli"
     When the discovery process runs
     Then the card keeps its session and its column follows activity as usual
-    And it stays on the board after its agtop host is gone
+    And it stays on the board after its rush host is gone
 
   Scenario: A headless session does not attach to an interactive card by project
     Given a card launched in tmux is waiting for its session in "/repo"

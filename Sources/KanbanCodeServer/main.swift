@@ -112,7 +112,8 @@ let server = RemoteControlServer(
     bindAddresses: { loopbackOnly ? [RemoteNetworkAddresses.loopback] : RemoteNetworkAddresses.bindable() },
     options: .init(appVersion: KanbanCodeServerVersion.current, hostName: hostName),
     peerServer: peerServer,
-    syncEngine: master.agentSync
+    syncEngine: master.agentSync,
+    vault: master.vault
 )
 
 do {

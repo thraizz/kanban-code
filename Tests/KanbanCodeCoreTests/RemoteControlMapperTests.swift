@@ -90,27 +90,35 @@ struct RemoteControlMapperTests {
         #expect(RemoteTerminalScroll.tmuxCommands(session: "s", lines: 0).isEmpty)
     }
 
-    @Test("an agtop card lists its host's queue first, with ids that find each message again")
-    func agtopQueue() {
-        let card = KanbanCodeCard(link: Self.link(tmux: TmuxLink(sessionName: "agtop-0a1b2c3d")), activityState: .activelyWorking)
-        let remote = RemoteBoardMapper.card(card, liveSessions: ["agtop-0a1b2c3d"],
-                                            agtopQueues: ["agtop-0a1b2c3d": ["one", "two"]])
+    @Test("a rush card lists its host's queue first, with ids that find each message again")
+    func rushQueue() {
+        let card = KanbanCodeCard(link: Self.link(tmux: TmuxLink(sessionName: "rush-0a1b2c3d")), activityState: .activelyWorking)
+        let remote = RemoteBoardMapper.card(card, liveSessions: ["rush-0a1b2c3d"],
+                                            rushQueues: ["rush-0a1b2c3d": ["one", "two"]])
         #expect(remote.queuedPrompts.map(\.text) == ["one", "two", "also run the tests"])
         #expect(remote.queuedPromptCount == 3)
         let two = remote.queuedPrompts[1].id
+        // Older masters and phones look for the agtop prefix.
         #expect(two.hasPrefix("agtop-1-"))
-        #expect(RemoteBoardMapper.agtopQueueIndex(of: two, in: ["one", "two"]) == 1)
+        #expect(RemoteBoardMapper.isRushPromptId(two))
+        let renamed = "rush-" + two.dropFirst("agtop-".count)
+        #expect(RemoteBoardMapper.isRushPromptId(renamed))
+        #expect(RemoteBoardMapper.rushQueueIndex(of: renamed, in: ["one", "two"]) == 1)
+        #expect(RemoteBoardMapper.rushQueueIndex(of: two, in: ["one", "two"]) == 1)
         // The queue moved: found by its text.
-        #expect(RemoteBoardMapper.agtopQueueIndex(of: two, in: ["two"]) == 0)
-        #expect(RemoteBoardMapper.agtopQueueIndex(of: two, in: ["one"]) == nil)
-        #expect(RemoteBoardMapper.agtopQueueIndex(of: "prompt_abc", in: ["one"]) == nil)
+        #expect(RemoteBoardMapper.rushQueueIndex(of: two, in: ["two"]) == 0)
+        #expect(RemoteBoardMapper.rushQueueIndex(of: two, in: ["one"]) == nil)
+        #expect(RemoteBoardMapper.rushQueueIndex(of: "prompt_abc", in: ["one"]) == nil)
     }
 
-    @Test("runtime and liveness: agtop, machine, shell only, ended")
+    @Test("runtime and liveness: rush, machine, shell only, ended")
     func runtimes() {
-        let agtop = Self.link(tmux: TmuxLink(sessionName: "agtop-0123abcd"))
-        #expect(RemoteBoardMapper.runtime(of: agtop) == .agtop)
-        #expect(RemoteBoardMapper.isLive(agtop, liveSessions: ["agtop-0123abcd"]))
+        let rush = Self.link(tmux: TmuxLink(sessionName: "rush-0123abcd"))
+        #expect(RemoteBoardMapper.runtime(of: rush) == .rush)
+        #expect(RemoteBoardMapper.isLive(rush, liveSessions: ["rush-0123abcd"]))
+        let legacy = Self.link(tmux: TmuxLink(sessionName: "agtop-0123abcd"))
+        #expect(RemoteBoardMapper.runtime(of: legacy) == .rush)
+        #expect(RemoteBoardMapper.isLive(legacy, liveSessions: ["agtop-0123abcd"]))
 
         let machine = Self.link(remote: RemoteLink(machineName: "kanban-acme-1"))
         #expect(RemoteBoardMapper.runtime(of: machine) == .machine)
@@ -180,7 +188,7 @@ struct RemoteControlMapperTests {
     @Test("a prompt's images show as their [Image #N] markers, never as file paths")
     func userImages() {
         let turns = [
-            // agtop splits the text at each marker, an image after it.
+            // rush splits the text at each marker, an image after it.
             ConversationTurn(index: 0, lineNumber: 0, role: "user", textPreview: "",
                              contentBlocks: [ContentBlock(kind: .text, text: "compare [Image #1]"),
                                              ContentBlock(kind: .text, text: " with [Image #2] please")],

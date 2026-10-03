@@ -1,6 +1,6 @@
 # kanban remote
 
-`kanban remote` drives the Kanban Code app on a Mac over its HTTP API (`docs/remote-control.md` at the repo root). It runs on any machine with Node.js 20 or newer that can reach the Mac, usually over Tailscale. Sessions always run on the Mac; this CLI only reads the board and sends requests.
+`kanban remote` drives a Kanban Code master (the Mac app, or `kanban-code-server` on a Linux box) over its HTTP API (`docs/remote-control.md` at the repo root). It runs on any machine with Node.js 20 or newer that can reach the master, usually over Tailscale. Sessions run on the masters; this CLI only reads the board and sends requests.
 
 ## Install on another machine
 
@@ -60,7 +60,8 @@ Only the `kanban remote` commands are meant for that machine. The other `kanban`
 | `cards [--column c] [--project p] [--all]` | Lists cards. Archived cards only with `--all`. Columns: `backlog`, `in_progress`, `waiting`, `in_review`, `done`. |
 | `projects` | Lists project names and paths that `task --project` accepts. |
 | `show <card>` | One card: column, state, project, branch, worktree, PRs. |
-| `task --project <name\|path> [--worktree [name]] [--name n] [--assistant a] [--model m] [--no-launch] [--image <path>]... <prompt...>` | Creates a card and launches it. `--worktree` without a name picks a random one. |
+| `machines` | Lists the machines a task can run on: the master this CLI is logged into (the default), the other masters with their online state, and the ssh machines. |
+| `task --project <name\|path> [--machine m] [--worktree [name]] [--name n] [--assistant a] [--model m] [--no-launch] [--image <path>]... <prompt...>` | Creates a card and launches it, and prints the machine it runs on. `--machine` takes a name from `machines`, `mac` (the one master that is not an always-on server) or `here`; without it the card runs on the master this CLI is logged into. A card for another master is handed to it, which finds the project by its origin or clones it. `--worktree` without a name picks a random one. `--no-launch` keeps the card on the logged-in master. |
 | `send <card> [--now] [--image <path>]... [text...]` | Queues a prompt for when the current turn ends. `--now` interrupts the turn first. `--image` attaches a PNG, JPEG, GIF or WebP file (up to 6, 5 MiB each); the text may be left out when there is an image. |
 | `transcript <card> [--limit N] [--follow] [--timeout d]` | Prints the conversation, oldest first. `--follow` keeps printing new messages until the card is idle. |
 | `wait <card> [--timeout d]` | Blocks until the card is idle and has no queued prompts. |

@@ -6,6 +6,11 @@ import KanbanCodeCore
 /// embedded terminal, the app delegate, chat views) reach tmux and the boxd
 /// supervisor through here instead of building their own adapters.
 enum AppServices {
+    /// Answers an attention request from a Mac notification action.
+    nonisolated(unsafe) static var resolveAttention: (@Sendable (String, String) async -> Void)?
+    /// Answers the question or plan a card waits on from the chat; false
+    /// when it waits on none.
+    nonisolated(unsafe) static var answerCard: (@Sendable (String, String) async -> Bool)?
     /// Boxd machines of the org and whether the boxd CLI answers, as the
     /// launch dialogs last read them; launches from the remote API use them.
     @MainActor static var boxdMachineNames: [String] = []
@@ -21,16 +26,16 @@ enum AppServices {
     nonisolated(unsafe) static var destroyMachine: (@MainActor (String) -> Void)?
 
     /// The command a remote viewer runs for a session, the same way the
-    /// card's own terminal decides it: an attach on its machine, agtop's own
-    /// UI for agtop, a tmux attach otherwise.
+    /// card's own terminal decides it: an attach on its machine, rush's own
+    /// UI for rush, a tmux attach otherwise.
     @MainActor
     static func terminalCommand(forSession sessionName: String) -> [String] {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         if let machine = machine(forSession: sessionName),
-           let agtopId = AgtopSessionName.agtopId(fromName: sessionName),
+           let rushId = RushSessionName.rushId(fromName: sessionName),
            let target = sshTargets[machine] {
-            let script = TerminalCache.remoteAgtopScript(
-                target: target, id: agtopId, readyMarker: remoteReadyMarkerPath(for: sessionName))
+            let script = TerminalCache.remoteRushScript(
+                target: target, id: rushId, readyMarker: remoteReadyMarkerPath(for: sessionName))
             return [shell, "-l", "-c", script]
         }
         if let machine = machine(forSession: sessionName) {
@@ -43,8 +48,8 @@ enum AppServices {
             )
             return [shell, "-l", "-c", script]
         }
-        if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
-            return AgtopCliAdapter.openCommand(id: agtopId)
+        if let rushId = RushSessionName.rushId(fromName: sessionName) {
+            return RushCliAdapter.openCommand(id: rushId)
         }
         return [shell, "-l", "-c", TerminalCache.attachScript(tmux: TerminalCache.tmuxPath, session: sessionName)]
     }

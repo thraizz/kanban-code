@@ -7,7 +7,7 @@ struct RemoteModelsTests {
     @Test("Dates travel as ISO 8601 with milliseconds and come back the same")
     func dates() throws {
         let at = Date(timeIntervalSince1970: 1_790_000_000.5)
-        let card = RemoteCard(id: "card_1", title: "Fix it", column: .waiting, runtime: .agtop, updatedAt: at)
+        let card = RemoteCard(id: "card_1", title: "Fix it", column: .waiting, runtime: .rush, updatedAt: at)
         let data = try JSONEncoder.remote.encode(card)
         let json = String(decoding: data, as: UTF8.self)
         #expect(json.contains(#""updatedAt":"2026-09-21T"#))
@@ -15,6 +15,17 @@ struct RemoteModelsTests {
         #expect(json.contains(#""column":"requires_attention""#))
         let back = try JSONDecoder.remote.decode(RemoteCard.self, from: data)
         #expect(abs(back.updatedAt.timeIntervalSince(at)) < 0.001)
+    }
+
+    @Test("A rush card goes on the wire as agtop and reads back under either name")
+    func rushRuntimeWireName() throws {
+        let at = Date(timeIntervalSince1970: 1_790_000_000)
+        let card = RemoteCard(id: "c1", title: "t", column: .inProgress, runtime: .rush, updatedAt: at)
+        let json = String(decoding: try JSONEncoder.remote.encode(card), as: UTF8.self)
+        #expect(json.contains(#""runtime":"agtop""#))
+        let renamed = json.replacingOccurrences(of: #""runtime":"agtop""#, with: #""runtime":"rush""#)
+        #expect(try JSONDecoder.remote.decode(RemoteCard.self, from: Data(renamed.utf8)).runtime == .rush)
+        #expect(try JSONDecoder.remote.decode(RemoteCard.self, from: Data(json.utf8)).runtime == .rush)
     }
 
     @Test("Dates without fractions from other clients still parse")
@@ -30,15 +41,15 @@ struct RemoteModelsTests {
         let at = Date(timeIntervalSince1970: 1_790_000_000)
         let plain = RemoteCard(id: "c1", title: "t", column: .done, updatedAt: at)
         let json = String(decoding: try JSONEncoder.remote.encode(plain), as: UTF8.self)
-        for key in ["isLive", "isBusy", "archived", "queuedPromptCount", "terminals", "prs", "sessionId"] {
+        for key in ["isLive", "isBusy", "archived", "pinned", "queuedPromptCount", "terminals", "prs", "sessionId"] {
             #expect(!json.contains("\"\(key)\""), "\(key) should be left out")
         }
         #expect(try JSONDecoder.remote.decode(RemoteCard.self, from: Data(json.utf8)) == plain)
 
         let full = RemoteCard(
-            id: "c2", title: "t", column: .inProgress, projectPath: "/p", assistant: "codex", runtime: .agtop,
+            id: "c2", title: "t", column: .inProgress, projectPath: "/p", assistant: "codex", runtime: .rush,
             isLive: true, isBusy: true, sessionId: "s", terminals: [RemoteTerminal(sessionName: "a", label: "A", isPrimary: true)],
-            prs: [RemotePR(number: 1)], queuedPromptCount: 2, parentCardId: "p", archived: true, lastActivity: at, updatedAt: at
+            prs: [RemotePR(number: 1)], queuedPromptCount: 2, parentCardId: "p", archived: true, pinned: true, lastActivity: at, updatedAt: at
         )
         #expect(try JSONDecoder.remote.decode(RemoteCard.self, from: JSONEncoder.remote.encode(full)) == full)
 
@@ -46,6 +57,6 @@ struct RemoteModelsTests {
         let card = try JSONDecoder.remote.decode(RemoteCard.self, from: Data(minimal.utf8))
         #expect(card.assistant == "claude")
         #expect(card.runtime == RemoteRuntime.none)
-        #expect(card.terminals.isEmpty && card.prs.isEmpty && !card.isLive)
+        #expect(card.terminals.isEmpty && card.prs.isEmpty && !card.isLive && !card.pinned)
     }
 }

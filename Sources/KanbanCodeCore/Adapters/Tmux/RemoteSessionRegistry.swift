@@ -12,8 +12,8 @@ public final class RemoteSessionRegistry: @unchecked Sendable {
         public var state: RemoteMachineState
         /// Adapter bound to the bridge of this machine, present while connected.
         public var tmux: TmuxAdapter?
-        /// agtop on the machine, present while connected and when it has agtop.
-        public var agtop: AgtopCliAdapter?
+        /// rush on the machine, present while connected and when it has rush.
+        public var rush: RushCliAdapter?
         /// Last sessions seen on the machine, by name.
         public var knownSessions: [String: TmuxSession]
 
@@ -41,21 +41,21 @@ public final class RemoteSessionRegistry: @unchecked Sendable {
         if let tmux { entry.tmux = tmux }
         if !state.isConnected, case .destroyed = state {
             entry.tmux = nil
-            entry.agtop = nil
+            entry.rush = nil
             entry.knownSessions = [:]
         }
         machines[name] = entry
     }
 
-    /// Records agtop on a connected machine, or nil when it has none.
-    public func setAgtop(_ agtop: AgtopCliAdapter?, on name: String) {
+    /// Records rush on a connected machine, or nil when it has none.
+    public func setRush(_ rush: RushCliAdapter?, on name: String) {
         lock.lock(); defer { lock.unlock() }
-        machines[name]?.agtop = agtop
+        machines[name]?.rush = rush
     }
 
-    public func agtop(for machine: String) -> AgtopCliAdapter? {
+    public func rush(for machine: String) -> RushCliAdapter? {
         lock.lock(); defer { lock.unlock() }
-        return machines[machine]?.agtop
+        return machines[machine]?.rush
     }
 
     /// Drops the bridge adapter of a machine and records the new state.
@@ -64,7 +64,7 @@ public final class RemoteSessionRegistry: @unchecked Sendable {
         guard var entry = machines[name] else { return }
         entry.state = state
         entry.tmux = nil
-        entry.agtop = nil
+        entry.rush = nil
         machines[name] = entry
     }
 

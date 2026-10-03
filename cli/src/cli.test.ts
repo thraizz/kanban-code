@@ -332,14 +332,14 @@ describe("kanban channel (CLI e2e)", () => {
     const r = runCli(["self-compact", "--follow-up-delay", "0.1", "Continue", "after", "compact."], env);
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /Sent \/compact to sess-self with post-compact follow-up/);
-    const log = waitForLog(logPath, /set-buffer -b kc-\d+-\d+ -- Continue after compact\.[\s\S]*paste-buffer/);
+    const log = waitForLog(logPath, /set-buffer -b kc-\d+-\d+ -- \[Self-compact follow-up from this card\]: Continue after compact\.[\s\S]*paste-buffer/);
     assert.match(log, /display-message -p #S/);
     assert.match(log, /send-keys -t sess-self Enter/);
     assert.match(log, /send-keys -t sess-self Escape/);
     assert.match(log, /set-buffer -b kc-\d+-\d+ -- \/compact/);
     assert.match(log, /paste-buffer -p -d -b kc-\d+-\d+ -t sess-self/);
     assert.match(log, /send-keys -t sess-self Enter/);
-    assert.match(log, /set-buffer -b kc-\d+-\d+ -- Continue after compact\./);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- \[Self-compact follow-up from this card\]: Continue after compact\./);
     assert.match(log, /paste-buffer -p -d -b kc-\d+-\d+ -t sess-self/);
   });
 
@@ -374,7 +374,7 @@ describe("kanban channel (CLI e2e)", () => {
     assert.equal(r.code, 0, r.stderr);
     assert.match(r.stdout, /with post-compact follow-up/);
     const log = waitForLog(logPath, /2\. Report back\./);
-    assert.match(log, /set-buffer -b kc-\d+-\d+ -- Continue after compact/);
+    assert.match(log, /set-buffer -b kc-\d+-\d+ -- \[Self-compact follow-up from this card\]: Continue after compact/);
     assert.match(log, /1\. Recheck CI/);
     assert.match(log, /2\. Report back\./);
   });

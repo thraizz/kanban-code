@@ -1,4 +1,5 @@
 import SwiftUI
+import LocalAuthentication
 import AppKit
 import UserNotifications
 import KanbanCodeCore
@@ -8,6 +9,7 @@ struct KanbanCodeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
+        InheritedSessionEnvironment.scrub()
         MainThreadWatchdog.shared.start()
         MemoryDiagnostics.shared.start()
         ChatBootstrap.run()
@@ -180,12 +182,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         # Installed by Kanban Code — TypeScript CLI wrapper.
         exec node "\(cliPath)" "$@"
         """
+        let kvScript = """
+        #!/bin/sh
+        # Installed by Kanban Code: the vault CLI.
+        exec node "\(resourceURL.appendingPathComponent("cli/dist/kv.js").path)" "$@"
+        """
         do {
             try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
             try script.write(to: scriptPath, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: scriptPath.path
             )
+            let kvPath = binDir.appendingPathComponent("kv")
+            try kvScript.write(to: kvPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: kvPath.path)
         } catch {
             print("[Kanban Code] Failed to install CLI: \(error)")
         }
@@ -666,7 +676,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let info = response.notification.request.content.userInfo
-        if let cardId = info["cardId"] as? String {
+        if let attentionId = info[MacAttentionNotificationClient.requestIdKey] as? String,
+           response.actionIdentifier.hasPrefix(MacAttentionNotificationClient.optionPrefix),
+           let index = Int(response.actionIdentifier.dropFirst(MacAttentionNotificationClient.optionPrefix.count)) {
+            // An option picked on the banner answers without opening the app.
+            let request = MainActor.assumeIsolated { AppComposition.shared.store.state.attentionRequests[attentionId] }
+            if let request, request.options.indices.contains(index) {
+                let resolution = request.options[index]
+                let biometry = request.requiresBiometry
+                Task {
+                    if biometry, !(await Self.confirmWithBiometry(reason: "Approve: \(request.title)")) { return }
+                    await AppServices.resolveAttention?(attentionId, resolution)
+                }
+            }
+            completionHandler()
+            return
+        }
+        if let attentionId = info[MacAttentionNotificationClient.requestIdKey] as? String {
+            // Opens the card, then the request's details over it.
+            if let cardId = info["cardId"] as? String {
+                NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
+            }
+            NotificationCenter.default.post(name: .kanbanCodeShowAttention, object: nil, userInfo: ["id": attentionId])
+        } else if let cardId = info["cardId"] as? String {
             NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
         } else if let kind = info["chatKind"] as? String {
             switch kind {
@@ -692,6 +724,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             NSApp.activate(ignoringOtherApps: true)
         }
         completionHandler()
+    }
+}
+
+extension AppDelegate {
+    /// Touch ID (or the password) before an approval that asks for it.
+    static func confirmWithBiometry(reason: String) async -> Bool {
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else { return false }
+        return (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) ?? false
     }
 }
 
@@ -747,7 +789,15 @@ extension Notification.Name {
     static let browserFocusAddressBar = Notification.Name("browserFocusAddressBar")
     static let browserReload = Notification.Name("browserReload")
     static let renameSelectedCard = Notification.Name("renameSelectedCard")
+    /// Asks the detail view of `userInfo["cardId"]` to open one of its own
+    /// sheets or modes, named by `userInfo["request"]` (a `CardDetailRequest`).
+    static let cardDetailRequest = Notification.Name("cardDetailRequest")
     static let kanbanReopenClosedTab = Notification.Name("kanbanReopenClosedTab")
+}
+
+/// What the card detail view opens on a `.cardDetailRequest`.
+enum CardDetailRequest: String {
+    case promptHistory, vault, checkpoint
 }
 
 /// Lock-protected box so a bounded synchronous process read can hand its output
