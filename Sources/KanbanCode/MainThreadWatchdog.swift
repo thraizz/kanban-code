@@ -15,7 +15,9 @@ import os
 final class MainThreadWatchdog: @unchecked Sendable {
     static let shared = MainThreadWatchdog()
 
-    private let checkInterval: TimeInterval = 0.1
+    /// Gap between pings. Each ping wakes the main thread, so this is kept
+    /// coarse: stalls past 500ms are still caught, at 2 wakeups a second.
+    private let checkInterval: TimeInterval = 0.5
     private let minLogInterval: TimeInterval = 10
     private let minSampleInterval: TimeInterval = 300
     /// Stall length that starts a stack capture.
@@ -75,9 +77,10 @@ final class MainThreadWatchdog: @unchecked Sendable {
                 var modalSeen = false
                 if semaphore.wait(timeout: .now() + self.sampleThreshold) == .timedOut {
                     modalSeen = self.isModal()
+                    // Follow-up samples only extend a capture the throttle let
+                    // through; otherwise every stall would force a `sample`.
                     var samples = 0
-                    if !modalSeen {
-                        self.captureSample(reason: "stall", force: false)
+                    if !modalSeen, self.captureSample(reason: "stall", force: false) {
                         samples = 1
                     }
                     var counted = false
@@ -93,7 +96,7 @@ final class MainThreadWatchdog: @unchecked Sendable {
                                 pingTime, last.name, last.ageMs
                             ))
                         }
-                        if samples < self.maxSamplesPerHang {
+                        if samples > 0 && samples < self.maxSamplesPerHang {
                             // Keep capturing while the hang lasts; a running sample defers this.
                             if self.captureSample(reason: "stall", force: true) { samples += 1 }
                         }
