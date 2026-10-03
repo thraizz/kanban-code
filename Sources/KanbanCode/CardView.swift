@@ -91,8 +91,7 @@ struct CardView: View {
         .overlay(alignment: .topTrailing) {
             HStack(spacing: 4) {
                 if card.showSpinner {
-                    ProgressView()
-                        .controlSize(.small)
+                    CardActivitySpinner()
                 } else if card.column == .backlog {
                     Button(action: onStart) {
                         Image(systemName: "play.fill")
@@ -541,15 +540,43 @@ struct SubagentDisclosureCaret: View {
 
 /// Flashing red fill and border for a card whose session is blocked on a
 /// permission prompt, so it stands out among cards that are merely waiting.
+/// Pulses only while the window appears active: an endless animation keeps
+/// the app and WindowServer redrawing at frame rate, which drains the battery
+/// when the board sits in the background.
 private struct PermissionPromptPulse: View {
+    @Environment(\.appearsActive) private var appearsActive
+
     var body: some View {
-        RoundedRectangle(cornerRadius: 8)
+        let shape = RoundedRectangle(cornerRadius: 8)
             .fill(Color.red)
             .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.red, lineWidth: 1.5))
-            .phaseAnimator([0.12, 0.35]) { shape, opacity in
+        if appearsActive {
+            shape.phaseAnimator([0.12, 0.35]) { shape, opacity in
                 shape.opacity(opacity)
             } animation: { _ in
                 .easeInOut(duration: 0.8)
             }
+        } else {
+            shape.opacity(0.35)
+        }
+    }
+}
+
+/// The working indicator of a card: a spinner while the window appears
+/// active, a still icon otherwise, so busy cards in a background window do
+/// not keep redrawing.
+struct CardActivitySpinner: View {
+    @Environment(\.appearsActive) private var appearsActive
+
+    var body: some View {
+        if appearsActive {
+            ProgressView()
+                .controlSize(.small)
+        } else {
+            Image(systemName: "circle.dotted")
+                .font(.app(size: 12))
+                .foregroundStyle(.secondary)
+                .frame(width: 16, height: 16)
+        }
     }
 }

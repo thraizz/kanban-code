@@ -885,8 +885,7 @@ private struct ListCardRowView: View {
             }
 
             if card.showSpinner {
-                ProgressView()
-                    .controlSize(.small)
+                CardActivitySpinner()
             } else if card.column == .backlog {
                 Button(action: onStart) {
                     Image(systemName: "play.fill")
