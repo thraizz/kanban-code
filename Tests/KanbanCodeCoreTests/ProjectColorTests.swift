@@ -14,8 +14,8 @@ struct ProjectColorTests {
 
     @Test("Explicit color wins over position")
     func explicitWins() {
-        let projects = [Project(path: "/a"), Project(path: "/b", color: .red)]
-        #expect(ProjectColor.resolve(path: "/b", in: projects) == .red)
+        let projects = [Project(path: "/a"), Project(path: "/b", color: .brown)]
+        #expect(ProjectColor.resolve(path: "/b", in: projects) == .brown)
         #expect(ProjectColor.automatic(path: "/b", in: projects) == ProjectColor.allCases[1])
     }
 
@@ -23,6 +23,12 @@ struct ProjectColorTests {
     func unconfiguredStable() {
         let first = ProjectColor.resolve(path: "/somewhere/else", in: [])
         #expect(ProjectColor.resolve(path: "/somewhere/else", in: [Project(path: "/a")]) == first)
+    }
+
+    @Test("Palette has no alert-like reds")
+    func noRedShades() {
+        #expect(ProjectColor(rawValue: "red") == nil)
+        #expect(ProjectColor(rawValue: "pink") == nil)
     }
 
     @Test("Unknown stored color decodes as automatic")
