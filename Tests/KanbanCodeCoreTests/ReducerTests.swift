@@ -515,6 +515,31 @@ struct ReducerTests {
         #expect(state.links.count == 1)
     }
 
+    @Test("A deleted card's worktree does not come back as an orphan card")
+    func deletedWorktreeStaysDeleted() {
+        let worktree = WorktreeLink(path: "/test/project/.worktrees/feat-x", branch: "feat/x")
+        let deleted = makeLink(id: "card_wt", column: .allSessions, worktreeLink: worktree)
+        var state = stateWith([deleted])
+        let _ = Reducer.reduce(state: &state, action: .deleteCards(cardIds: [deleted.id]))
+        #expect(state.tombstones[deleted.id]?.worktreeLink?.path == worktree.path)
+
+        // The reconciler's next pass finds the worktree on disk with no card.
+        let orphan = Link(projectPath: "/test/project", source: .discovered, worktreeLink: worktree)
+        let other = Link(
+            projectPath: "/test/project", source: .discovered,
+            worktreeLink: WorktreeLink(path: "/test/project/.worktrees/feat-y", branch: "feat/y")
+        )
+        let _ = Reducer.reduce(state: &state, action: .reconciled(ReconciliationResult(
+            links: [orphan, other],
+            sessions: [],
+            activityMap: [:],
+            tmuxSessions: []
+        )))
+
+        #expect(state.links[orphan.id] == nil)
+        #expect(state.links[other.id] != nil)
+    }
+
     // MARK: - Rename Card
 
     @Test("renameCard sets name and manual override")

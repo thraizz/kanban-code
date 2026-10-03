@@ -2558,10 +2558,21 @@ public enum Reducer {
             // newer updatedAt than the stale snapshot the reconciler used.
             var mergedLinks = state.links
             var preservedIds: Set<String> = []
+            // Worktrees of deleted cards. Deleting a card leaves its worktree
+            // on disk, and the reconciler would make a new card for it as an
+            // orphan on the next pass.
+            let deletedWorktreePaths = Set(state.tombstones.values.compactMap { $0.worktreeLink?.path })
             for reconciledLink in result.links {
                 var link = reconciledLink
                 // Skip cards deliberately deleted during this reconciliation cycle
                 if state.deletedCardIds.contains(link.id) {
+                    continue
+                }
+                // Skip a new orphan-worktree card for a deleted card's worktree.
+                // A session started in that worktree still gets its card.
+                if mergedLinks[link.id] == nil, link.source == .discovered,
+                   link.sessionLink == nil, link.tmuxLink == nil,
+                   let path = link.worktreeLink?.path, deletedWorktreePaths.contains(path) {
                     continue
                 }
                 // Skip cards whose session was deliberately deleted
