@@ -34,6 +34,7 @@ struct BoardView: View {
     var enabledAssistants: [CodingAssistant] = []
     var onMigrateAssistant: (String, CodingAssistant) -> Void = { _, _ in }
     var onRefreshBacklog: () -> Void = {}
+    var onDeleteAllCards: (KanbanCodeColumn) -> Void = { _ in }
 
     var canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool = { _, _ in true }
     var onDropCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
@@ -232,6 +233,7 @@ struct BoardView: View {
                             enabledAssistants: enabledAssistants,
                             onMigrateAssistant: onMigrateAssistant,
                             onRefreshBacklog: column == .backlog ? onRefreshBacklog : nil,
+                            onDeleteAllCards: column == .allSessions ? { onDeleteAllCards(column) } : nil,
                             onCardClicked: onCardClicked,
                             onColumnBackgroundClick: onColumnBackgroundClick
                         )

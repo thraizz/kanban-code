@@ -322,7 +322,7 @@ public enum LinkSync {
     public static func allowsForeignEdits(_ action: Action) -> Bool {
         switch action {
         case .moveCard, .renameCard, .setCardPinned, .setSelfCompactContextThreshold, .setCardModel,
-             .archiveCard, .unarchiveCard, .deleteCard, .reorderCard, .reorderPinnedCard, .updatePrompt,
+             .archiveCard, .unarchiveCard, .deleteCard, .deleteCards, .reorderCard, .reorderPinnedCard, .updatePrompt,
              .addIssueLinkToCard, .addPRToCard, .markPRMerged, .unlinkFromCard, .createManualTask:
             return true
         default:

@@ -27,6 +27,9 @@ public enum DialogState: Equatable, Sendable {
     case confirmArchiveWithMachine(cardId: String)
     /// Destroy the boxd machine of a card and keep the card.
     case confirmDestroyMachine(cardId: String)
+    /// Delete every card a lane shows. The ids are taken when the dialog
+    /// opens, so the count it names is what gets deleted.
+    case confirmDeleteColumn(column: KanbanCodeColumn, cardIds: [String])
 }
 
 // MARK: - AppState
@@ -675,6 +678,10 @@ public enum Action: Sendable {
     /// Brings an archived card back to the board.
     case unarchiveCard(cardId: String)
     case deleteCard(cardId: String)
+    /// Deletes many cards in one pass: one links.json write and one batch of
+    /// file and tmux cleanup, where `deleteCard` per card would rewrite the
+    /// whole file once for each.
+    case deleteCards(cardIds: [String])
     case selectCard(cardId: String?)
     case setPaletteOpen(Bool)
     case setDetailExpanded(Bool)
@@ -1090,6 +1097,67 @@ public enum Reducer {
         return changed
     }
 
+    /// Removes the links with `ids` and returns the cleanup of each: tmux
+    /// sessions, terminal and browser caches, transcripts, prompt images and
+    /// a boxd machine left with no card. `batched` folds the per-card effects
+    /// into one of each kind and persists the links with a single write.
+    private static func deleteLinks(_ ids: [String], state: AppState, batched: Bool) -> [Effect] {
+        if let selected = state.selectedCardId, ids.contains(selected) {
+            state.selectedCardId = nil
+        }
+        var effects: [Effect] = []
+        var tmuxNames: [String] = []
+        var files: [String] = []
+        var machines: Set<String> = []
+        for id in ids {
+            guard let link = state.links.removeValue(forKey: id) else { continue }
+            state.deletedCardIds.insert(id)
+            if let sessionId = link.sessionLink?.sessionId {
+                state.deletedSessionIds.insert(sessionId)
+            }
+            if !batched { effects.append(.removeLink(id)) }
+            if let tmux = link.tmuxLink {
+                if batched {
+                    tmuxNames += tmux.allSessionNames
+                } else {
+                    effects.append(.killTmuxSessions(tmux.allSessionNames))
+                    effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
+                }
+            }
+            if link.browserTabs != nil {
+                effects.append(.cleanupBrowserCache(cardId: id))
+            }
+            if let sessionPath = link.sessionLink?.sessionPath {
+                if batched { files.append(sessionPath) } else { effects.append(.deleteSessionFile(sessionPath)) }
+            }
+            if let remote = link.remote, remote.mode == .boxd {
+                if batched {
+                    machines.insert(remote.machineName)
+                } else if state.cardIds(onMachine: remote.machineName).isEmpty {
+                    effects.append(.destroyRemoteMachine(machineName: remote.machineName))
+                }
+            }
+            var imagesToDelete = link.promptImagePaths ?? []
+            imagesToDelete += (link.queuedPrompts ?? []).flatMap { $0.imagePaths ?? [] }
+            if batched {
+                files += imagesToDelete
+            } else if !imagesToDelete.isEmpty {
+                effects.append(.deleteFiles(imagesToDelete))
+            }
+        }
+        guard batched else { return effects }
+        effects.append(.persistLinks(Array(state.links.values)))
+        if !tmuxNames.isEmpty {
+            effects.append(.killTmuxSessions(tmuxNames))
+            effects.append(.cleanupTerminalCache(sessionNames: tmuxNames))
+        }
+        if !files.isEmpty { effects.append(.deleteFiles(files)) }
+        for machine in machines.sorted() where state.cardIds(onMachine: machine).isEmpty {
+            effects.append(.destroyRemoteMachine(machineName: machine))
+        }
+        return effects
+    }
+
     static func reduceAction(state: AppState, action: Action) -> [Effect] {
         switch action {
 
@@ -1384,39 +1452,26 @@ public enum Reducer {
         case .deleteCard(let cardId):
             guard state.links[cardId] != nil else { return [] }
             let descendants = SubagentHierarchy.descendantIds(of: cardId, in: state.links)
-            let idsToDelete = [cardId] + descendants.sorted()
-            if let selected = state.selectedCardId, idsToDelete.contains(selected) {
-                state.selectedCardId = nil
+            return deleteLinks([cardId] + descendants.sorted(), state: state, batched: false)
+
+        case .deleteCards(let cardIds):
+            let roots = cardIds.filter { state.links[$0] != nil }
+            guard !roots.isEmpty else { return [] }
+            // One children map for all of them: descendantIds per card would
+            // group every link once per card.
+            var childrenByParent: [String: [String]] = [:]
+            for link in state.links.values {
+                if let parent = link.parentCardId { childrenByParent[parent, default: []].append(link.id) }
             }
-            var effects: [Effect] = []
-            for id in idsToDelete {
-                guard let link = state.links.removeValue(forKey: id) else { continue }
-                state.deletedCardIds.insert(id)
-                if let sessionId = link.sessionLink?.sessionId {
-                    state.deletedSessionIds.insert(sessionId)
-                }
-                effects.append(.removeLink(id))
-                if let tmux = link.tmuxLink {
-                    effects.append(.killTmuxSessions(tmux.allSessionNames))
-                    effects.append(.cleanupTerminalCache(sessionNames: tmux.allSessionNames))
-                }
-                if link.browserTabs != nil {
-                    effects.append(.cleanupBrowserCache(cardId: id))
-                }
-                if let sessionPath = link.sessionLink?.sessionPath {
-                    effects.append(.deleteSessionFile(sessionPath))
-                }
-                if let remote = link.remote, remote.mode == .boxd,
-                   state.cardIds(onMachine: remote.machineName).isEmpty {
-                    effects.append(.destroyRemoteMachine(machineName: remote.machineName))
-                }
-                var imagesToDelete = link.promptImagePaths ?? []
-                imagesToDelete += (link.queuedPrompts ?? []).flatMap { $0.imagePaths ?? [] }
-                if !imagesToDelete.isEmpty {
-                    effects.append(.deleteFiles(imagesToDelete))
-                }
+            var seen = Set<String>()
+            var idsToDelete: [String] = []
+            var queue = roots
+            while let id = queue.popLast() {
+                guard seen.insert(id).inserted else { continue }
+                idsToDelete.append(id)
+                queue.append(contentsOf: childrenByParent[id] ?? [])
             }
-            return effects
+            return deleteLinks(idsToDelete, state: state, batched: true)
 
         case .closeDrawer:
             state.openDrawer = .none

@@ -469,6 +469,52 @@ struct ReducerTests {
         }))
     }
 
+    @Test("deleteCards removes every card and its subagents with one write of the links")
+    func deleteCardsBatchesCleanup() {
+        let a = makeLink(
+            id: "card_a", column: .allSessions,
+            tmuxLink: TmuxLink(sessionName: "tmux-a"),
+            sessionLink: SessionLink(sessionId: "sess_a", sessionPath: "/a.jsonl")
+        )
+        let b = makeLink(
+            id: "card_b", column: .allSessions,
+            sessionLink: SessionLink(sessionId: "sess_b", sessionPath: "/b.jsonl")
+        )
+        let child = Link(
+            id: "card_child", parentCardId: a.id,
+            sessionLink: SessionLink(sessionId: "sess_c", sessionPath: "/c.jsonl"),
+            tmuxLink: TmuxLink(sessionName: "tmux-c")
+        )
+        let kept = makeLink(id: "card_kept", column: .waiting)
+        var state = stateWith([a, b, child, kept])
+        state.selectedCardId = b.id
+
+        let effects = Reducer.reduce(state: &state, action: .deleteCards(cardIds: [a.id, b.id, "card_gone"]))
+
+        #expect(Set(state.links.keys) == [kept.id])
+        #expect(state.selectedCardId == nil)
+        #expect(state.deletedCardIds == [a.id, b.id, child.id])
+        #expect(state.deletedSessionIds == ["sess_a", "sess_b", "sess_c"])
+        #expect(!effects.contains { if case .removeLink = $0 { true } else { false } })
+        let writes = effects.compactMap { if case .persistLinks(let links) = $0 { links } else { nil } }
+        #expect(writes.count == 1)
+        #expect(writes.first?.map(\.id) == [kept.id])
+        let kills = effects.compactMap { if case .killTmuxSessions(let names) = $0 { names } else { nil } }
+        #expect(kills.count == 1)
+        #expect(Set(kills.first ?? []) == ["tmux-a", "tmux-c"])
+        let deletions = effects.compactMap { if case .deleteFiles(let paths) = $0 { paths } else { nil } }
+        #expect(deletions.count == 1)
+        #expect(Set(deletions.first ?? []) == ["/a.jsonl", "/b.jsonl", "/c.jsonl"])
+    }
+
+    @Test("deleteCards with no known card does nothing")
+    func deleteCardsUnknownIsNoop() {
+        var state = stateWith([makeLink(id: "card_kept")])
+        let effects = Reducer.reduce(state: &state, action: .deleteCards(cardIds: ["card_gone"]))
+        #expect(effects.isEmpty)
+        #expect(state.links.count == 1)
+    }
+
     // MARK: - Rename Card
 
     @Test("renameCard sets name and manual override")

@@ -324,6 +324,7 @@ struct ContentView: View {
                 presentDialog(.confirmMigration(cardId: cardId, targetAssistant: target, recentTurnLimit: nil))
             },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
+            onDeleteAllCards: { column in confirmDeleteAllCards(in: column) },
             canDropCard: { card, column in
                 CardDropIntent.resolve(card, to: column).isAllowed
             },
@@ -396,6 +397,7 @@ struct ContentView: View {
                 presentDialog(.confirmMigration(cardId: cardId, targetAssistant: target, recentTurnLimit: nil))
             },
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
+            onDeleteAllCards: { column in confirmDeleteAllCards(in: column) },
             onDropCard: { cardId, column in handleDrop(cardId: cardId, to: column) },
             onMergeCards: { sourceId, targetId in
                 store.dispatch(.mergeCards(sourceId: sourceId, targetId: targetId))
@@ -1016,6 +1018,13 @@ struct ContentView: View {
 
     // MARK: - Global Dialog
 
+    /// Asks before deleting every card a lane shows, pinned ones aside.
+    private func confirmDeleteAllCards(in column: KanbanCodeColumn) {
+        let ids = store.state.unpinnedCards(in: column).map(\.id)
+        guard !ids.isEmpty else { return }
+        presentDialog(.confirmDeleteColumn(column: column, cardIds: ids))
+    }
+
     private var dialogTitle: String {
         switch activeDialog {
         case .none: return ""
@@ -1032,6 +1041,8 @@ struct ContentView: View {
         case .confirmDeleteChannel(let name): return "Delete #\(name)?"
         case .confirmArchiveWithMachine: return "Archive and destroy machine?"
         case .confirmDestroyMachine: return "Destroy machine?"
+        case .confirmDeleteColumn(let column, let cardIds):
+            return "Delete \(cardIds.count) Card\(cardIds.count == 1 ? "" : "s") from \(column.displayName)?"
         }
     }
 
@@ -1090,6 +1101,12 @@ struct ContentView: View {
                 dismissDialog()
             }
             .keyboardShortcut(.defaultAction)
+        case .confirmDeleteColumn(_, let cardIds):
+            Button("Cancel", role: .cancel) { dismissDialog() }
+            Button("Delete \(cardIds.count)", role: .destructive) {
+                store.dispatch(.deleteCards(cardIds: cardIds))
+                dismissDialog()
+            }
         case .confirmFork(let cardId):
             Button("Cancel", role: .cancel) { dismissDialog() }
             if store.state.cards.first(where: { $0.id == cardId })?.link.worktreeLink != nil {
@@ -1230,6 +1247,8 @@ struct ContentView: View {
             Text("This removes the channel and its membership metadata. Messages in \(name).jsonl are left on disk so you can recover them manually if needed.")
         case .confirmArchiveWithMachine(let cardId):
             Text("Are you sure? This destroys the boxd machine \(remoteMachineName(cardId: cardId)) and everything on it that was not pushed. The conversation stays on this Mac.")
+        case .confirmDeleteColumn(_, let cardIds):
+            Text("This permanently deletes \(cardIds.count) card\(cardIds.count == 1 ? "" : "s"), their subagents and their conversation transcripts. Pinned cards and cards hidden by the project filter are kept.")
         case .confirmDestroyMachine(let cardId):
             Text("Destroy the boxd machine \(remoteMachineName(cardId: cardId))? Files on the machine that were not pushed are lost. The conversation stays on this Mac and can continue locally.")
         }

@@ -35,6 +35,7 @@ struct ListBoardView: View {
     var enabledAssistants: [CodingAssistant] = []
     var onMigrateAssistant: (String, CodingAssistant) -> Void = { _, _ in }
     var onRefreshBacklog: () -> Void = {}
+    var onDeleteAllCards: (KanbanCodeColumn) -> Void = { _ in }
     var onDropCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
     var onMergeCards: (String, String) -> Void = { _, _ in }
     var canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool = { _, _ in true }
@@ -291,6 +292,7 @@ struct ListBoardView: View {
             enabledAssistants: enabledAssistants,
             onMigrateAssistant: onMigrateAssistant,
             onRefreshBacklog: onRefreshBacklog,
+            onDeleteAllCards: onDeleteAllCards,
             onMoveCard: onDropCard,
             onMergeCards: onMergeCards,
             canDropCard: canDropCard,
@@ -394,6 +396,7 @@ private struct ListBoardSectionView: View {
     let enabledAssistants: [CodingAssistant]
     let onMigrateAssistant: (String, CodingAssistant) -> Void
     let onRefreshBacklog: () -> Void
+    let onDeleteAllCards: (KanbanCodeColumn) -> Void
     let onMoveCard: (String, KanbanCodeColumn) -> Void
     let onMergeCards: (String, String) -> Void
     let canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool
@@ -443,6 +446,8 @@ private struct ListBoardSectionView: View {
                 isCollapsed: isCollapsed,
                 isRefreshingBacklog: isRefreshingBacklog,
                 onRefreshBacklog: section.column == .backlog ? onRefreshBacklog : nil,
+                onDeleteAllCards: section.column == .allSessions && !section.cards.isEmpty
+                    ? { onDeleteAllCards(section.column) } : nil,
                 onToggleCollapse: onToggleCollapse
             )
             .overlay(alignment: .topTrailing) {
@@ -658,6 +663,7 @@ private struct ListSectionHeader: View {
     let isCollapsed: Bool
     let isRefreshingBacklog: Bool
     let onRefreshBacklog: (() -> Void)?
+    let onDeleteAllCards: (() -> Void)?
     let onToggleCollapse: () -> Void
 
     var body: some View {
@@ -688,6 +694,21 @@ private struct ListSectionHeader: View {
                     .buttonStyle(.borderless)
                     .help("Refresh GitHub issues")
                     .disabled(isRefreshingBacklog)
+                }
+
+                if let onDeleteAllCards, count > 0 {
+                    Menu {
+                        Button("Delete All \(count) Cards…", role: .destructive) {
+                            onDeleteAllCards()
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.app(.caption))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Column actions")
                 }
 
                 Text("\(count)")
