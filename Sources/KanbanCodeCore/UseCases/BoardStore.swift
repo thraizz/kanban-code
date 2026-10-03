@@ -373,6 +373,10 @@ public final class AppState: @unchecked Sendable {
     /// so only columns with actual changes trigger SwiftUI re-renders.
     public internal(set) var cardsByColumn: [KanbanCodeColumn: [KanbanCodeCard]] = [:]
 
+    /// `cardsByColumn` without pinned cards, as the lanes show them. Cached so
+    /// a lane receives the same array (and storage) until its cards change.
+    public internal(set) var unpinnedCardsByColumn: [KanbanCodeColumn: [KanbanCodeCard]] = [:]
+
     /// Visible columns — cached for independent observation.
     public internal(set) var visibleColumns: [KanbanCodeColumn] = []
 
@@ -567,7 +571,24 @@ public final class AppState: @unchecked Sendable {
             }
             newByColumn[column] = sorted.map { newFiltered[$0] }
         }
-        if newByColumn != cardsByColumn { cardsByColumn = newByColumn }
+        // Keep the old array of every column whose cards did not change.
+        // SwiftUI compares view inputs with `==`, and `Array ==` returns at
+        // once for arrays sharing storage; a fresh array instead costs a
+        // field-by-field compare of every card in the column on each update.
+        var mergedByColumn = newByColumn
+        var newUnpinnedByColumn: [KanbanCodeColumn: [KanbanCodeCard]] = [:]
+        for (column, columnCards) in newByColumn {
+            if let old = cardsByColumn[column], old == columnCards {
+                mergedByColumn[column] = old
+                if let oldUnpinned = unpinnedCardsByColumn[column] {
+                    newUnpinnedByColumn[column] = oldUnpinned
+                    continue
+                }
+            }
+            newUnpinnedByColumn[column] = columnCards.filter { !$0.link.isPinned }
+        }
+        if mergedByColumn != cardsByColumn { cardsByColumn = mergedByColumn }
+        if newUnpinnedByColumn != unpinnedCardsByColumn { unpinnedCardsByColumn = newUnpinnedByColumn }
 
         let alwaysVisible: [KanbanCodeColumn] = [.backlog, .inProgress, .waiting, .inReview, .done]
         var newVisible = alwaysVisible
@@ -582,7 +603,7 @@ public final class AppState: @unchecked Sendable {
 
     /// Lane presentation excludes pinned cards, but their underlying column is unchanged.
     public func unpinnedCards(in column: KanbanCodeColumn) -> [KanbanCodeCard] {
-        cards(in: column).filter { !$0.link.isPinned }
+        unpinnedCardsByColumn[column] ?? []
     }
 
     public func cardCount(in column: KanbanCodeColumn) -> Int {

@@ -508,6 +508,23 @@ struct ReducerTests {
         #expect(unpinEffects.contains(where: { if case .upsertLink = $0 { return true }; return false }))
     }
 
+    @Test("A rebuild keeps the array of a lane whose cards did not change")
+    func rebuildKeepsUnchangedLaneStorage() {
+        let backlog = makeLink(id: "card_keep1", column: .backlog)
+        let waiting = makeLink(id: "card_change1", column: .waiting, name: "Old name")
+        var state = stateWith([backlog, waiting])
+        state.rebuildCards()
+        let before = state.unpinnedCards(in: .backlog).withUnsafeBufferPointer { $0.baseAddress }
+
+        let _ = Reducer.reduce(state: &state, action: .renameCard(cardId: "card_change1", name: "New name"))
+        state.rebuildCards()
+
+        // SwiftUI's `==` on a lane's cards returns at once for shared storage.
+        let after = state.unpinnedCards(in: .backlog).withUnsafeBufferPointer { $0.baseAddress }
+        #expect(before != nil && before == after)
+        #expect(state.unpinnedCards(in: .waiting).map(\.displayTitle) == ["New name"])
+    }
+
     @Test("Pinning an archived card brings it back onto the board")
     func setCardPinnedUnarchives() {
         var link = makeLink(id: "card_arch1", column: .allSessions)
