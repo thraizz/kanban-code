@@ -105,7 +105,10 @@ public enum AssignColumn {
         // Live tmux session → at least waiting (never allSessions)
         // A card with an active tmux session is still in-flight, even if
         // we haven't received hook data yet.
-        if hasWorktree {
+        // Orphan worktree cards (discovered from `git worktree list`, nothing
+        // ever ran in them) age out like any other idle card, so leftover
+        // worktrees don't pin cards in Waiting for as long as they exist.
+        if hasWorktree && !isOrphanWorktree(link: link, hasLiveSession: hasLiveSession) {
             return .waiting
         }
 
@@ -113,7 +116,9 @@ public enum AssignColumn {
         // These sessions are recent but not confirmed active by hooks/polling.
         // In Progress is reserved for hook-confirmed actively working sessions.
         // User can triage from here: drag to All Sessions to archive, or resume.
-        if let lastActivity = link.lastActivity {
+        // Orphans have no activity of their own; their discovery time stands in.
+        let isOrphan = hasWorktree && isOrphanWorktree(link: link, hasLiveSession: hasLiveSession)
+        if let lastActivity = link.lastActivity ?? (isOrphan ? link.createdAt : nil) {
             let hoursSinceActivity = Date.now.timeIntervalSince(lastActivity) / 3600
             if hoursSinceActivity < 24 {
                 return .waiting
@@ -122,5 +127,15 @@ public enum AssignColumn {
 
         // Default: allSessions
         return .allSessions
+    }
+
+    /// A card the reconciler created for an unmatched worktree: only a
+    /// worktree link, no session, no terminal.
+    static func isOrphanWorktree(link: Link, hasLiveSession: Bool) -> Bool {
+        link.source == .discovered
+            && link.worktreeLink != nil
+            && link.sessionLink == nil
+            && link.tmuxLink == nil
+            && !hasLiveSession
     }
 }
