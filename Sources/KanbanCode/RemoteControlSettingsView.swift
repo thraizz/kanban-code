@@ -77,7 +77,7 @@ struct RemoteControlSettingsView: View {
                 }
                 ForEach(controller.devices) { device in
                     HStack {
-                        Image(systemName: device.scope == .full ? "iphone" : "cpu")
+                        Image(systemName: device.scope == .full ? "iphone" : (device.scope == .agent ? "cpu" : "server.rack"))
                             .foregroundStyle(.secondary)
                             .frame(width: 18)
                         VStack(alignment: .leading, spacing: 2) {
@@ -161,7 +161,12 @@ struct RemoteControlSettingsView: View {
     }
 
     private func deviceDetail(_ device: RemoteDevice) -> String {
-        let scope = device.scope == .full ? "Full access" : "Agent, no terminals"
+        let scope = switch device.scope {
+        case .full: "Full access"
+        case .agent: "Agent, no terminals"
+        case .peer: "Peer master, no terminals"
+        case .terminal: "Terminals only"
+        }
         guard let seen = device.lastSeenAt else { return "\(scope) · never seen" }
         let relative = RelativeDateTimeFormatter().localizedString(for: seen, relativeTo: Date())
         return "\(scope) · seen \(relative)"
@@ -223,6 +228,7 @@ struct AddRemoteDeviceSheet: View {
         Picker("Access", selection: $scope) {
             Text("Full: board, prompts and terminals").tag(RemoteScope.full)
             Text("Agent: board, tasks and prompts, no terminals").tag(RemoteScope.agent)
+            Text("Peer master: sync, moves and approvals, no terminals").tag(RemoteScope.peer)
         }
         .pickerStyle(.radioGroup)
         if let error {

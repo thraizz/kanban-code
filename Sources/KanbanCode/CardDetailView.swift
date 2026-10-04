@@ -484,7 +484,7 @@ struct CardDetailView: View {
         }
         .sheet(isPresented: $showPromptHistory) {
             PromptHistorySheet(cardId: card.id) { body in
-                let prompt = QueuedPrompt(body: body, sendAutomatically: true)
+                let prompt = QueuedPrompt(body: body, sendAutomatically: true, humanWrittenAt: .now)
                 onAddQueuedPrompt(prompt)
                 onSendQueuedPrompt(prompt.id)
             }
@@ -533,7 +533,8 @@ struct CardDetailView: View {
                     if let existing = item.existingPrompt {
                         onUpdateQueuedPrompt(existing.id, body, sendAuto)
                     } else {
-                        onAddQueuedPrompt(QueuedPrompt(body: body, sendAutomatically: sendAuto, imagePaths: imagePaths))
+                        onAddQueuedPrompt(QueuedPrompt(body: body, sendAutomatically: sendAuto, imagePaths: imagePaths,
+                                                       humanWrittenAt: .now))
                     }
                 }
             )
@@ -698,7 +699,8 @@ struct CardDetailView: View {
                     id: UUID().uuidString,
                     body: text,
                     sendAutomatically: true,
-                    imagePaths: imagePaths.isEmpty ? nil : imagePaths
+                    imagePaths: imagePaths.isEmpty ? nil : imagePaths,
+                    humanWrittenAt: .now
                 )
                 onAddQueuedPrompt(prompt)
                 onSendQueuedPrompt(prompt.id)
@@ -707,7 +709,8 @@ struct CardDetailView: View {
                 let prompt = QueuedPrompt(
                     body: body,
                     sendAutomatically: sendAuto,
-                    imagePaths: imagePaths.isEmpty ? nil : imagePaths
+                    imagePaths: imagePaths.isEmpty ? nil : imagePaths,
+                    humanWrittenAt: .now
                 )
                 onAddQueuedPrompt(prompt)
             },

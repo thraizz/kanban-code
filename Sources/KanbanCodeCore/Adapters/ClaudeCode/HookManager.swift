@@ -285,6 +285,10 @@ public enum HookManager {
 
     set -euo pipefail
 
+    # A side chat (/btw, /catchup) forks a session to answer a question and
+    # writes nothing: it is not a session of the board.
+    if [ -n "${KANBAN_SIDE_CHAT:-}" ]; then cat > /dev/null; exit 0; fi
+
     EVENTS_DIR="${HOME}/.kanban-code"
     EVENTS_FILE="${EVENTS_DIR}/hook-events.jsonl"
 

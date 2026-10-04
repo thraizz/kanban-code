@@ -913,8 +913,12 @@ public enum Effect: Sendable {
     case refreshDiscovery
     case updateSessionIndex(sessionId: String, name: String)
     case moveSessionFile(cardId: String, sessionId: String, oldPath: String, newProjectPath: String)
-    case sendPromptToTmux(sessionName: String, promptBody: String, assistant: CodingAssistant)
-    case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant)
+    /// `human` marks a prompt the human wrote himself, for a rush session
+    /// that records it.
+    case sendPromptToTmux(sessionName: String, promptBody: String, assistant: CodingAssistant, human: Bool = false)
+    case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant, human: Bool = false)
+    /// Writes a prompt the human wrote himself to the card's record of them.
+    case recordHumanMessage(cardId: String, text: String, at: Date, sessionId: String?)
     case journalQueuedPrompt(cardId: String, prompt: QueuedPrompt, reason: QueuedPromptJournalReason)
     case deleteFiles([String])
 
@@ -2101,18 +2105,25 @@ public enum Reducer {
             state.links[cardId] = link
             let sendEffect: Effect
             if let imagePaths = prompt.imagePaths, !imagePaths.isEmpty {
-                sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths, assistant: link.effectiveAssistant)
+                sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths, assistant: link.effectiveAssistant, human: prompt.isHuman)
             } else {
-                sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body, assistant: link.effectiveAssistant)
+                sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body, assistant: link.effectiveAssistant, human: prompt.isHuman)
             }
             // Journalled before the send, because the send is what loses it:
             // the prompt is already gone from the card by the time tmux is
             // asked to take it, and nothing retries.
-            return [
+            var effects: [Effect] = [
                 .journalQueuedPrompt(cardId: cardId, prompt: prompt, reason: .sent),
                 .upsertLink(link),
-                sendEffect,
             ]
+            // His own prompt counts from when he wrote it, not from when the
+            // queue let it go.
+            if let writtenAt = prompt.humanWrittenAt {
+                effects.append(.recordHumanMessage(cardId: cardId, text: prompt.body, at: writtenAt,
+                                                   sessionId: link.sessionLink?.sessionId))
+            }
+            effects.append(sendEffect)
+            return effects
 
         case .reorderQueuedPrompts(let cardId, let promptIds):
             guard var link = state.links[cardId],

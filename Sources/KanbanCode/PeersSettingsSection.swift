@@ -10,6 +10,7 @@ struct PeersSettingsSection: View {
     @State private var name = ""
     @State private var url = ""
     @State private var token = ""
+    @State private var terminalToken = ""
     @State private var machineName = ""
     private let settingsStore = SettingsStore()
 
@@ -48,7 +49,8 @@ struct PeersSettingsSection: View {
             HStack {
                 TextField("Name", text: $name).frame(width: 120)
                 TextField("http://100.x.y.z:7780", text: $url)
-                SecureField("Token", text: $token).frame(width: 160)
+                SecureField("Token", text: $token).frame(width: 130)
+                SecureField("Terminal token", text: $terminalToken).frame(width: 130)
                 Button("Add") { add() }
                     .disabled(url.trimmingCharacters(in: .whitespaces).isEmpty || token.trimmingCharacters(in: .whitespaces).isEmpty)
             }
@@ -64,7 +66,7 @@ struct PeersSettingsSection: View {
         } header: {
             Text("Peers")
         } footer: {
-            Text("Other masters this Mac syncs cards with. On a box, `kanban-code-server pair <name>` prints a token for this Mac; give that box a token from Add Device here so it syncs back.")
+            Text("Other masters this Mac syncs cards with. On a box, `kanban-code-server pair <name> --scope peer` prints a token for this Mac; give that box a Peer master token from Add Device here so it syncs back. A peer token cannot open terminals: to show the box's card terminals here, add the token of `kanban-code-server pair <name> --scope terminal` as the terminal token.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -124,12 +126,15 @@ struct PeersSettingsSection: View {
         let peer = PeerConfig(
             name: name.trimmingCharacters(in: .whitespaces).isEmpty ? normalized : name.trimmingCharacters(in: .whitespaces),
             url: normalized,
-            token: token.trimmingCharacters(in: .whitespacesAndNewlines)
+            token: token.trimmingCharacters(in: .whitespacesAndNewlines),
+            terminalToken: terminalToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? nil : terminalToken.trimmingCharacters(in: .whitespacesAndNewlines)
         )
         save { $0.append(peer) }
         name = ""
         url = ""
         token = ""
+        terminalToken = ""
     }
 
     private func update(_ id: String, _ change: @escaping (inout PeerConfig) -> Void) {

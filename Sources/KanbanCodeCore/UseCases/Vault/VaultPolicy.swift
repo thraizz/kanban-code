@@ -1,4 +1,5 @@
 import Foundation
+import KanbanCodeRemoteKit
 
 /// What the decision engine knows about one release of one secret.
 public struct VaultDecisionInput: Sendable, Equatable {
@@ -10,13 +11,18 @@ public struct VaultDecisionInput: Sendable, Equatable {
     public var hasLease: Bool
     /// Releases of this secret in the rate window, this one excluded.
     public var recentReleases: Int
+    /// The secret is a project's development secret without rules of its
+    /// own, and the card's process runs in that project's folder.
+    public var ownProjectDev: Bool
 
-    public init(tier: VaultTier, everyUseAsks: Bool = false, insideCard: Bool, hasLease: Bool = false, recentReleases: Int = 0) {
+    public init(tier: VaultTier, everyUseAsks: Bool = false, insideCard: Bool, hasLease: Bool = false, recentReleases: Int = 0,
+                ownProjectDev: Bool = false) {
         self.tier = tier
         self.everyUseAsks = everyUseAsks
         self.insideCard = insideCard
         self.hasLease = hasLease
         self.recentReleases = recentReleases
+        self.ownProjectDev = ownProjectDev
     }
 }
 
@@ -51,8 +57,30 @@ public struct JevVerdict: Sendable, Equatable {
 /// 2. not inside a verified card session: ask, whatever the tier.
 /// 3. more than `rateLimit` releases of the secret in the window: ask.
 /// 4. an active card lease (and the secret allows leases): allow.
-/// 5. tier open: allow. judged: Jev. ask: the human.
+/// 5. tier open: allow. judged: allow the project's own development
+///    secret, else Jev. ask: the human.
 public enum VaultPolicy {
+    /// The environment whose judged secrets a card gets in its own project
+    /// without a Jev call.
+    public static let developmentEnvironment = VaultSecretName.defaultEnvironment
+    public static let ownProjectDevReason = "the project's own development secret"
+
+    /// Whether `secret` is a development secret of one of `callerProjects`
+    /// (the projects of the folder the calling process runs in) that the
+    /// policy releases to a card on its own. Shared secrets, other
+    /// environments, secrets with rules and ones that ask on every use are
+    /// not; nor is any caller that is not a card.
+    public static func isOwnProjectDev(_ secret: VaultSecret, caller: VaultCaller, callerProjects: [String]) -> Bool {
+        // A card another master vouched for runs a command here over ssh:
+        // this master read neither its session nor where it works.
+        guard caller.insideCard, caller.openClawAgent == nil, caller.verifiedByPeer == nil,
+              let project = secret.project, secret.environment == developmentEnvironment,
+              secret.rules.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+              !secret.leasePolicy.everyUseAsks, secret.aws == nil
+        else { return false }
+        return callerProjects.contains(project)
+    }
+
     public static let rateLimit = 20
     public static let rateWindow: TimeInterval = 5 * 60
     /// Jev must be at least this sure to allow on its own.
@@ -75,7 +103,7 @@ public enum VaultPolicy {
         }
         switch input.tier {
         case .open: return .allow(.tier, "open tier")
-        case .judged: return .consultJev
+        case .judged: return input.ownProjectDev ? .allow(.rule, ownProjectDevReason) : .consultJev
         case .ask: return .ask(input.everyUseAsks ? "every use of this secret asks" : "this secret always asks")
         case .never: return .deny("this secret is never released")
         }
@@ -147,5 +175,9 @@ public struct VaultRateCounter: Sendable {
         var list = (events[secret] ?? []).filter { now.timeIntervalSince($0) < window }
         list.append(now)
         events[secret] = list
+    }
+
+    public mutating func reset(_ secret: String) {
+        events[secret] = nil
     }
 }

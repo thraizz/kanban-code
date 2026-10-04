@@ -103,6 +103,8 @@ struct AttentionDetailSheet: View {
     var waitingAfter: Int = 0
     let onClose: () -> Void
     @State private var busy: String?
+    /// Why the last answer was not taken.
+    @State private var failure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -139,6 +141,12 @@ struct AttentionDetailSheet: View {
                     .foregroundStyle(.secondary)
             }
 
+            if let failure {
+                Label("Not sent: \(failure)", systemImage: "exclamationmark.triangle")
+                    .foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
             HStack {
                 Button("Close", action: onClose)
                     .keyboardShortcut(.cancelAction)
@@ -149,7 +157,7 @@ struct AttentionDetailSheet: View {
                     } label: {
                         HStack(spacing: 4) {
                             if busy == option { ProgressView().controlSize(.small) }
-                            Text(option)
+                            Text(busy == option ? "Sending..." : option)
                         }
                     }
                     .disabled(busy != nil)
@@ -162,7 +170,9 @@ struct AttentionDetailSheet: View {
     }
 
     private var rows: [VaultApprovalDetails.Row] {
-        if let vault = request.vault { return vault.rows(cardName: cardName) }
+        if let vault = request.vault {
+            return vault.rows(cardName: cardName) + (request.unseal?.rows ?? []).map { .init($0.label, $0.value) }
+        }
         var rows: [VaultApprovalDetails.Row] = []
         if let cardName { rows.append(.init("Card", cardName)) }
         if !request.body.isEmpty { rows.append(.init(request.title, request.body)) }
@@ -170,15 +180,21 @@ struct AttentionDetailSheet: View {
     }
 
     private func answer(_ option: String) {
+        guard busy == nil else { return }
         busy = option
-        let id = request.id
-        let biometry = request.requiresBiometry
-        let title = request.title
+        failure = nil
+        let request = request
         Task { @MainActor in
             defer { busy = nil }
-            if biometry, !(await AppDelegate.confirmWithBiometry(reason: "\(option): \(title)")) { return }
-            await AppServices.resolveAttention?(id, option)
-            onClose()
+            switch await MacVaultDevice.answer(request, option: option) {
+            case .cancelled:
+                return
+            case .failed(let problem):
+                // A request settled elsewhere closes on its own state change.
+                failure = problem
+            case .sent:
+                onClose()
+            }
         }
     }
 

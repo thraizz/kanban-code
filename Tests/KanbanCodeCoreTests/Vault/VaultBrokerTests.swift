@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import KanbanCodeCore
+@testable import KanbanCodeRemoteKit
 
 private func tempVaultDir() -> String {
     let path = NSTemporaryDirectory() + "vault-\(UUID().uuidString.prefix(8))"
@@ -19,6 +20,7 @@ private final class FakeApprovals: VaultApprovals, @unchecked Sendable {
     var raised: [AttentionRequest] = []
     var answer: String?
     var expired: [String] = []
+    var closedBy: [String: String] = [:]
 
     init(answer: String?) { self.answer = answer }
 
@@ -26,7 +28,7 @@ private final class FakeApprovals: VaultApprovals, @unchecked Sendable {
     func resolution(of id: String) async -> (resolution: String?, by: String)? {
         lock.withLock { answer.map { ($0, "phone") } }
     }
-    func expire(id: String, resolution: String) async { lock.withLock { expired.append(id) } }
+    func close(id: String, resolution: String, by: String) async { lock.withLock { expired.append(id); closedBy[id] = by } }
 }
 
 private let inside = VaultCaller(cardId: "card_1", sessionId: "s1", pid: 42, ancestry: ["kv", "zsh", "tmux"])
@@ -303,7 +305,7 @@ struct VaultBrokerTests {
     }
 
     @Test func jevBodyAndParse() throws {
-        let body = JevClient.body(for: JevReleaseQuestion(secret: "S", rules: "", command: "c", reason: "r", cardTitle: "t", cwd: nil), model: "jev-latest")
+        let body = JevClient.body(for: JevReleaseQuestion(secrets: ["S"], rules: "", command: "c", reason: "r", cardTitle: "t", cwd: nil), model: "jev-latest")
         #expect(body["model"] as? String == "jev-latest")
         let data = Data(#"{"model":"jev","answers":{"release":{"type":"choice","choice":"allow","confidence":0.3,"probabilities":{"allow":0.93,"ask":0.05,"deny":0.02}}}}"#.utf8)
         #expect(JevClient.parse(data) == JevVerdict(choice: .allow, confidence: 0.93))

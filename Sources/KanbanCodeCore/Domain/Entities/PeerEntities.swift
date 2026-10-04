@@ -86,8 +86,11 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
     public var name: String
     /// Base URL of the peer's Remote Control server, e.g. `http://100.114.220.85:7780`.
     public var url: String
-    /// A device token the peer issued for this machine.
+    /// A device token the peer issued for this machine, of the `peer` scope.
     public var token: String
+    /// A `terminal` scope token of the peer, for showing the terminals of
+    /// its cards here. The peer token cannot open terminals.
+    public var terminalToken: String?
     public var enabled: Bool
 
     public init(
@@ -95,12 +98,14 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
         name: String,
         url: String,
         token: String,
+        terminalToken: String? = nil,
         enabled: Bool = true
     ) {
         self.id = id
         self.name = name
         self.url = url
         self.token = token
+        self.terminalToken = terminalToken
         self.enabled = enabled
     }
 
@@ -110,11 +115,12 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
         name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
         url = (try? c.decodeIfPresent(String.self, forKey: .url)) ?? ""
         token = (try? c.decodeIfPresent(String.self, forKey: .token)) ?? ""
+        terminalToken = (try? c.decodeIfPresent(String.self, forKey: .terminalToken)).flatMap { $0.isEmpty ? nil : $0 }
         enabled = (try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? true
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, name, url, token, enabled
+        case id, name, url, token, terminalToken, enabled
     }
 }
 

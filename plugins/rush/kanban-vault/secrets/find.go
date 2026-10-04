@@ -90,21 +90,54 @@ var (
 	// following {, a comma or (.
 	assignedTo  = regexp.MustCompile(`^(?:.*[{,(]\s*|\s*)(?:export\s+)?["'` + "`" + `]?([A-Za-z_][A-Za-z0-9_.-]*)["'` + "`" + `]?\s*(?::=|=|:)\s*["'` + "`" + `]?$`)
 	telegramBot = regexp.MustCompile(`^[0-9]{8,10}:AA`)
+	// saidAs reads what the words before a value call it: a word and then
+	// key, token, secret or password ("the stripe api key is", "acme token:").
+	saidAs = regexp.MustCompile(`(?i)\b([a-z][a-z0-9]{1,20})[ \t]+(api[ _-]?key|access[ _-]?token|auth[ _-]?token|secret[ _-]?key|key|token|secret|password)` +
+		`(?:[ \t]+(?:is|here|now))?[ \t]*[:=]?[ \t]*["'` + "`" + `]?$`)
+	// vendorPrefix is the letters a key starts with, before its first _ or -.
+	vendorPrefix = regexp.MustCompile(`^([A-Za-z][A-Za-z0-9]{1,11})[_-]`)
 )
 
+// fillerWords come before key or token without naming whose it is.
+var fillerWords = map[string]bool{"my": true, "the": true, "a": true, "an": true, "this": true, "that": true, "our": true,
+	"your": true, "new": true, "old": true, "is": true, "use": true, "with": true, "of": true, "for": true, "and": true,
+	"or": true, "api": true, "secret": true, "access": true, "auth": true, "private": true, "public": true, "same": true,
+	"other": true, "another": true, "real": true, "test": true, "its": true, "their": true, "his": true, "her": true}
+
+// genericName is the name of a secret nothing tells apart.
+const genericName = "SECRET"
+
 // suggestName is the name d's value is assigned to on its line, uppercased,
-// else a default for its kind.
+// else a default for its kind. A value only its shape gives away is named
+// by the words before it ("the stripe key: ..." is STRIPE_KEY), else by its
+// own prefix (stm_... is STM_API_KEY).
 func suggestName(text string, d Detected) string {
 	from := max(0, d.Start-nameLookback)
 	if nl := strings.LastIndexAny(text[from:d.Start], "\r\n"); nl >= 0 {
 		from += nl + 1
 	}
-	if m := assignedTo.FindStringSubmatch(text[from:d.Start]); m != nil {
+	before := text[from:d.Start]
+	if m := assignedTo.FindStringSubmatch(before); m != nil {
 		if n := strings.ToUpper(m[1]); envName.MatchString(n) {
 			return n
 		}
 	}
-	return defaultName(text, d)
+	name := defaultName(text, d)
+	if name != genericName {
+		return name
+	}
+	if m := saidAs.FindStringSubmatch(before); m != nil && !fillerWords[strings.ToLower(m[1])] {
+		what := strings.NewReplacer(" ", "_", "-", "_").Replace(m[2])
+		if n := strings.ToUpper(m[1] + "_" + what); envName.MatchString(n) {
+			return n
+		}
+	}
+	if slices.Contains(ShapeOnlyRuleIDs, d.Kind) {
+		if m := vendorPrefix.FindStringSubmatch(d.Value); m != nil {
+			return strings.ToUpper(m[1]) + "_API_KEY"
+		}
+	}
+	return name
 }
 
 // vendorNames name a vendor_api_key by its prefix, first match wins.
@@ -177,7 +210,7 @@ func defaultName(text string, d Detected) string {
 	if n := kindNames[d.Kind]; n != "" {
 		return n
 	}
-	return "SECRET"
+	return genericName
 }
 
 // UniqueName is base, or base_2, base_3... the first that is not taken.

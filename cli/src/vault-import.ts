@@ -11,7 +11,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
-import type { VaultClient, VaultIO, VaultResponse, VaultSecretInfo } from "./vault.js";
+import { DEFAULT_ENVIRONMENT, type VaultClient, type VaultIO, type VaultResponse, type VaultSecretInfo } from "./vault.js";
 
 export type Tier = "open" | "judged" | "ask" | "never";
 
@@ -148,8 +148,24 @@ function projectOf(file: string, home: string): string {
   return parts[0] === "local" && parts.length > 2 ? parts[1] : parts[0];
 }
 
-/** Groups found values by value, names each group, and picks its tier. */
-export function planSecrets(found: FoundValue[], home = homedir()): PlannedSecret[] {
+/** The environment a plaintext env file is for: `.env.prod` is prod, the development files are dev. */
+export function environmentOfEnvFile(file: string): string {
+  const m = /^\.env\.(.+)$/.exec(basename(file));
+  return !m || ["local", "development", "portless"].includes(m[1]) ? DEFAULT_ENVIRONMENT : m[1];
+}
+
+/**
+ * Groups found values by value, names each group, and picks its tier. The
+ * first value of a key gets the shared name `KEY`; another value becomes
+ * the own secret of the project most of its files are in,
+ * `project/environment/KEY`. `projectFor` gives a file's vault project
+ * (the master's answer); the default guesses it from the path.
+ */
+export function planSecrets(
+  found: FoundValue[],
+  home = homedir(),
+  projectFor: (file: string) => string = (file) => projectOf(file, home)
+): PlannedSecret[] {
   const byValue = new Map<string, FoundValue[]>();
   for (const f of found) {
     const h = hash(f.value);
@@ -165,14 +181,15 @@ export function planSecrets(found: FoundValue[], home = homedir()): PlannedSecre
     const base = key.toUpperCase().replace(/[^A-Z0-9_]/g, "_");
     let name = base;
     if (taken.has(name)) {
-      const projects = new Map<string, number>();
+      const scopes = new Map<string, number>();
       for (const f of group) {
-        const p = projectOf(f.file, home).toUpperCase().replace(/[^A-Z0-9]/g, "_");
-        projects.set(p, (projects.get(p) ?? 0) + 1);
+        const scope = `${projectFor(f.file)}/${environmentOfEnvFile(f.file)}`;
+        scopes.set(scope, (scopes.get(scope) ?? 0) + 1);
       }
-      const ranked = [...projects.entries()].sort((a, b) => b[1] - a[1]).map(([p]) => `${base}__${p}`);
-      name = ranked.find((n) => !taken.has(n)) ?? ranked[0];
-      for (let n = 2; taken.has(name); n++) name = `${ranked[0]}_${n}`;
+      const ranked = [...scopes.entries()].sort((a, b) => b[1] - a[1]).map(([scope]) => scope);
+      const free = ranked.find((scope) => !taken.has(`${scope}/${base}`)) ?? ranked[0];
+      name = `${free}/${base}`;
+      for (let n = 2; taken.has(name); n++) name = `${free}-${n}/${base}`;
     }
     taken.set(name, group[0].value);
     const t = tierFor(key, group[0].value);
@@ -324,12 +341,17 @@ export function renderPlan(plans: PlannedSecret[], files: string[], home = homed
   return lines.join("\n");
 }
 
-/** The `.env.vault` for one `.env`: its secret keys as vault references, its plain config as is. */
-export function envVaultFor(envText: string, refs: Map<string, string>): string {
+/**
+ * The `.env.vault` manifest for one `.env`: a bare `KEY` line for a secret
+ * the folder's project resolves on its own (its own `scope/KEY`, or the
+ * shared `KEY`), `KEY={{vault:NAME}}` for any other, its plain config as is.
+ */
+export function envVaultFor(envText: string, refs: Map<string, string>, scope?: string): string {
   const out = ["# Names only: kv env .env.vault -- <cmd> loads the values from the Kanban Code vault."];
   for (const { key, value } of parseDotenv(envText)) {
     const name = refs.get(key);
-    if (name) out.push(`${key}={{vault:${name}}}`);
+    if (name && (name === key || (scope !== undefined && name === `${scope}/${key}`))) out.push(key);
+    else if (name) out.push(`${key}={{vault:${name}}}`);
     else if (!isSecret(key, value) && looksLikePlainConfig(value)) out.push(`${key}=${/\s|#/.test(value) ? JSON.stringify(value) : value}`);
   }
   return out.join("\n") + "\n";
@@ -344,7 +366,20 @@ export async function runImport(args: string[], client: VaultClient, io: VaultIO
   const root = args.find((a, i) => !a.startsWith("--") && args[i - 1] !== "--only") ?? join(home, "Projects");
   const extra = [join(home, ".agent-vault/open.env"), join(home, ".config/slack-rogerio.env")].filter(existsSync);
   const files = [...findEnvFiles(root), ...extra];
-  const plans = planSecrets(collectFound(files), home);
+  const found = collectFound(files);
+  // The master names the project of each folder, so an imported secret is
+  // the own secret of the project the vault later takes that folder for.
+  const projects = new Map<string, string>();
+  for (const dir of new Set(found.map((f) => dirname(f.file)))) {
+    try {
+      const { body } = await client.call<{ projects: string[] }>("GET", `project?dir=${encodeURIComponent(dir)}`);
+      if (body.projects?.[0]) projects.set(dir, body.projects[0]);
+    } catch {
+      // the path guess stands
+    }
+  }
+  const projectFor = (file: string) => projects.get(dirname(file)) ?? projectOf(file, home);
+  const plans = planSecrets(found, home, projectFor);
   const credentials = join(home, ".aws/credentials");
   if (existsSync(credentials)) plans.push(...planAws(readFileSync(credentials, "utf8"), home));
 
@@ -400,7 +435,7 @@ export async function runImport(args: string[], client: VaultClient, io: VaultIO
     if (only.length && !only.some((dir) => file.startsWith(dir + "/"))) continue;
     const target = join(dirname(file), basename(file) === ".env" ? ".env.vault" : `${basename(file)}.vault`);
     if (existsSync(target) && !readFileSync(target, "utf8").startsWith("# Names only")) continue;
-    writeFileSync(target, envVaultFor(readFileSync(file, "utf8"), refs));
+    writeFileSync(target, envVaultFor(readFileSync(file, "utf8"), refs, `${projectFor(file)}/${environmentOfEnvFile(file)}`));
     written++;
   }
   io.stderr(`kv: added ${added} secrets (${kept} were already there), wrote ${written} .env.vault files. The plaintext files are untouched.\n`);

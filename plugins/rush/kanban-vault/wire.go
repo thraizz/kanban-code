@@ -30,6 +30,24 @@ type intercept struct {
 	UI   string `json:"ui"`
 	Box  string `json:"box"`
 	Text string `json:"text"`
+	// Asks are the kinds of ask the window shows beside one with choices;
+	// an older rush sends none.
+	Asks []string `json:"asks,omitempty"`
+}
+
+// askInput, in an intercept's Asks, is an ask with a line of text to type,
+// answered with keyEnter and what was typed.
+const (
+	askInput = "input"
+	keyEnter = "enter"
+)
+
+// askLine is the line of text an ask has you type: what it starts as, why
+// what was typed last wasn't taken, and what enter does with it.
+type askLine struct {
+	Value string `json:"value,omitempty"`
+	Error string `json:"error,omitempty"`
+	Enter string `json:"enter,omitempty"`
 }
 
 type interceptResult struct {
@@ -42,6 +60,7 @@ type interceptResult struct {
 	Question string        `json:"question,omitempty"`
 	Detail   string        `json:"detail,omitempty"`
 	Choices  []askChoice   `json:"choices,omitempty"`
+	Input    *askLine      `json:"input,omitempty"`
 }
 
 type replacement struct {

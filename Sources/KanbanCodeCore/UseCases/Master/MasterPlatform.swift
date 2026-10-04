@@ -27,10 +27,12 @@ public struct RemoteLaunchRequest: Sendable, Equatable {
     public var imagePaths: [String]
     /// "mac", a machine name, or nil for the project default.
     public var machine: String?
+    /// The human typed the prompt himself.
+    public var human: Bool
 
     public init(projectPath: String, prompt: String, title: String? = nil, worktree: String? = nil,
                 assistant: CodingAssistant = .claude, model: String? = nil, launch: Bool = true,
-                imagePaths: [String] = [], machine: String? = nil) {
+                imagePaths: [String] = [], machine: String? = nil, human: Bool = false) {
         self.projectPath = projectPath
         self.prompt = prompt
         self.title = title
@@ -40,6 +42,7 @@ public struct RemoteLaunchRequest: Sendable, Equatable {
         self.launch = launch
         self.imagePaths = imagePaths
         self.machine = machine
+        self.human = human
     }
 }
 

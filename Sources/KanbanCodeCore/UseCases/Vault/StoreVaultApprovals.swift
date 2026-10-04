@@ -20,8 +20,8 @@ public struct StoreVaultApprovals: VaultApprovals {
         }
     }
 
-    public func expire(id: String, resolution: String) async {
-        await MainActor.run { store.dispatch(.attentionResolved(id: id, resolution: resolution, by: "timeout")) }
+    public func close(id: String, resolution: String, by: String) async {
+        await MainActor.run { store.dispatch(.attentionResolved(id: id, resolution: resolution, by: by)) }
     }
 }
 

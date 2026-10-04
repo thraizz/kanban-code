@@ -86,6 +86,8 @@ public final class RemoteControlServer: Sendable {
     public let syncEngine: AgentSyncEngine?
     /// Serves the vault routes (`/v1/vault/*`) when set.
     public let vault: VaultService?
+    /// Serves the scrubber routes (`/v1/scrub/*`) when set.
+    public let scrubber: SecretScrubber?
     private let bindAddresses: @Sendable () -> [String]
     private let options: Options
     private let requestedPort: Int
@@ -100,10 +102,12 @@ public final class RemoteControlServer: Sendable {
         options: Options = Options(),
         peerServer: (any PeerLinksServing)? = nil,
         syncEngine: AgentSyncEngine? = nil,
-        vault: VaultService? = nil
+        vault: VaultService? = nil,
+        scrubber: SecretScrubber? = nil
     ) {
         self.host = host
         self.vault = vault
+        self.scrubber = scrubber
         self.devices = devices
         self.peerServer = peerServer
         self.syncEngine = syncEngine
@@ -355,7 +359,13 @@ public final class RemoteControlServer: Sendable {
         if bearer == nil, let vault, seg.count >= 2, seg[1] == "vault", peer?.isLoopback == true,
            let response = await RemoteVaultRoutes.handle(
                method: method, rest: Array(seg.dropFirst()), query: request.query, body: request.body,
-               device: nil, peer: peer, serverPort: port, vault: vault) {
+               device: nil, peer: peer, serverPort: port, vault: vault,
+               cardToken: request.header("x-kanban-card-token")) {
+            return .response(response)
+        }
+        if bearer == nil, let scrubber, peer?.isLoopback == true,
+           let response = await RemoteScrubRoutes.handle(
+               method: method, rest: Array(seg.dropFirst()), body: request.body, device: nil, scrubber: scrubber) {
             return .response(response)
         }
         guard let token = bearer else {
@@ -363,6 +373,14 @@ public final class RemoteControlServer: Sendable {
         }
         guard let device = devices.authenticate(token: token) else {
             return .response(.error(401, "unknown or revoked token"))
+        }
+        if let refusal = RemoteScopePolicy.refusal(scope: device.scope, method: method, rest: Array(seg.dropFirst())) {
+            KanbanCodeLog.warn("remote", "refused \(method) /\(seg.joined(separator: "/")) for \(device.name) (\(device.scope.rawValue) scope)")
+            return .response(.error(403, refusal))
+        }
+        if let scrubber, let response = await RemoteScrubRoutes.handle(
+            method: method, rest: Array(seg.dropFirst()), body: request.body, device: device, scrubber: scrubber) {
+            return .response(response)
         }
         if let vault, let response = await RemoteVaultRoutes.handle(
             method: method, rest: Array(seg.dropFirst()), query: request.query, body: request.body,
@@ -383,7 +401,7 @@ public final class RemoteControlServer: Sendable {
             }
             if rest.first == "cli" {
                 guard method == "POST" else { return .response(.error(405, "use POST")) }
-                guard device.scope == .full else {
+                guard device.scope.actsForOwner else {
                     return .response(.error(403, "the \(device.scope.rawValue) scope cannot run commands"))
                 }
                 guard let body = try? JSONDecoder.remote.decode(RemoteCLIRequest.self, from: request.body) else {
@@ -405,7 +423,7 @@ public final class RemoteControlServer: Sendable {
                         status: 200, headers: [("Content-Type", "application/octet-stream")],
                         body: try await host.channelFile(path: path, offset: offset)))
                 case ("PUT", false):
-                    guard device.scope == .full else {
+                    guard device.scope.actsForOwner else {
                         return .response(.error(403, "the \(device.scope.rawValue) scope cannot write channels"))
                     }
                     let created = try await host.seedChannelFile(path: path, data: request.body)
@@ -416,7 +434,8 @@ public final class RemoteControlServer: Sendable {
             }
             let id = rest.count >= 2 && rest[0] == "cards" ? rest[1] : ""
             let shape = rest.enumerated().map { item in
-                let wildcard = rest[0] == "cards" && (item.offset == 1 || (item.offset == 3 && rest[2] == "queue"))
+                let wildcard = rest[0] == "cards"
+                    && (item.offset == 1 || (item.offset == 3 && (rest[2] == "queue" || rest[2] == "side-chat")))
                 return wildcard ? "*" : item.element
             }.joined(separator: "/")
             switch (method, shape) {
@@ -452,7 +471,7 @@ public final class RemoteControlServer: Sendable {
                 return .response(.json(RemoteMachineList(machines: await host.machines())))
 
             case ("POST", "tasks"):
-                guard let body = try? JSONDecoder.remote.decode(RemoteTaskRequest.self, from: request.body) else {
+                guard var body = try? JSONDecoder.remote.decode(RemoteTaskRequest.self, from: request.body) else {
                     return .response(.error(400, "body must be a RemoteTaskRequest: {\"project\", \"prompt\", ...}"))
                 }
                 guard !body.project.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -462,6 +481,8 @@ public final class RemoteControlServer: Sendable {
                     return .response(.error(400, "prompt is required"))
                 }
                 _ = try RemotePromptImages.decode(body.images)
+                // An agent's task is never the human's, whatever it claims.
+                if device.scope == .agent { body.human = nil }
                 return .response(.json(try await host.createTask(body), status: 201))
 
             case ("POST", "cards/*/prompt"):
@@ -476,7 +497,22 @@ public final class RemoteControlServer: Sendable {
                 let (text, images) = PromptImageLayout.arranged(text: body.text, images: decoded)
                 var prompt = body
                 prompt.text = device.scope == .agent ? CardPromptReader.markRemoteAgentMessage(text, device: device.name) : text
+                // An agent's prompt is never the human's, whatever it claims.
+                if device.scope == .agent { prompt.human = nil }
                 try await host.sendPrompt(cardId: id, prompt, images: images)
+                return .response(.noContent)
+
+            case ("POST", "cards/*/side-chat"):
+                guard let body = try? JSONDecoder.remote.decode(RemoteSideChatRequest.self, from: request.body) else {
+                    return .response(.error(400, "body must be {\"kind\": \"btw\"|\"catchup\", \"question\", \"history\"}"))
+                }
+                return .response(.json(try await host.startSideChat(cardId: id, body), status: 201))
+
+            case ("GET", "cards/*/side-chat/*"):
+                return .response(.json(try await host.sideChatRun(cardId: id, runId: rest[3])))
+
+            case ("DELETE", "cards/*/side-chat/*"):
+                try await host.cancelSideChat(cardId: id, runId: rest[3])
                 return .response(.noContent)
 
             case ("POST", "cards/*/queue/*"):
@@ -511,7 +547,7 @@ public final class RemoteControlServer: Sendable {
 
             case ("POST", "cards/*/worktree/remove"):
                 // It deletes files on the machine, uncommitted work included.
-                guard device.scope == .full else {
+                guard device.scope.actsForOwner else {
                     return .response(.error(403, "the \(device.scope.rawValue) scope cannot remove worktrees"))
                 }
                 return .response(.json(try await host.removeWorktree(cardId: id)))
@@ -537,7 +573,7 @@ public final class RemoteControlServer: Sendable {
                 return .events(device)
 
             case ("GET", "cards/*/terminal"):
-                guard device.scope == .full else {
+                guard device.scope == .full || device.scope == .terminal else {
                     return .response(.error(403, "the \(device.scope.rawValue) scope cannot open terminals"))
                 }
                 guard request.wantsWebSocket else { return .response(.error(426, "WebSocket upgrade required")) }
@@ -570,7 +606,7 @@ public final class RemoteControlServer: Sendable {
         case ("GET", 1):
             return .json(AttentionListResponse(requests: await host.attention()))
         case ("POST", 2) where rest[1] == "presence":
-            guard device.scope == .full else { return .error(403, "the \(device.scope.rawValue) scope cannot report presence") }
+            guard device.scope.actsForOwner else { return .error(403, "the \(device.scope.rawValue) scope cannot report presence") }
             guard let presence = try? JSONDecoder.remote.decode(MacPresence.self, from: body) else {
                 return .error(400, "body must be a MacPresence")
             }
@@ -578,12 +614,13 @@ public final class RemoteControlServer: Sendable {
             return .noContent
         case ("POST", 3) where rest[2] == "resolve":
             // An agent must never answer what it is waiting on.
-            guard device.scope == .full else { return .error(403, "the \(device.scope.rawValue) scope cannot resolve attention requests") }
+            guard device.scope.actsForOwner else { return .error(403, "the \(device.scope.rawValue) scope cannot resolve attention requests") }
             guard let resolve = try? JSONDecoder.remote.decode(AttentionResolveRequest.self, from: body),
                   !resolve.resolution.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 return .error(400, "body must be {\"resolution\": \"...\"}")
             }
-            try await host.resolveAttention(id: rest[1], resolution: resolve.resolution, by: resolve.by ?? device.name)
+            try await host.resolveAttention(id: rest[1], resolution: resolve.resolution, by: resolve.by ?? device.name,
+                                            unsealed: resolve.unsealed)
             return .noContent
         case (_, 1), (_, 2), (_, 3):
             return .error(405, "method \(method) not allowed on /v1/\(rest.joined(separator: "/"))")
@@ -602,7 +639,7 @@ public final class RemoteControlServer: Sendable {
         "me", "board", "machines", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
         "cards/*/interrupt", "cards/*/resume", "events", "cards/*/terminal",
         "cards/*/move", "cards/*/handover", "cards/*/transcript/raw",
-        "cards/*/worktree/remove", "cards/*/discover",
+        "cards/*/worktree/remove", "cards/*/discover", "cards/*/side-chat", "cards/*/side-chat/*",
     ]
 
     static func response(for error: Error) -> RemoteHTTPResponse {

@@ -46,12 +46,30 @@ public enum SecretDetector {
         matches(in: text).filter { !isPlaceholder($0.value, kind: $0.kind) }
     }
 
+    /// The rules for keys a vendor mints in a fixed format (`sk-...`,
+    /// `ghp_...`, `xoxb-...`): the ones safe to act on with no human looking.
+    public static let vendorFormatRuleIds: Set<String> = [
+        "github_token", "provider_api_key", "stripe_secret_key", "slack_token", "google_api_key", "vendor_api_key",
+    ]
+
+    /// The name a credential gets from its format alone (`OPENAI_API_KEY`,
+    /// `GITHUB_TOKEN`), whatever text it was found in.
+    public static func vendorName(of secret: DetectedSecret) -> String {
+        defaultName(kind: secret.kind, value: secret.value, text: "", valueStart: 0)
+    }
+
+    /// Secrets in `text` found by the given rules only, placeholders left out.
+    public static func find(in text: String, ruleIds: Set<String>) -> [DetectedSecret] {
+        matches(in: text, ruleIds: ruleIds).filter { !isPlaceholder($0.value, kind: $0.kind) }
+    }
+
     /// Every credential the rules recognise, placeholders included.
-    public static func matches(in text: String) -> [DetectedSecret] {
+    public static func matches(in text: String, ruleIds: Set<String>? = nil) -> [DetectedSecret] {
         let ns = text as NSString
         guard ns.length > 0, ns.length <= maxScanLength else { return [] }
         var found: [RawMatch] = []
         for rule in rules {
+            if let ruleIds, !ruleIds.contains(rule.id) { continue }
             if let pre = rule.precondition, !pre(text) { continue }
             found.append(contentsOf: rawMatches(of: rule, in: ns))
         }

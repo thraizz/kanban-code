@@ -10,8 +10,6 @@ struct AttentionListView: View {
     /// Request the sheet scrolls to, from a notification link.
     var focusId: String?
     @Environment(\.dismiss) private var dismiss
-    @State private var busy: String?
-    @State private var error: String?
     @State private var freeText: [String: String] = [:]
     /// Requests whose detail page is open.
     @State private var detailPath: [String] = []
@@ -28,6 +26,12 @@ struct AttentionListView: View {
                 } else {
                     ScrollViewReader { proxy in
                         List {
+                            if let note = fleet.answers.note {
+                                Text(note)
+                                    .font(.footnote)
+                                    .foregroundStyle(.secondary)
+                                    .accessibilityIdentifier("attention-note")
+                            }
                             ForEach(fleet.attention) { item in
                                 row(item)
                                     .id(item.id)
@@ -48,7 +52,8 @@ struct AttentionListView: View {
             }
             .navigationDestination(for: String.self) { id in
                 if let item = fleet.attention.first(where: { $0.id == id }) {
-                    AttentionDetailView(item: item, busy: busy, answer: { answer(item, $0) }, openCard: { cardId in
+                    AttentionDetailView(item: item, sending: fleet.answers.sending[item.id], error: fleet.answers.errors[item.id],
+                                        answer: { answer(item, $0) }, openCard: { cardId in
                         dismiss()
                         openCard(cardId)
                     })
@@ -63,17 +68,14 @@ struct AttentionListView: View {
                     Button("Done") { dismiss() }
                 }
             }
-            .alert("Could not answer", isPresented: Binding(get: { error != nil }, set: { if !$0 { error = nil } })) {
-                Button("OK", role: .cancel) { error = nil }
-            } message: {
-                Text(error ?? "")
-            }
+            .onDisappear { fleet.clearAttentionNote() }
         }
     }
 
     @ViewBuilder
     private func row(_ item: FleetModel.FleetAttention) -> some View {
         let request = item.request
+        let sending = fleet.answers.sending[request.id]
         Section {
             VStack(alignment: .leading, spacing: 8) {
                 HStack(spacing: 6) {
@@ -90,6 +92,12 @@ struct AttentionListView: View {
                         .font(.callout)
                         .textSelection(.enabled)
                         .lineLimit(14)
+                }
+                if let error = fleet.answers.errors[request.id] {
+                    Label("Not sent: \(error)", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                        .accessibilityIdentifier("attention-\(request.id)-error")
                 }
             }
             .padding(.vertical, 4)
@@ -109,11 +117,15 @@ struct AttentionListView: View {
                         Text(option)
                             .foregroundStyle(Self.isNegative(option) ? .red : .primary)
                         Spacer()
-                        if busy == request.id + option { ProgressView() }
-                        if request.requiresBiometry { Image(systemName: "faceid").foregroundStyle(.secondary) }
+                        if sending == option {
+                            Text("Sending...").font(.footnote).foregroundStyle(.secondary)
+                            ProgressView()
+                        } else if request.requiresBiometry {
+                            Image(systemName: "faceid").foregroundStyle(.secondary)
+                        }
                     }
                 }
-                .disabled(busy != nil)
+                .disabled(sending != nil)
                 .accessibilityIdentifier("attention-\(request.id)-option-\(index)")
             }
 
@@ -126,7 +138,7 @@ struct AttentionListView: View {
                         let text = (freeText[request.id] ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
                         if !text.isEmpty { answer(item, text) }
                     }
-                    .disabled(busy != nil || (freeText[request.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
+                    .disabled(sending != nil || (freeText[request.id] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
 
@@ -144,19 +156,14 @@ struct AttentionListView: View {
     }
 
     private func answer(_ item: FleetModel.FleetAttention, _ resolution: String) {
-        busy = item.request.id + resolution
-        Task {
-            defer { busy = nil }
-            if item.request.requiresBiometry {
-                guard await Self.authenticate(reason: "\(resolution): \(item.request.title)") else { return }
+        let id = item.request.id
+        Task { @MainActor in
+            await fleet.answer(item, resolution) {
+                await Self.authenticate(reason: "\(resolution): \(item.request.title)")
             }
-            do {
-                try await item.master.resolveAttention(item.request, resolution: resolution)
-                freeText[item.request.id] = nil
-                detailPath.removeAll { $0 == item.request.id }
-            } catch {
-                self.error = error.localizedDescription
-            }
+            guard fleet.answers.settled.contains(id) else { return }
+            freeText[id] = nil
+            detailPath.removeAll { $0 == id }
         }
     }
 
@@ -208,7 +215,10 @@ struct AttentionBanner: View {
 /// asks, the lease it would grant, with the answers.
 struct AttentionDetailView: View {
     let item: FleetModel.FleetAttention
-    let busy: String?
+    /// The option being sent, while an answer is on its way.
+    let sending: String?
+    /// Why the last answer was not sent.
+    let error: String?
     let answer: (String) -> Void
     let openCard: (String) -> Void
 
@@ -221,7 +231,8 @@ struct AttentionDetailView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             Section {
-                ForEach(request.vault?.rows(cardName: item.cardName) ?? [], id: \.self) { row in
+                ForEach((request.vault?.rows(cardName: item.cardName) ?? [])
+                    + (request.unseal?.rows ?? []).map { VaultApprovalDetails.Row($0.label, $0.value) }, id: \.self) { row in
                     VStack(alignment: .leading, spacing: 2) {
                         Text(row.label)
                             .font(.caption)
@@ -233,6 +244,11 @@ struct AttentionDetailView: View {
                 }
             }
             Section {
+                if let error {
+                    Label("Not sent: \(error)", systemImage: "exclamationmark.triangle")
+                        .font(.footnote)
+                        .foregroundStyle(.red)
+                }
                 ForEach(Array(request.options.enumerated()), id: \.offset) { index, option in
                     Button {
                         answer(option)
@@ -241,11 +257,15 @@ struct AttentionDetailView: View {
                             Text(option)
                                 .foregroundStyle(AttentionListView.isNegative(option) ? .red : .primary)
                             Spacer()
-                            if busy == request.id + option { ProgressView() }
-                            if request.requiresBiometry { Image(systemName: "faceid").foregroundStyle(.secondary) }
+                            if sending == option {
+                                Text("Sending...").font(.footnote).foregroundStyle(.secondary)
+                                ProgressView()
+                            } else if request.requiresBiometry {
+                                Image(systemName: "faceid").foregroundStyle(.secondary)
+                            }
                         }
                     }
-                    .disabled(busy != nil)
+                    .disabled(sending != nil)
                     .accessibilityIdentifier("attention-detail-\(request.id)-option-\(index)")
                 }
                 if let cardId = request.cardId {

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 @testable import KanbanCodeCore
+import KanbanCodeRemoteKit
 
 private func userLine(_ content: Any, extra: [String: Any] = ["origin": ["kind": "human"], "promptSource": "typed"]) -> String {
     var obj: [String: Any] = ["type": "user", "message": ["role": "user", "content": content]]
@@ -110,7 +111,7 @@ struct CardPromptsTests {
         #expect(prompts.earlier.first == "fix the merge conflicts, then tell alex about it after on slack")
         #expect(prompts.earlier.count == 6)
 
-        let body = JevClient.body(for: JevReleaseQuestion(secret: "SLACK_USER_TOKEN", rules: "", command: "post", reason: nil,
+        let body = JevClient.body(for: JevReleaseQuestion(secrets: ["SLACK_USER_TOKEN"], rules: "", command: "post", reason: nil,
                                                           cardTitle: nil, cwd: nil, prompts: prompts), model: "m")
         let asked = try #require((body["state"] as? [String: String])?["what_rogerio_asked_this_card"])
         #expect(asked.hasPrefix("Prompt 1 (earlier, shortened):\nfix the merge conflicts, then tell alex about it after on slack"))
@@ -123,7 +124,7 @@ struct CardPromptsTests {
 
     @Test func jevQuestionSeparatesRogerioFromTheAgentAndOtherSenders() throws {
         let q = JevReleaseQuestion(
-            secret: "SLACK_USER_TOKEN", rules: "Posting speaks as Rogerio: ask unless the task says to post.",
+            secrets: ["SLACK_USER_TOKEN"], rules: "Posting speaks as Rogerio: ask unless the task says to post.",
             command: "python3 slack-alex-post.py msg.txt", reason: "Send Alex the merged PRs, as you asked",
             cardTitle: "Strict layout ports", cwd: "/w",
             prompts: CardPrompts(typed: ["merge the four PRs", "tell alex on slack about the ones on his branch"],
@@ -139,10 +140,10 @@ struct CardPromptsTests {
         #expect(instructions.contains("what_rogerio_asked_this_card"))
         #expect(instructions.contains("never Rogerio's permission"))
 
-        let none = JevClient.body(for: JevReleaseQuestion(secret: "S", rules: "", command: "c", reason: nil, cardTitle: nil, cwd: nil,
+        let none = JevClient.body(for: JevReleaseQuestion(secrets: ["S"], rules: "", command: "c", reason: nil, cardTitle: nil, cwd: nil,
                                                           prompts: CardPrompts(typed: [])), model: "m")
         #expect((none["state"] as? [String: String])?["what_rogerio_asked_this_card"]?.hasPrefix("Nothing") == true)
-        let unknown = JevClient.body(for: JevReleaseQuestion(secret: "S", rules: "", command: "c", reason: nil, cardTitle: nil, cwd: nil), model: "m")
+        let unknown = JevClient.body(for: JevReleaseQuestion(secrets: ["S"], rules: "", command: "c", reason: nil, cardTitle: nil, cwd: nil), model: "m")
         #expect((unknown["state"] as? [String: String])?["what_rogerio_asked_this_card"] == nil)
     }
 

@@ -150,7 +150,8 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
                 model: request.model,
                 launch: request.launch ?? true,
                 imagePaths: imagePaths,
-                machine: request.machine?.trimmingCharacters(in: .whitespacesAndNewlines)
+                machine: request.machine?.trimmingCharacters(in: .whitespacesAndNewlines),
+                human: request.human == true
             ))
         }
         for _ in 0..<30 {
@@ -180,7 +181,10 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     public func sendPrompt(cardId: String, _ request: RemotePromptRequest, images: [RemotePromptImages.Decoded]) async throws {
         if let owner = await ownerClient(cardId) {
             let encoded = images.map { RemoteImage(mediaType: Self.mediaType(ofExtension: $0.fileExtension), data: $0.bytes.base64EncodedString()) }
-            return try await forwarded { try await owner.sendPrompt(cardId: cardId, text: request.text, mode: request.mode ?? .queue, images: encoded) }
+            return try await forwarded {
+                try await owner.sendPrompt(cardId: cardId, text: request.text, mode: request.mode ?? .queue, images: encoded,
+                                           human: request.human == true)
+            }
         }
         let (session, busy) = try await MainActor.run { try liveSession(cardId) }
         let imagePaths = try RemotePromptImages.write(images, to: RemotePromptImages.promptDirectory)
@@ -189,7 +193,14 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             // rush queues a message sent mid-turn itself, and `now` hands it
             // to Claude mid-turn; the card's own queue is not used. rush
             // puts each image right after its [Image #N] marker.
-            try await rushFor(session).send(id: rushId, text: request.text, imagePaths: imagePaths, now: mode == .now)
+            let human = request.human == true
+            if human {
+                let (sessionId, log) = await MainActor.run {
+                    (store.state.links[cardId]?.sessionLink?.sessionId, engine.humanMessages)
+                }
+                log.append(cardId: cardId, HumanMessageRecord(text: request.text, sessionId: sessionId))
+            }
+            try await rushFor(session).send(id: rushId, text: request.text, imagePaths: imagePaths, now: mode == .now, human: human)
             await readRushQueue(session: session, rushId: rushId)
             return
         }
@@ -198,7 +209,8 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         }
         await MainActor.run {
             let prompt = QueuedPrompt(body: request.text, sendAutomatically: true,
-                                      imagePaths: imagePaths.isEmpty ? nil : imagePaths)
+                                      imagePaths: imagePaths.isEmpty ? nil : imagePaths,
+                                      humanWrittenAt: request.human == true ? .now : nil)
             store.dispatch(.addQueuedPrompt(cardId: cardId, prompt: prompt, placement: .back))
             // A queued prompt on a busy card goes out when the turn ends; the
             // rest goes out now, as the chat's send button does.
@@ -367,12 +379,26 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         await MainActor.run { store.state.openAttentionRequests }
     }
 
-    public func resolveAttention(id: String, resolution: String, by: String) async throws {
-        try await engine.resolveAttention(id: id, resolution: resolution, by: by)
+    public func resolveAttention(id: String, resolution: String, by: String, unsealed: VaultUnsealed?) async throws {
+        try await engine.resolveAttention(id: id, resolution: resolution, by: by, unsealed: unsealed)
     }
 
     public func reportPresence(_ presence: MacPresence) async {
         await engine.attentionCenter?.reportPresence(presence)
+    }
+
+    // MARK: Side chat
+
+    public func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
+        try await engine.startSideChat(cardId: cardId, request)
+    }
+
+    public func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun {
+        try await engine.sideChatRun(cardId: cardId, runId: runId)
+    }
+
+    public func cancelSideChat(cardId: String, runId: String) async throws {
+        await engine.cancelSideChat(cardId: cardId, runId: runId)
     }
 
     public func interrupt(cardId: String) async throws {

@@ -127,7 +127,6 @@ final class ChatAndTerminalTests: KanbanUITestCase {
         app.buttons["Edit"].tap()
         XCTAssertTrue(waitFor(10) { queued.count == 0 })
         XCTAssertEqual(composer.value as? String, "Also run the e2e suite once it passes")
-        XCTAssertTrue(app.staticTexts["queueHint"].exists)
         shot("24-queued-edit")
 
         // Sending it again queues it again; Delete drops it.

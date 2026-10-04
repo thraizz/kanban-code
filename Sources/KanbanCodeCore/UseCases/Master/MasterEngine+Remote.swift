@@ -23,13 +23,13 @@ extension MasterEngine {
         store.dispatch(.createManualTask(link))
         KanbanCodeLog.info("remote", "Created task card=\(link.id.prefix(12)) project=\(request.projectPath) launch=\(request.launch)")
         guard request.launch else { return link.id }
-        launchRemoteCard(link: link, worktree: request.worktree, machine: request.machine)
+        launchRemoteCard(link: link, worktree: request.worktree, machine: request.machine, human: request.human)
         return link.id
     }
 
     /// `machine` is "mac", the name of a machine, or nil for the defaults
     /// of the project.
-    func launchRemoteCard(link: Link, worktree: String?, machine: String? = nil) {
+    func launchRemoteCard(link: Link, worktree: String?, machine: String? = nil, human: Bool = false) {
         let projectPath = link.projectPath ?? NSHomeDirectory()
         let assistant = link.effectiveAssistant
         if let machine, !isLocalMachine(machine), let peer = peerMachine(named: machine) {
@@ -68,7 +68,8 @@ extension MasterEngine {
                 serviceIdOverride: settings?.defaultAPIServiceIds[assistant.rawValue],
                 modelOverride: link.modelOverride,
                 machineChoice: choice.machine,
-                keepSelection: true
+                keepSelection: true,
+                humanPrompt: human
             )
         }
     }

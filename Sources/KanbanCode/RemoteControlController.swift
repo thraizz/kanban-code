@@ -27,6 +27,8 @@ final class RemoteControlController {
     @ObservationIgnored private var peerServer: (any PeerLinksServing)?
     @ObservationIgnored private var syncEngine: AgentSyncEngine?
     @ObservationIgnored private var vault: VaultService?
+    /// Set by the composition root before `attach`.
+    @ObservationIgnored var scrubber: SecretScrubber?
     @ObservationIgnored private var settingsObserver: NSObjectProtocol?
 
     private init() {}
@@ -68,7 +70,7 @@ final class RemoteControlController {
         }
         guard let engine else { return }
         let host = MasterRemoteControlHost(engine: engine)
-        let server = RemoteControlServer(host: host, devices: deviceStore, port: settings.port, peerServer: peerServer, syncEngine: syncEngine, vault: vault)
+        let server = RemoteControlServer(host: host, devices: deviceStore, port: settings.port, peerServer: peerServer, syncEngine: syncEngine, vault: vault, scrubber: scrubber)
         do {
             try await server.start()
             self.host = host

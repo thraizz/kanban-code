@@ -15,6 +15,7 @@ public actor EffectHandler {
     private let channelsStore: ChannelsStore
     private let notifier: NotifierPort?
     private let queuedPromptJournal: QueuedPromptJournal
+    private let humanMessageLog: HumanMessageLog
     private let remoteMachines: (any RemoteMachineControl)?
     /// The channels home when it is another master: channel writes go there.
     private var channelsHome: (@Sendable () async -> ChannelsHomeRoute?)?
@@ -75,7 +76,8 @@ public actor EffectHandler {
         channelsStore: ChannelsStore? = nil,
         notifier: NotifierPort? = nil,
         queuedPromptJournal: QueuedPromptJournal? = nil,
-        remoteMachines: (any RemoteMachineControl)? = nil
+        remoteMachines: (any RemoteMachineControl)? = nil,
+        humanMessageLog: HumanMessageLog? = nil
     ) {
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
@@ -83,6 +85,7 @@ public actor EffectHandler {
         self.channelsStore = channelsStore ?? ChannelsStore()
         self.notifier = notifier
         self.queuedPromptJournal = queuedPromptJournal ?? QueuedPromptJournal()
+        self.humanMessageLog = humanMessageLog ?? HumanMessageLog()
         self.remoteMachines = remoteMachines
     }
 
@@ -212,12 +215,21 @@ public actor EffectHandler {
                 )
             )
 
-        case .sendPromptToTmux(let sessionName, let promptBody, let assistant):
+        case .recordHumanMessage(let cardId, let text, let at, let sessionId):
+            humanMessageLog.append(cardId: cardId, HumanMessageRecord(at: at, text: text, sessionId: sessionId))
+
+        case .sendPromptToTmux(let sessionName, let promptBody, let assistant, let human):
             do {
                 // A prompt to a session on a paused machine brings the
                 // machine back first; the prompt itself never wakes it.
                 guard await remoteMachines?.resumeMachine(forSession: sessionName) != false else {
                     KanbanCodeLog.warn("effect", "sendPromptToTmux: the machine of \(sessionName) did not come back")
+                    return
+                }
+                if human, let rushId = RushSessionName.rushId(fromName: sessionName),
+                   let rush = try (tmuxAdapter as? RoutingTmuxAdapter)?.rush(forSession: sessionName) {
+                    // rush keeps its own record of what the human typed.
+                    try await rush.send(id: rushId, text: promptBody, human: true)
                     return
                 }
                 if assistant.submitsPromptWithPaste {
@@ -229,7 +241,7 @@ public actor EffectHandler {
                 KanbanCodeLog.warn("effect", "sendPromptToTmux failed: \(error)")
             }
 
-        case .sendPromptWithImagesToTmux(let sessionName, let promptBody, let imagePaths, let assistant):
+        case .sendPromptWithImagesToTmux(let sessionName, let promptBody, let imagePaths, let assistant, let human):
             do {
                 guard let tmux = tmuxAdapter else { return }
                 guard await remoteMachines?.resumeMachine(forSession: sessionName) != false else {
@@ -240,7 +252,7 @@ public actor EffectHandler {
                    let rush = try (tmux as? RoutingTmuxAdapter)?.rush(forSession: sessionName) {
                     // rush takes the images as files and puts each right
                     // after its [Image #N] marker in the text.
-                    try await rush.send(id: rushId, text: promptBody, imagePaths: imagePaths)
+                    try await rush.send(id: rushId, text: promptBody, imagePaths: imagePaths, human: human)
                     return
                 }
                 let images = assistant.supportsImageUpload

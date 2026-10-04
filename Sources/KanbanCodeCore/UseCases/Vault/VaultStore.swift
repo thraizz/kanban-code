@@ -4,6 +4,7 @@ import CryptoKit
 import Crypto
 #endif
 import Foundation
+import KanbanCodeRemoteKit
 
 /// Where the vault's age identity lives: the Keychain on the Mac, a 0600
 /// file on a headless master.
@@ -111,7 +112,9 @@ public enum VaultError: Error, Equatable, CustomStringConvertible {
 ///
 ///   vault.age     the secrets, age-encrypted to the vault identity
 ///   leases.json   card leases (names and dates, no values)
-///   audit.jsonl   append-only release log of this machine
+///   audit.jsonl   append-only release log of this machine, each line
+///                 naming the hash of the one before
+///   audit-mirror/ the logs of the peer masters, as they pushed them
 ///
 /// Every master holding the identity can open the same `vault.age`; the
 /// replicas converge with `VaultDocument.merged`.
@@ -122,6 +125,9 @@ public actor VaultStore {
     private var identity: Age.Identity?
     private var leases: [VaultLease]?
     private var rate = VaultRateCounter()
+    private var lastAuditHash: String?
+    /// Called after a line was added to the audit log.
+    private var onAudit: (@Sendable () -> Void)?
 
     public init(directory: String, keys: any VaultKeyProvider) {
         self.directory = directory
@@ -136,6 +142,9 @@ public actor VaultStore {
     var leasesPath: String { directory + "/leases.json" }
     var auditPath: String { directory + "/audit.jsonl" }
     var pendingPath: String { directory + "/pending.age" }
+    var mirrorDirectory: String { directory + "/audit-mirror" }
+    /// The file as it was before the first owner-only secret was sealed.
+    var preSealBackupPath: String { directory + "/backup-before-owner-seal/vault.age" }
 
     // MARK: - Identity
 
@@ -193,8 +202,22 @@ public actor VaultStore {
         return decoded
     }
 
-    private func save(_ doc: VaultDocument) throws {
+    /// Called with each document about to be saved, before its owner-only
+    /// values are sealed: the one moment this master holds them in plain.
+    private var saveObserver: (@Sendable (VaultDocument) -> Void)?
+
+    public func observeSaves(_ observer: @escaping @Sendable (VaultDocument) -> Void) {
+        saveObserver = observer
+    }
+
+    private func save(_ unsealedDoc: VaultDocument) throws {
         let identity = try ensureIdentity()
+        saveObserver?(unsealedDoc)
+        let doc = try sealingOwnerOnly(unsealedDoc)
+        if doc.secrets.values.contains(where: { $0.sealed != nil }), !(document?.secrets.values.contains { $0.sealed != nil } ?? false),
+           !FileManager.default.fileExists(atPath: preSealBackupPath), let current = FileManager.default.contents(atPath: vaultPath) {
+            try VaultFiles.writeAtomically(current, to: preSealBackupPath, mode: 0o600)
+        }
         let plain = try JSONEncoder.vault.encode(doc)
         let sealed = try VaultSeal.seal(plain, identity: identity)
         try VaultFiles.writeAtomically(sealed, to: vaultPath, mode: 0o600)
@@ -202,13 +225,122 @@ public actor VaultStore {
         document = try JSONDecoder.vault.decode(VaultDocument.self, from: plain)
     }
 
-    public func list() throws -> [VaultSecretInfo] {
-        try load().live.map(\.info)
+    /// With owner keys in place, a secret of tier ask or never keeps its
+    /// value only encrypted to them; one below those tiers never keeps the
+    /// owner-only form.
+    private func sealingOwnerOnly(_ doc: VaultDocument) throws -> VaultDocument {
+        var out = doc
+        let owner = doc.owner.flatMap { $0.isActive ? $0 : nil }
+        for (name, s) in doc.secrets where s.deletedAt == nil {
+            if s.isOwnerOnly, !s.value.isEmpty, let owner {
+                var sealed = s
+                sealed.sealed = try VaultOwnerSeal.seal(name: s.name, value: s.value, to: owner.recipients)
+                sealed.value = ""
+                // The sealed copy must win over the plain one on every replica.
+                if document?.secrets[name]?.sealed == nil { sealed.updatedAt = s.updatedAt.addingTimeInterval(0.001) }
+                out.secrets[name] = sealed
+            } else if !s.isOwnerOnly, s.sealed != nil {
+                guard !s.value.isEmpty else {
+                    throw VaultError.locked("\(name) is owner-only: lowering its tier needs its value from a device")
+                }
+                out.secrets[name]?.sealed = nil
+            } else if !s.value.isEmpty, s.sealed != nil {
+                // A new value replaces the sealed one.
+                out.secrets[name]?.sealed = nil
+            }
+        }
+        return out
     }
 
+    // MARK: - Owner keys
+
+    public func owner() throws -> VaultOwnerSet? {
+        try load().owner
+    }
+
+    /// Sets the owner keys. Becoming active seals every ask and never
+    /// secret that still holds a plain value.
+    public func setOwner(_ recipients: [VaultOwnerRecipient], resealed: [String: String] = [:], now: Date = Date()) throws {
+        var doc = try load()
+        let sealedNames = doc.live.filter { $0.sealed != nil }.map(\.name)
+        let missing = sealedNames.filter { resealed[$0] == nil }
+        guard missing.isEmpty || doc.owner?.recipients.map(\.publicKey) == recipients.map(\.publicKey) else {
+            throw VaultError.locked("changing the owner keys needs \(missing.count) sealed secret(s) encrypted again by a device")
+        }
+        doc.owner = VaultOwnerSet(recipients: recipients, updatedAt: max(now, (doc.owner?.updatedAt ?? .distantPast).addingTimeInterval(0.001)))
+        for (name, sealed) in resealed {
+            guard var s = doc.secrets[name], s.deletedAt == nil, s.sealed != nil else { continue }
+            s.sealed = sealed
+            s.updatedAt = max(now, s.updatedAt.addingTimeInterval(0.001))
+            doc.secrets[name] = s
+        }
+        try save(doc)
+    }
+
+    /// How many ask and never secrets are sealed, and how many still wait
+    /// for owner keys.
+    public func ownerCounts() throws -> (sealed: Int, plain: Int) {
+        let live = try load().live.filter(\.isOwnerOnly)
+        return (live.filter { $0.sealed != nil }.count, live.filter { $0.sealed == nil && !$0.value.isEmpty }.count)
+    }
+
+    /// Every sealed secret, as a device needs it to encrypt it again.
+    public func sealedItems() throws -> [VaultUnsealChallenge.Item] {
+        try load().live.compactMap(\.unsealItem)
+    }
+
+    /// Seals what is still plain, e.g. after a merge with a replica that
+    /// did not know the owner keys yet. Returns how many it sealed.
+    @discardableResult
+    public func sealPending() throws -> Int {
+        let doc = try load()
+        guard doc.owner?.isActive == true else { return 0 }
+        let plain = doc.live.filter { $0.isOwnerOnly && $0.sealed == nil && !$0.value.isEmpty }.count
+        if plain > 0 { try save(doc) }
+        return plain
+    }
+
+    /// Every live secret, or those of one project (`project` nil lists all).
+    public func list(project: String? = nil) throws -> [VaultSecretInfo] {
+        let key = currentIdentity().map(VaultSeal.authKey)
+        return try load().live.filter { project == nil || $0.project == project }.map { s in
+            var info = s.info
+            if let key, !s.value.isEmpty {
+                let mac = HMAC<SHA256>.authenticationCode(for: Data(("fingerprint:" + s.value).utf8), using: key)
+                info.fingerprint = Data(mac).prefix(8).map { String(format: "%02x", $0) }.joined()
+            }
+            return info
+        }
+    }
+
+    /// The secret stored under `name`, or the one that carried that name
+    /// before it was renamed.
     public func secret(_ name: String) throws -> VaultSecret? {
-        guard let s = try load().secrets[name], s.deletedAt == nil else { return nil }
-        return s
+        let doc = try load()
+        if let s = doc.secrets[name], s.deletedAt == nil { return s }
+        return doc.live.first { $0.aliases?.contains(name) == true }
+    }
+
+    /// The value a project gets for an environment variable: its own for
+    /// the environment, from the most specific project first, else the
+    /// shared one.
+    public func resolve(key: String, projects: [String], environment: String) throws -> VaultSecret? {
+        for project in projects {
+            if let s = try secret(VaultSecretName(key: key, project: project, environment: environment).canonical) { return s }
+        }
+        return try secret(key)
+    }
+
+    /// A project's own secrets for an environment: those of the first of
+    /// `projects`, or with `nearest` those of the most specific one that
+    /// has any.
+    public func group(projects: [String], environment: String, nearest: Bool = false) throws -> [VaultSecret] {
+        let live = try load().live
+        for project in nearest ? projects : Array(projects.prefix(1)) {
+            let own = live.filter { $0.project == project && $0.environment == environment }
+            if !own.isEmpty { return own }
+        }
+        return []
     }
 
     /// Adds or replaces a secret; `updatedAt` is stamped now.
@@ -227,21 +359,110 @@ public actor VaultStore {
         try save(doc)
     }
 
-    /// Edits what a secret is without touching its value.
-    public func update(_ name: String, now: Date = Date(), _ edit: (inout VaultSecret) -> Void) throws {
+    /// Edits what a secret is without touching its value. Moving a sealed
+    /// secret below tier ask needs `unsealedValue`, which a device opened.
+    public func update(_ name: String, unsealedValue: String? = nil, now: Date = Date(), _ edit: (inout VaultSecret) -> Void) throws {
         guard var s = try secret(name) else { throw VaultError.notFound("no secret \(name)") }
+        let stored = s.name
         edit(&s)
-        s.name = name
+        s.name = stored
+        if s.isSealed, !s.isOwnerOnly {
+            guard let unsealedValue else {
+                throw VaultError.locked("\(stored) is owner-only: lowering its tier needs an approval on the Mac or the phone")
+            }
+            s.value = unsealedValue
+            s.sealed = nil
+        }
         try upsert(s, now: now)
     }
 
-    public func delete(_ name: String, now: Date = Date()) throws {
+    /// What a rename would do, without doing it.
+    public enum RenameOutcome: String, Codable, Sendable {
+        /// The secret gets the new name.
+        case rename
+        /// The new name already holds the same value: the two become one.
+        case merge
+        /// The new name holds another value: nothing changes.
+        case conflict
+        case missing
+        /// Already under that name.
+        case same
+    }
+
+    public func renameOutcome(from: String, to: String) throws -> RenameOutcome {
+        let doc = try load()
+        guard let old = doc.secrets[from], old.deletedAt == nil else {
+            return doc.live.contains { $0.name == to && $0.aliases?.contains(from) == true } ? .same : .missing
+        }
+        if from == to { return .same }
+        guard let target = doc.secrets[to], target.deletedAt == nil else { return .rename }
+        // Two sealed values cannot be compared here.
+        if target.sealed != nil || old.sealed != nil { return .conflict }
+        return target.value == old.value && target.aws == old.aws ? .merge : .conflict
+    }
+
+    /// Gives a secret a new name. The old name stays as an alias, so
+    /// references to it keep resolving; its own entry becomes a tombstone,
+    /// which wins on every replica. When the new name already holds the
+    /// same value the two merge: the stricter tier, both sources and both
+    /// sets of aliases. A different value there is a conflict and nothing
+    /// changes.
+    @discardableResult
+    public func rename(from: String, to: String, now: Date = Date()) throws -> RenameOutcome {
+        let outcome = try renameOutcome(from: from, to: to)
+        guard outcome == .rename || outcome == .merge else { return outcome }
+        guard VaultSecret.isValidName(to) else {
+            throw VaultError.invalid("secret names use letters, digits and _ - . / : (got \(to))")
+        }
         var doc = try load()
-        guard var s = doc.secrets[name], s.deletedAt == nil else { throw VaultError.notFound("no secret \(name)") }
+        guard var old = doc.secrets[from] else { return .missing }
+        var new = old
+        new.name = to
+        if outcome == .merge, let target = doc.secrets[to] {
+            new = target
+            new.tier = max(target.tier, old.tier)
+            if new.rules.isEmpty { new.rules = old.rules }
+            if old.leasePolicy.everyUseAsks { new.leasePolicy.everyUseAsks = true }
+            new.leasePolicy.leaseSeconds = min(target.leasePolicy.leaseSeconds, old.leasePolicy.leaseSeconds)
+            new.sources = Array(Set(target.sources + old.sources)).sorted()
+            new.tags = Array(Set(target.tags + old.tags)).sorted()
+            new.createdAt = min(target.createdAt, old.createdAt)
+            new.label = target.label ?? old.label
+        }
+        var aliases = (new.aliases ?? []) + [from] + (old.aliases ?? [])
+        aliases = aliases.filter { $0 != to }
+        new.aliases = Array(Set(aliases)).sorted()
+        new.deletedAt = nil
+        new.updatedAt = max(now, (doc.secrets[to]?.updatedAt ?? .distantPast).addingTimeInterval(0.001))
+        old.value = ""
+        old.sealed = nil
+        old.aliases = nil
+        old.deletedAt = now
+        old.updatedAt = max(now, old.updatedAt.addingTimeInterval(0.001))
+        doc.secrets[to] = new
+        doc.secrets[from] = old
+        try save(doc)
+        // Leases follow the secret to its new name.
+        let leases = loadLeases()
+        if leases.contains(where: { $0.secret == from }) {
+            try saveLeases(leases.map { lease in
+                var lease = lease
+                if lease.secret == from { lease.secret = to }
+                return lease
+            })
+        }
+        return outcome
+    }
+
+    public func delete(_ name: String, now: Date = Date()) throws {
+        guard var s = try secret(name) else { throw VaultError.notFound("no secret \(name)") }
+        var doc = try load()
         s.value = ""
+        s.sealed = nil
+        s.aliases = nil
         s.deletedAt = now
         s.updatedAt = max(now, s.updatedAt.addingTimeInterval(0.001))
-        doc.secrets[name] = s
+        doc.secrets[s.name] = s
         try save(doc)
     }
 
@@ -269,7 +490,9 @@ public actor VaultStore {
         let merged = mine.merged(with: theirs)
         let changed = merged != mine
         if changed { try save(merged) }
-        return (changed, theirs.merged(with: merged) != theirs)
+        // What is on disk, with anything the merge brought in plain sealed.
+        let current = try load()
+        return (changed, theirs.merged(with: current) != theirs)
     }
 
     // MARK: - Leases
@@ -337,19 +560,84 @@ public actor VaultStore {
         rate.record(secret, at: now)
     }
 
+    /// Starts the count of a secret's releases again.
+    public func resetReleases(_ secret: String) {
+        rate.reset(secret)
+    }
+
     // MARK: - Audit
 
+    /// Adds a line to the audit log. It carries the hash of the line
+    /// before it, so a removed or changed line breaks the chain.
     public func append(_ entry: VaultAuditEntry) {
+        var entry = entry
+        entry.prev = lastAuditLineHash()
         guard var line = try? JSONEncoder.vaultLine.encode(entry) else { return }
+        let hash = AuditChain.hash(line)
         line.append(0x0A)
-        try? FileManager.default.createDirectory(atPath: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        if !FileManager.default.fileExists(atPath: auditPath) {
-            FileManager.default.createFile(atPath: auditPath, contents: nil, attributes: [.posixPermissions: 0o600])
+        guard AuditChain.appendRaw(line, to: auditPath) else { return }
+        lastAuditHash = hash
+        onAudit?()
+    }
+
+    private func lastAuditLineHash() -> String {
+        if let lastAuditHash { return lastAuditHash }
+        let hash = AuditChain.lines(of: FileManager.default.contents(atPath: auditPath) ?? Data()).last.map(AuditChain.hash) ?? ""
+        lastAuditHash = hash
+        return hash
+    }
+
+    public func onAuditAppend(_ handler: @escaping @Sendable () -> Void) {
+        onAudit = handler
+    }
+
+    /// The audit log's raw lines, oldest first.
+    public func auditLines() -> [Data] {
+        AuditChain.lines(of: FileManager.default.contents(atPath: auditPath) ?? Data())
+    }
+
+    // MARK: - Audit mirrors
+
+    static func mirrorFileName(_ machine: String) -> String {
+        let safe = machine.unicodeScalars.map { CharacterSet.alphanumerics.contains($0) && $0.isASCII || "-_.".unicodeScalars.contains($0) ? Character($0) : "-" }
+        let name = String(safe).trimmingCharacters(in: CharacterSet(charactersIn: "."))
+        return (name.isEmpty ? "unknown" : String(name.prefix(80))) + ".jsonl"
+    }
+
+    func mirrorPath(_ machine: String) -> String {
+        mirrorDirectory + "/" + Self.mirrorFileName(machine)
+    }
+
+    public func mirrorLines(machine: String) -> [Data] {
+        AuditChain.lines(of: FileManager.default.contents(atPath: mirrorPath(machine)) ?? Data())
+    }
+
+    /// The machines whose logs are mirrored here.
+    public func mirroredMachines() -> [String] {
+        ((try? FileManager.default.contentsOfDirectory(atPath: mirrorDirectory)) ?? [])
+            .filter { $0.hasSuffix(".jsonl") }.map { String($0.dropLast(6)) }.sorted()
+    }
+
+    /// Where a peer's mirror stands: how many lines, and the hash of the last.
+    public func mirrorTail(machine: String) -> VaultAuditMirrorTail {
+        let lines = mirrorLines(machine: machine)
+        return VaultAuditMirrorTail(count: lines.count, lastHash: lines.last.map(AuditChain.hash))
+    }
+
+    /// Adds a peer's audit lines to its mirror here. Lines are only ever
+    /// added: a line that does not follow the mirror's last one is kept
+    /// too, and shows as a break when the mirror is checked.
+    public func appendMirror(machine: String, lines: [String]) -> VaultAuditMirrorTail {
+        var known = Set(mirrorLines(machine: machine).map(AuditChain.hash))
+        var bytes = Data()
+        for text in lines {
+            let line = Data(text.utf8)
+            guard !line.isEmpty, !line.contains(0x0A), known.insert(AuditChain.hash(line)).inserted else { continue }
+            bytes.append(line)
+            bytes.append(0x0A)
         }
-        guard let handle = FileHandle(forWritingAtPath: auditPath) else { return }
-        defer { try? handle.close() }
-        _ = try? handle.seekToEnd()
-        try? handle.write(contentsOf: line)
+        if !bytes.isEmpty { AuditChain.appendRaw(bytes, to: mirrorPath(machine)) }
+        return mirrorTail(machine: machine)
     }
 
     /// Newest first.

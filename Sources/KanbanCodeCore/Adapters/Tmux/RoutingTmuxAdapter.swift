@@ -95,10 +95,14 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     }
 
     public func createSession(name: String, path: String, command: String?) async throws {
+        try await createSession(name: name, path: path, command: command, environment: [:])
+    }
+
+    public func createSession(name: String, path: String, command: String?, environment: [String: String]) async throws {
         if RushSessionName.isRush(name) {
             throw RushCommandFailed(arguments: ["start"], message: "rush sessions start with RushCliAdapter.start")
         }
-        try await adapter(for: name).createSession(name: name, path: path, command: command)
+        try await adapter(for: name).createSession(name: name, path: path, command: command, environment: environment)
     }
 
     public func killSession(name: String) async throws {

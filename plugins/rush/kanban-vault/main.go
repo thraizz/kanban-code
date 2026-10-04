@@ -1,19 +1,23 @@
 // kanban-vault is a rush plugin that keeps secrets out of what you send:
-// before a message holding one goes, it asks to save it to Kanban Code's
-// vault with kv, and the message then goes with {{vault:NAME}} in its
-// place. Detection is package secrets (LangWatch's redaction rules); the
-// question is rush's intercept ask, the answer a ui.intercept.answer.
+// before a message holding one goes, it asks whether to save it to Kanban
+// Code's vault, then under what name, saves it with kv, and the message
+// goes with {{vault:NAME}} in its place. Detection is package secrets
+// (LangWatch's redaction rules); the questions are rush's intercept asks,
+// the answers ui.intercept.answer. A rush that can't show a line to type
+// gets one question, with the name in it.
 package main
 
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -46,14 +50,25 @@ type app struct {
 	listing bool
 	asked   map[string]asked           // questions out, by id
 	letGo   map[string]map[string]bool // secrets you said to send as they are, by box
+	saved   map[string][32]byte        // what this run saved, by name: the value's hash
 }
 
-// asked is a question out about one secret: to save it under name, or,
-// failed, whether to send it as it is.
+// asked is a question out about one secret: whether to save it, naming
+// under what name to (typed, with why not, when the last one wasn't
+// taken), or, failed, whether to send it as it is. Without input, the one
+// question is to save it under name.
 type asked struct {
 	box, value, kind, suggested, name string
-	failed                            bool
+	failed, naming                    bool
+	typed, why                        string
 }
+
+// vaultName is a name the plugin saves a secret under: an environment
+// variable's, which is how kv run hands it to a command.
+var vaultName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+// maxName is the longest name the vault takes.
+const maxName = 128
 
 func main() {
 	ipc := os.NewFile(3, "rush")
@@ -78,7 +93,7 @@ func serve(rw io.ReadWriteCloser) *conn {
 }
 
 func newApp(v vault) *app {
-	return &app{vault: v, asked: map[string]asked{}, letGo: map[string]map[string]bool{}}
+	return &app{vault: v, asked: map[string]asked{}, letGo: map[string]map[string]bool{}, saved: map[string][32]byte{}}
 }
 
 func (a *app) handle(ctx context.Context, method string, params json.RawMessage) (any, error) {
@@ -104,13 +119,14 @@ func (a *app) handle(ctx context.Context, method string, params json.RawMessage)
 	case "ui.intercept.answer":
 		var in struct {
 			intercept
-			ID  string `json:"id"`
-			Key string `json:"key"`
+			ID    string `json:"id"`
+			Key   string `json:"key"`
+			Value string `json:"value"`
 		}
 		if err := json.Unmarshal(params, &in); err != nil {
 			return nil, &rpcError{Code: codeInvalidParams, Message: err.Error()}
 		}
-		return a.answer(ctx, in.intercept, in.ID, in.Key), nil
+		return a.answer(ctx, in.intercept, in.ID, in.Key, in.Value), nil
 	}
 	return nil, &rpcError{Code: codeNoMethod, Message: "method not found: " + method}
 }
@@ -171,7 +187,7 @@ func (a *app) next(box, text string) *secrets.Detected {
 }
 
 // intercept asks about the first secret in the message, if there's one.
-// It must answer at once, so the name it offers is free among the names
+// It must answer at once, so a name it offers is free among the names
 // last listed; a save checks again.
 func (a *app) intercept(in intercept) interceptResult {
 	d := a.next(in.Box, in.Text)
@@ -179,21 +195,52 @@ func (a *app) intercept(in intercept) interceptResult {
 		return interceptResult{Action: "allow"}
 	}
 	a.listSoon()
-	a.mu.Lock()
-	names := a.names
-	a.mu.Unlock()
-	return a.offer(in.Box, *d, secrets.UniqueName(d.SuggestedName, names), interceptResult{})
+	return a.offer(in, *d, interceptResult{})
 }
 
-// offer asks to save d under name, with the changes so far.
-func (a *app) offer(box string, d secrets.Detected, name string, changes interceptResult) interceptResult {
-	id := a.remember(asked{box: box, value: d.Value, kind: d.Kind, suggested: d.SuggestedName, name: name})
-	changes.Action, changes.ID = "ask", id
-	changes.Question = "Save as vault secret " + name + "?"
-	changes.Detail = fmt.Sprintf("your message has a secret (%s, %s) · saved, it goes as %s and agents use it through kv run",
-		strings.ReplaceAll(d.Kind, "_", " "), hint(d.Value), secrets.Ref(name))
+// offer asks whether to save d, with the changes so far. The name comes
+// in a question of its own, after a yes; a rush that can't show a line to
+// type is asked about the first free name instead.
+func (a *app) offer(in intercept, d secrets.Detected, changes interceptResult) interceptResult {
+	q := asked{box: in.Box, value: d.Value, kind: d.Kind, suggested: d.SuggestedName}
+	what := fmt.Sprintf("%s (%s)", hint(d.Value), strings.ReplaceAll(d.Kind, "_", " "))
+	if slices.Contains(in.Asks, askInput) {
+		changes.Question = "Save this secret to the vault?"
+		changes.Detail = what + " is in your message · saved, it goes as a {{vault:NAME}} reference under the name you give it next, and agents use it through kv run"
+	} else {
+		q.name = a.free(q)
+		changes.Question = "Save as vault secret " + q.name + "?"
+		changes.Detail = fmt.Sprintf("your message has a secret: %s · saved, it goes as %s and agents use it through kv run", what, secrets.Ref(q.name))
+	}
+	changes.Action, changes.ID = "ask", a.remember(q)
 	changes.Choices = []askChoice{{Key: "y", Label: "save it", Enter: true}, {Key: "n", Label: "send as is", Esc: true}}
 	return changes
+}
+
+// free is the name to offer for q's secret: the one this run saved the
+// same value under, else the first free one after the name suggested,
+// among the names last listed.
+func (a *app) free(q asked) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	sum := sha256.Sum256([]byte(q.value))
+	for name, was := range a.saved {
+		if was == sum {
+			return name
+		}
+	}
+	return secrets.UniqueName(q.suggested, a.names)
+}
+
+// naming asks for the name to save q's secret under, in a line that
+// starts as q.typed: esc goes back to whether to save it.
+func (a *app) naming(q asked) interceptResult {
+	q.naming = true
+	return interceptResult{Action: "ask", ID: a.remember(q),
+		Question: "Name for the secret " + hint(q.value),
+		Detail:   "the message goes with {{vault:NAME}} in its place · letters, digits and _, as an environment variable's",
+		Input:    &askLine{Value: q.typed, Error: q.why, Enter: "save"},
+		Choices:  []askChoice{{Key: "b", Label: "back", Esc: true}}}
 }
 
 // failed says why the secret couldn't be saved, and asks to send the
@@ -217,10 +264,13 @@ func (a *app) remember(q asked) string {
 	return id
 }
 
-// answer acts on the key chosen in a question: y saves the secret and
-// puts its reference in its place, n lets it go as it is; then the next
-// secret in the message is asked about, if there's one.
-func (a *app) answer(ctx context.Context, in intercept, id, key string) interceptResult {
+// answer acts on what was chosen in a question. To whether to save: y
+// asks for the name (or, with no line to type, saves under the name
+// offered) and n lets the secret go as it is. To the name: enter saves
+// under what was typed and puts its reference in the secret's place, esc
+// goes back. Then the next secret in the message is asked about, if
+// there's one.
+func (a *app) answer(ctx context.Context, in intercept, id, key, value string) interceptResult {
 	a.mu.Lock()
 	q, ok := a.asked[id]
 	delete(a.asked, id)
@@ -236,45 +286,78 @@ func (a *app) answer(ctx context.Context, in intercept, id, key string) intercep
 		a.letGo[q.box][q.value] = true
 		a.mu.Unlock()
 	}
+	d := secrets.Detected{Value: q.value, Kind: q.kind, SuggestedName: q.suggested}
 	switch {
-	case q.failed && key == "y", !q.failed && key == "n":
+	case q.failed && key == "y", !q.failed && !q.naming && key == "n":
 		letGo()
-		return a.then(q.box, in.Text, interceptResult{})
+		return a.then(in, interceptResult{})
 	case q.failed:
 		return interceptResult{Action: "block", Reason: "not sent; it's still in the box"}
+	case q.naming && key != keyEnter:
+		return a.offer(in, d, interceptResult{})
+	case q.naming:
+		q.typed, q.why = strings.TrimSpace(value), ""
+		if q.why = badName(q.typed); q.why != "" {
+			return a.naming(q)
+		}
+		q.name = q.typed
 	case key != "y":
 		return interceptResult{Action: "block", Reason: "no such answer: " + key}
+	case slices.Contains(in.Asks, askInput):
+		q.typed = a.free(q)
+		return a.naming(q)
 	}
 	names, err := a.vault.Names(ctx)
 	if err != nil {
 		return a.failed(q, err, interceptResult{})
 	}
+	sum := sha256.Sum256([]byte(q.value))
 	a.mu.Lock()
 	a.names, a.namesAt = names, time.Now()
+	was, mine := a.saved[q.name]
 	a.mu.Unlock()
-	// Taken since it was offered: offer the next free one.
-	if name := secrets.UniqueName(q.suggested, names); name != q.name {
-		return a.offer(q.box, secrets.Detected{Value: q.value, Kind: q.kind, SuggestedName: q.suggested}, name, interceptResult{})
+	if slices.Contains(names, q.name) {
+		switch {
+		case mine && was == sum:
+			// Saved under this name already, by this run: the same secret again.
+			return a.then(in, swap(in.Text, q.value, q.name))
+		case q.naming:
+			q.why = q.name + " is already in the vault: give this one another name"
+			return a.naming(q)
+		default:
+			// Taken since it was offered: offer the next free one.
+			return a.offer(in, d, interceptResult{})
+		}
 	}
 	if err := a.vault.Add(ctx, q.name, q.value); err != nil {
 		return a.failed(q, err, interceptResult{})
 	}
 	a.mu.Lock()
 	a.names = append(slices.Clone(a.names), q.name)
+	a.saved[q.name] = sum
 	a.mu.Unlock()
 	a.notify("saved " + q.name + " to the vault")
-	return a.then(q.box, in.Text, swap(in.Text, q.value, q.name))
+	return a.then(in, swap(in.Text, q.value, q.name))
 }
 
-// then is changes to text, asking about the next secret left in it if
-// there's one.
-func (a *app) then(box, text string, changes interceptResult) interceptResult {
-	text = changes.apply(text)
-	if d := a.next(box, text); d != nil {
-		a.mu.Lock()
-		names := a.names
-		a.mu.Unlock()
-		return a.offer(box, *d, secrets.UniqueName(d.SuggestedName, names), changes)
+// badName is why name can't be a secret's, or "" when it can.
+func badName(name string) string {
+	switch {
+	case name == "":
+		return "give it a name"
+	case len(name) > maxName:
+		return fmt.Sprintf("a name is at most %d characters", maxName)
+	case !vaultName.MatchString(name):
+		return "a name is letters, digits and _, and doesn't start with a digit"
+	}
+	return ""
+}
+
+// then is changes to in's text, asking about the next secret left in it
+// if there's one.
+func (a *app) then(in intercept, changes interceptResult) interceptResult {
+	if d := a.next(in.Box, changes.apply(in.Text)); d != nil {
+		return a.offer(in, *d, changes)
 	}
 	if len(changes.Replace) == 0 && changes.Append == "" {
 		return interceptResult{Action: "allow"}

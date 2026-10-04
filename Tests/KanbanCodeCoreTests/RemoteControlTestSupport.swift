@@ -23,6 +23,32 @@ final class FakeRemoteHost: RemoteControlHost {
         var attention: [AttentionRequest] = []
         var resolutions: [(id: String, resolution: String, by: String)] = []
         var presences: [MacPresence] = []
+        var sideChats: [String: RemoteSideChatRun] = [:]
+        var sideChatRequests: [RemoteSideChatRequest] = []
+        var sideChatCancels: [String] = []
+    }
+
+    func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
+        _ = try card(cardId)
+        return state.withLock { s in
+            s.sideChatRequests.append(request)
+            let run = RemoteSideChatRun(id: "side_\(s.sideChatRequests.count)", cardId: cardId, kind: request.kind)
+            s.sideChats[run.id] = run
+            return run
+        }
+    }
+
+    func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun {
+        guard var run = state.withLock({ $0.sideChats[runId] }), run.cardId == cardId else {
+            throw RemoteHostError.notFound("no side chat run \(runId)")
+        }
+        run.state = .done
+        run.text = "The answer"
+        return run
+    }
+
+    func cancelSideChat(cardId: String, runId: String) async throws {
+        state.withLock { $0.sideChatCancels.append(runId) }
     }
 
     let state: Mutex<State>
@@ -45,7 +71,7 @@ final class FakeRemoteHost: RemoteControlHost {
         state.withLock { $0.attention }
     }
 
-    func resolveAttention(id: String, resolution: String, by: String) async throws {
+    func resolveAttention(id: String, resolution: String, by: String, unsealed: VaultUnsealed?) async throws {
         let conts = try state.withLock { s -> [AsyncStream<Void>.Continuation] in
             guard s.attention.contains(where: { $0.id == id }) else { throw RemoteHostError.notFound("no attention request \(id)") }
             s.attention.removeAll { $0.id == id }

@@ -1,13 +1,14 @@
 import Foundation
 import Testing
 @testable import KanbanCodeCore
+import KanbanCodeRemoteKit
 
 private final class CapturingApprovals: VaultApprovals, @unchecked Sendable {
     let lock = NSLock()
     var raised: [AttentionRequest] = []
     func raise(_ request: AttentionRequest) async { lock.withLock { raised.append(request) } }
     func resolution(of id: String) async -> (resolution: String?, by: String)? { nil }
-    func expire(id: String, resolution: String) async {}
+    func close(id: String, resolution: String, by: String) async {}
 }
 
 private let card = VaultCaller(cardId: "card_1", sessionId: "s1", pid: 42, ancestry: ["kv", "zsh", "tmux"])
@@ -113,7 +114,7 @@ struct VaultApprovalCopyTests {
         #expect(r.message.contains("one short plain sentence"))
         let request = try #require(approvals.raised.last)
         #expect(request.title == "Kanban Chat Claude wants to use the Docs deploy key")
-        #expect(request.body == "No reason given. Open it to see the command.")
+        #expect(request.body == "No reason given. Asked by: ./deploy.sh")
 
         _ = await broker.edit("aws:lw-dev", VaultEditRequest(rules: "dev deploys only"), caller: card, trusted: false)
         let edit = try #require(approvals.raised.last)

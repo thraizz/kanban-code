@@ -25,17 +25,29 @@ public enum RemoteAPI {
         public static let cardActions = "cardActions"
         /// `POST /v1/cards/{id}/worktree/remove` and `POST /v1/cards/{id}/discover`.
         public static let worktrees = "worktrees"
+        /// `/v1/cards/{id}/side-chat` (`/btw` and `/catchup`) and `human` on prompts.
+        public static let sideChat = "sideChat"
     }
 
-    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees]
+    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees, Feature.sideChat]
 }
 
 /// What a device may do. `full` is a phone: everything, terminals included.
 /// `agent` is another agent (OpenClaw): read the board, start tasks, send
 /// prompts, never a terminal or raw keys.
 public enum RemoteScope: String, Codable, Sendable, CaseIterable {
+    /// Everything, terminals included. The human's own devices.
     case full
+    /// Board, tasks and prompts. Another agent.
     case agent
+    /// What a paired master needs: sync, forwarding, moves, approvals. No terminal.
+    case peer
+    /// Card terminals only, for `kanban remote attach` on a paired master.
+    case terminal
+
+    /// Whether the device acts for the human: a device of his, or a master
+    /// passing on what he did there.
+    public var actsForOwner: Bool { self == .full || self == .peer }
 }
 
 public struct RemoteHealth: Codable, Sendable, Equatable {
@@ -500,10 +512,13 @@ public struct RemoteTaskRequest: Codable, Sendable, Equatable {
     /// machine (an ssh machine or a boxd machine). nil follows the project
     /// default, as the New Task dialog would.
     public var machine: String?
+    /// true when the human typed the prompt himself in the app. Ignored
+    /// from an agent-scope device.
+    public var human: Bool?
 
     public init(project: String, prompt: String, name: String? = nil, worktree: String? = nil,
                 assistant: String? = nil, model: String? = nil, launch: Bool? = nil, images: [RemoteImage]? = nil,
-                machine: String? = nil) {
+                machine: String? = nil, human: Bool? = nil) {
         self.project = project
         self.prompt = prompt
         self.name = name
@@ -513,6 +528,7 @@ public struct RemoteTaskRequest: Codable, Sendable, Equatable {
         self.launch = launch
         self.images = images
         self.machine = machine
+        self.human = human
     }
 }
 
@@ -529,11 +545,15 @@ public struct RemotePromptRequest: Codable, Sendable, Equatable {
     public var text: String
     public var mode: Mode?
     public var images: [RemoteImage]?
+    /// True when the human typed and sent this himself in a chat composer.
+    /// Prompts from agents, scripts and other cards leave it out.
+    public var human: Bool?
 
-    public init(text: String, mode: Mode? = nil, images: [RemoteImage]? = nil) {
+    public init(text: String, mode: Mode? = nil, images: [RemoteImage]? = nil, human: Bool? = nil) {
         self.text = text
         self.mode = mode
         self.images = images
+        self.human = human
     }
 }
 

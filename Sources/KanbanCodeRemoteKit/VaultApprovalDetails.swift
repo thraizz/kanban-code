@@ -16,6 +16,8 @@ public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
         /// Changing a secret's tier, rules, tags, label, lease time or role.
         case edit
         case delete
+        /// Changing which keys open the owner-only secrets.
+        case ownerKeys
     }
 
     /// Who is asking.
@@ -67,6 +69,9 @@ public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
     public var remoteDevice: String?
     /// Executable names from the caller up.
     public var ancestry: [String]
+    /// For a card that runs on another machine: how its command got here,
+    /// e.g. "via ssh from Studio".
+    public var cardOrigin: String?
 
     public init(
         action: Action,
@@ -83,8 +88,10 @@ public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
         leaseSeconds: Double? = nil,
         claimedCardId: String? = nil,
         remoteDevice: String? = nil,
-        ancestry: [String] = []
+        ancestry: [String] = [],
+        cardOrigin: String? = nil
     ) {
+        self.cardOrigin = cardOrigin
         self.action = action
         self.origin = origin
         self.principal = principal
@@ -121,7 +128,8 @@ public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
         var rows: [Row] = []
         switch origin {
         case .card:
-            rows.append(Row("Card", cardName ?? principal ?? "unknown card"))
+            let name = cardName ?? principal ?? "unknown card"
+            rows.append(Row("Card", cardOrigin.map { "\(name), \($0)" } ?? name))
         case .openClaw:
             rows.append(Row("OpenClaw agent", principal ?? "unknown agent"))
         case .outside:
@@ -150,6 +158,12 @@ public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
 /// The words of attention notifications: a short headline naming who asks
 /// for what, and a body that is only the agent's own reason.
 public enum AttentionCopy {
+    /// An answer that refuses: "Deny", "No".
+    public static func isDenial(_ resolution: String) -> Bool {
+        let lower = resolution.lowercased()
+        return lower.hasPrefix("deny") || lower.hasPrefix("no")
+    }
+
     // MARK: Notifications
 
     /// Title and body of a notification for `request`.
@@ -201,12 +215,21 @@ public enum AttentionCopy {
         "\(subject(details)) \(actionPhrase(details))"
     }
 
-    /// The notification body of a vault request: the agent's reason, or a
-    /// plain note that it gave none.
+    /// The notification body of a vault request: the agent's reason; without
+    /// one, the command that asked, so the human still knows what it is for.
     public static func vaultBody(_ details: VaultApprovalDetails) -> String {
         if let reason = usableReason(details.reason) { return reason }
-        if let command = details.command, !command.isEmpty { return "No reason given. Open it to see the command." }
+        if let command = details.command.map(shortCommand), !command.isEmpty { return "No reason given. Asked by: \(command)" }
         return "No reason given."
+    }
+
+    /// Longest command a notification body carries.
+    public static let commandLimit = 140
+
+    /// A command on one line, cut to `commandLimit` characters.
+    public static func shortCommand(_ command: String) -> String {
+        let flat = command.split(whereSeparator: \.isNewline).joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return flat.count > commandLimit ? String(flat.prefix(commandLimit)) + "..." : flat
     }
 
     static func subject(_ details: VaultApprovalDetails) -> String {
@@ -233,6 +256,8 @@ public enum AttentionCopy {
             return "wants to replace \(things)"
         case .delete:
             return "wants to delete \(things)"
+        case .ownerKeys:
+            return "wants to change the keys that unlock the owner-only secrets"
         case .edit:
             let what = details.changes.isEmpty ? "settings" : list(details.changes)
             if labels.count > 1 { return "wants to change the \(what) of \(things)" }
@@ -274,8 +299,14 @@ public enum AttentionCopy {
 
     /// A human label for a secret: its own label when set, else one
     /// derived from the name (`aws:lw-dev` is "AWS lw-dev",
-    /// `SLACK_USER_TOKEN` is "Slack user token").
+    /// `SLACK_USER_TOKEN` is "Slack user token"). A project's secret adds
+    /// its project and environment: `shop/dev/OPENAI_API_KEY` is
+    /// "OpenAI API key · shop · dev".
     public static func secretLabel(name: String, label: String? = nil) -> String {
+        let parsed = VaultSecretName(name)
+        if parsed.project != nil {
+            return ([secretLabel(name: parsed.key, label: label)] + parsed.scopeParts).joined(separator: " · ")
+        }
         if let label = label?.trimmingCharacters(in: .whitespacesAndNewlines), !label.isEmpty { return label }
         if name.hasPrefix("aws:") {
             var parts = name.dropFirst(4).split(separator: ":").map(String.init)

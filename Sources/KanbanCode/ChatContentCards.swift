@@ -776,6 +776,9 @@ struct ChatInputBar: View {
     /// to the composer even when SwiftUI reuses the existing view instance.
     var focusRequestToken: Int = 0
     var onSend: (String, [String]) -> Void = { _, _ in }
+    /// Opens the catch-up side chat; nil where there is none (channels,
+    /// sessions that are not Claude Code).
+    var onCatchUp: (() -> Void)?
     var onQueuePrompt: ((String, Bool, [String]) -> Void)?
     var onEscape: (() -> Void)?
 
@@ -998,6 +1001,17 @@ struct ChatInputBar: View {
                 HStack(alignment: .center, spacing: 12) {
                     if let contextUsage {
                         ContextDonutView(usage: contextUsage)
+                    }
+
+                    if let onCatchUp {
+                        Button(action: onCatchUp) {
+                            Image(systemName: "clock.arrow.circlepath")
+                                .font(.system(size: 17))
+                                .foregroundStyle(Color.primary.opacity(0.5))
+                        }
+                        .buttonStyle(.plain)
+                        .help("Catch me up: what happened since my last message (/catchup)")
+                        .accessibilityIdentifier("catchUpButton")
                     }
 
                     if onQueuePrompt != nil {

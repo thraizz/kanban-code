@@ -1,13 +1,15 @@
 import Foundation
 import KanbanCodeCore
+import KanbanCodeRemoteKit
 
 /// Process-wide handles to the adapters the app builds once in
 /// `ContentView.init`. Views that are far from the composition root (the
 /// embedded terminal, the app delegate, chat views) reach tmux and the boxd
 /// supervisor through here instead of building their own adapters.
 enum AppServices {
-    /// Answers an attention request from a Mac notification action.
-    nonisolated(unsafe) static var resolveAttention: (@Sendable (String, String) async -> Void)?
+    /// Answers an attention request from this Mac, with what its vault key
+    /// unlocked for the approval; the problem as text when it was not taken.
+    nonisolated(unsafe) static var resolveAttention: (@Sendable (String, String, VaultUnsealed?) async -> String?)?
     /// Answers the question or plan a card waits on from the chat; false
     /// when it waits on none.
     nonisolated(unsafe) static var answerCard: (@Sendable (String, String) async -> Bool)?
@@ -100,8 +102,9 @@ enum AppServices {
     }
 
     /// The shell script a terminal of a card another master owns runs: the
-    /// kanban CLI bridges it to the owner's terminal socket, with the token
-    /// this Mac holds for that peer, and reconnects when the link drops.
+    /// kanban CLI bridges it to the owner's terminal socket, with the
+    /// terminal token this Mac holds for that peer, and reconnects when the
+    /// link drops.
     @MainActor
     static func peerAttachScript(machineId: String, cardId: String, session: String) -> String? {
         let settings = FileManager.default.contents(atPath: NSHomeDirectory() + "/.kanban-code/settings.json")
@@ -113,7 +116,7 @@ enum AppServices {
         let cli = cliBundlePath.map { "\($0)/dist/kanban.js" }
             ?? (NSHomeDirectory() + "/Projects/kanban/cli/dist/kanban.js")
         let node = findNode() ?? "node"
-        let attach = "KANBAN_REMOTE_URL=\(quote(peer.url)) KANBAN_REMOTE_TOKEN=\(quote(peer.token)) "
+        let attach = "KANBAN_REMOTE_URL=\(quote(peer.url)) KANBAN_REMOTE_TOKEN=\(quote(peer.terminalToken ?? peer.token)) "
             + "\(quote(node)) \(quote(cli)) remote attach \(quote(cardId)) --session \(quote(session))"
         return "while :; do \(attach) && break; sleep 2; done; echo 'Session ended.'"
     }

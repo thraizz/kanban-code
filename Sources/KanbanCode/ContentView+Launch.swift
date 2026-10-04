@@ -71,6 +71,7 @@ extension ContentView {
             modelOverride: modelOverride,
             machineChoice: machineChoice,
             keepSelection: !focusCard,
+            humanPrompt: true,
             completion: completion
         )
         if focusCard { shouldFocusTerminal = true }

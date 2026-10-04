@@ -57,6 +57,18 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
     }
 
     public func createSession(name: String, path: String, command: String?) async throws {
+        try await createSession(name: name, path: path, command: command, environment: [:])
+    }
+
+    /// Arguments of `tmux new-session` for a detached session whose
+    /// processes get `environment` (`-e`, tmux 3.2 and later).
+    public static func newSessionArguments(name: String, path: String, environment: [String: String]) -> [String] {
+        var args = ["new-session", "-d", "-s", name, "-c", path]
+        for key in environment.keys.sorted() { args += ["-e", "\(key)=\(environment[key]!)"] }
+        return args
+    }
+
+    public func createSession(name: String, path: String, command: String?, environment: [String: String]) async throws {
         // If a session with this name already exists, reuse it.
         // This prevents killing an active extra terminal whose SwiftTerm view
         // has already attached via the retry loop — killing it would clear the
@@ -70,8 +82,7 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         // Then send the command via send-keys so the shell stays alive
         // if the command exits — the user can see errors and take charge.
         await dropInheritedServerEnvironment()
-        let args = ["new-session", "-d", "-s", name, "-c", path]
-        let result = try await runTmux(args)
+        let result = try await runTmux(Self.newSessionArguments(name: name, path: path, environment: environment))
         if !result.succeeded {
             throw TmuxError.createFailed(name: name, message: result.stderr)
         }

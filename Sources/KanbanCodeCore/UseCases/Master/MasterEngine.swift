@@ -45,10 +45,24 @@ public final class MasterEngine {
     /// What the attention scan last saw of each transcript, by path.
     var attentionScanMarks: [String: AttentionScanMark] = [:]
 
+    /// What a card's new local session gets in its environment for the
+    /// vault (the card id and a fresh session token); nil without a vault.
+    public var cardSessionEnvironment: (@Sendable (String) async -> [String: String])?
+    /// Hands the vault what a device unlocked for an approval, before the
+    /// request resolves.
+    public var vaultUnsealed: (@Sendable (String, VaultUnsealed) async -> Void)?
+
     /// Wakes the channels mirror after a channel write.
     let channelsPoke = AsyncSignal()
     /// Display name of the channels home while it is another master.
     public internal(set) var channelsHomeName: String?
+
+    /// The side chats (`/btw`, `/catchup`) running for this master's cards.
+    public lazy var sideChat = SideChatService(runner: ClaudeSideChatRunner(kanbanHome: platform.kanbanHome))
+    /// What the human typed and sent from a Kanban chat, by card.
+    public lazy var humanMessages = HumanMessageLog(kanbanHome: platform.kanbanHome)
+    /// Each card's last catch-up, shown again while the session has nothing new.
+    public lazy var catchUps = CatchUpKeep(kanbanHome: platform.kanbanHome)
 
     /// The inbox of the `kanban` commands the CLI hands to this master.
     public lazy var subagentCommands = SubagentCommandStore(
@@ -92,8 +106,14 @@ public final class MasterEngine {
         modelOverride: String? = nil,
         machineChoice: BoxdMachineChoice? = nil,
         keepSelection: Bool = false,
+        humanPrompt: Bool = false,
         completion: ((String?) -> Void)? = nil
     ) {
+        if humanPrompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // The first prompt is one the human typed: it joins the card's record.
+            let log = humanMessages
+            Task.detached { log.append(cardId: cardId, HumanMessageRecord(text: prompt)) }
+        }
         if isForeign(cardId) {
             // The master that owns the card starts it.
             forwardToOwner(cardId, "start the card", isStart: true) { client in _ = try await client.resume(cardId: cardId) }
@@ -196,6 +216,11 @@ public final class MasterEngine {
                     serviceExtraEnv.merge(parentEnv) { _, new in new }
                 }
                 serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
+                // The vault runs on this master: only a session on this
+                // machine can use its token.
+                if !isRemote, let cardSessionEnvironment {
+                    serviceExtraEnv.merge(await cardSessionEnvironment(cardId)) { _, new in new }
+                }
 
                 if boxdPreparation == nil,
                    rushChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .rush {
@@ -220,7 +245,8 @@ public final class MasterEngine {
                         skipPermissions: skipPermissions,
                         model: effectiveModelOverride,
                         commandTemplate: commandTemplate,
-                        service: resolvedService
+                        service: resolvedService,
+                        human: humanPrompt
                     )
                     let sessionLink = SessionLink(
                         sessionId: sessionId,
@@ -248,7 +274,8 @@ public final class MasterEngine {
                         model: effectiveModelOverride,
                         commandTemplate: nil,
                         service: resolvedService,
-                        rush: machineRush
+                        rush: machineRush,
+                        human: humanPrompt
                     )
                     await boxdSupervisor?.assignSession(name, to: preparation.machineName)
                     platform.markRemoteSessionReady(name, preparation.machineName)
@@ -856,6 +883,11 @@ public final class MasterEngine {
                     serviceExtraEnv.merge(parentEnv) { _, new in new }
                 }
                 serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
+                // The vault runs on this master: only a session on this
+                // machine can use its token.
+                if !isRemote, let cardSessionEnvironment {
+                    serviceExtraEnv.merge(await cardSessionEnvironment(cardId)) { _, new in new }
+                }
 
                 if boxdPreparation == nil,
                    rushChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .rush {
@@ -1012,7 +1044,8 @@ public final class MasterEngine {
         model: String?,
         commandTemplate: String?,
         service: APIService?,
-        rush: RushCliAdapter? = nil
+        rush: RushCliAdapter? = nil,
+        human: Bool = false
     ) async throws -> String {
         let imagePaths = images.compactMap { image -> String? in
             if let tempPath = image.tempPath { return tempPath }
@@ -1038,7 +1071,7 @@ public final class MasterEngine {
             model: model ?? service?.modelFlag,
             binary: binary
         )
-        let info = try await adapter.start(request)
+        let info = try await adapter.start(request, human: human)
         let name = RushSessionName.name(for: info)
         KanbanCodeLog.info("rush", "Started \(name) for card=\(cardId.prefix(12)) session=\(sessionId.prefix(8)) resume=\(resume)")
         return name

@@ -45,29 +45,11 @@ public struct VaultLeasePolicy: Codable, Sendable, Equatable, Hashable {
     public static let everyUse = VaultLeasePolicy(everyUseAsks: true)
 }
 
-/// An AWS profile the vault serves as short-lived credentials: STS
-/// AssumeRole (or GetSessionToken without a role) with the long-lived key
-/// in `sourceSecret`, whose value is `{"accessKeyId","secretAccessKey"}`.
-public struct VaultAwsRole: Codable, Sendable, Equatable, Hashable {
-    public var sourceSecret: String
-    public var roleArn: String?
-    /// Session policies narrowing the role, e.g. ReadOnlyAccess.
-    public var policyArns: [String]
-    public var durationSeconds: Int
-    public var region: String?
-
-    public init(sourceSecret: String, roleArn: String?, policyArns: [String] = [], durationSeconds: Int = 3600, region: String? = nil) {
-        self.sourceSecret = sourceSecret
-        self.roleArn = roleArn
-        self.policyArns = policyArns
-        self.durationSeconds = durationSeconds
-        self.region = region
-    }
-}
-
 /// One secret in the vault. The value never leaves the master except in a
 /// release; every listing uses `VaultSecretInfo`.
 public struct VaultSecret: Codable, Sendable, Equatable {
+    /// The id: `KEY` for a shared secret, `project/environment/KEY` for a
+    /// project's (see `VaultSecretName`).
     public var name: String
     public var value: String
     public var tier: VaultTier
@@ -86,6 +68,12 @@ public struct VaultSecret: Codable, Sendable, Equatable {
     /// How approvals name it to the human, e.g. "Slack user token"; when
     /// nil, a label derived from the name.
     public var label: String?
+    /// Earlier names that still resolve to this secret.
+    public var aliases: [String]?
+    /// The owner-only form (tiers ask and never): the value encrypted to
+    /// the owner keys, with `value` left empty. Only a device or the
+    /// recovery key opens it (`VaultOwnerSeal`).
+    public var sealed: String?
 
     public init(
         name: String,
@@ -99,8 +87,11 @@ public struct VaultSecret: Codable, Sendable, Equatable {
         createdAt: Date = Date(),
         updatedAt: Date = Date(),
         deletedAt: Date? = nil,
-        label: String? = nil
+        label: String? = nil,
+        aliases: [String]? = nil,
+        sealed: String? = nil
     ) {
+        self.sealed = sealed
         self.name = name
         self.value = value
         self.tier = tier
@@ -113,15 +104,38 @@ public struct VaultSecret: Codable, Sendable, Equatable {
         self.updatedAt = updatedAt
         self.deletedAt = deletedAt
         self.label = label
+        self.aliases = aliases
     }
 
     public var info: VaultSecretInfo {
         VaultSecretInfo(
             name: name, tier: tier, rules: rules, leasePolicy: leasePolicy, tags: tags, aws: aws,
-            sources: sources, createdAt: createdAt, updatedAt: updatedAt, hasValue: !value.isEmpty,
-            label: label
+            sources: sources, createdAt: createdAt, updatedAt: updatedAt, hasValue: !value.isEmpty || sealed != nil,
+            label: label, key: key, project: project, environment: environment, aliases: aliases,
+            displayLabel: displayLabel, sealed: sealed != nil ? true : nil
         )
     }
+
+    /// Whether the value is held only in the owner-only form.
+    public var isSealed: Bool { sealed != nil && value.isEmpty }
+
+    /// The tiers whose secrets only the owner's devices open.
+    public var isOwnerOnly: Bool { tier >= .ask }
+
+    /// What a device needs to open it.
+    public var unsealItem: VaultUnsealChallenge.Item? {
+        sealed.map { VaultUnsealChallenge.Item(name: name, aliases: aliases, sealed: $0) }
+    }
+
+    public var parsedName: VaultSecretName { VaultSecretName(name) }
+    /// The environment variable it fills.
+    public var key: String { parsedName.key }
+    /// Nil for a shared secret.
+    public var project: String? { parsedName.project }
+    /// Nil for a shared secret.
+    public var environment: String? { parsedName.environment }
+    /// The name and every earlier name: leases and reuse are looked up under all.
+    public var allNames: [String] { [name] + (aliases ?? []) }
 
     /// The label approvals show: its own, or one derived from the name.
     public var displayLabel: String { AttentionCopy.secretLabel(name: name, label: label) }
@@ -148,6 +162,17 @@ public struct VaultSecretInfo: Codable, Sendable, Equatable {
     public var updatedAt: Date
     public var hasValue: Bool
     public var label: String? = nil
+    public var key: String? = nil
+    public var project: String? = nil
+    public var environment: String? = nil
+    public var aliases: [String]? = nil
+    /// "label · project · environment", as approvals name it.
+    public var displayLabel: String? = nil
+    /// The same for two secrets holding the same value, keyed by the vault
+    /// key so it says nothing about the value to anyone else.
+    public var fingerprint: String? = nil
+    /// The value opens only on the owner's devices.
+    public var sealed: Bool? = nil
 }
 
 /// The decrypted contents of `vault.age`.
@@ -155,10 +180,13 @@ public struct VaultDocument: Codable, Sendable, Equatable {
     public var version: Int
     /// By name, tombstones included.
     public var secrets: [String: VaultSecret]
+    /// The keys the owner-only secrets are encrypted to.
+    public var owner: VaultOwnerSet?
 
-    public init(version: Int = 1, secrets: [String: VaultSecret] = [:]) {
+    public init(version: Int = 1, secrets: [String: VaultSecret] = [:], owner: VaultOwnerSet? = nil) {
         self.version = version
         self.secrets = secrets
+        self.owner = owner
     }
 
     public var live: [VaultSecret] {
@@ -172,6 +200,9 @@ public struct VaultDocument: Codable, Sendable, Equatable {
         for (name, theirs) in other.secrets {
             if let mine = out.secrets[name], mine.updatedAt >= theirs.updatedAt { continue }
             out.secrets[name] = theirs
+        }
+        if let theirs = other.owner, (out.owner?.updatedAt ?? .distantPast) < theirs.updatedAt {
+            out.owner = theirs
         }
         return out
     }
@@ -212,6 +243,11 @@ public enum VaultDecider: String, Codable, Sendable {
     case human
     case rule
     case timeout
+    /// AWS credentials the card already holds, handed to it again.
+    case reuse
+    /// Credentials or a value a device unlocked earlier and the master
+    /// still holds for its window.
+    case held
 }
 
 public enum VaultOutcome: String, Codable, Sendable {
@@ -240,6 +276,8 @@ public struct VaultAuditEntry: Codable, Sendable, Equatable {
     /// Why it was decided so (Jev's choice, the rule that fired).
     public var detail: String?
     public var requestId: String?
+    /// SHA-256 of the line before this one in the log.
+    public var prev: String?
 
     public init(at: Date = Date(), machine: String, cardId: String?, sessionId: String? = nil, secret: String,
                 tier: VaultTier?, outcome: VaultOutcome, decider: VaultDecider, action: String,
@@ -275,18 +313,47 @@ public struct VaultCaller: Codable, Sendable, Equatable {
     public var ancestry: [String]
     /// Not on loopback: a device over the tailnet.
     public var remoteDevice: String?
+    /// The calling process's working directory, as the master read it.
+    public var cwd: String?
+    /// The card was found by the session token the caller sent, not by
+    /// its process ancestry (a detached process).
+    public var byToken: Bool?
+    /// The master that issued the session token and vouched for the card,
+    /// when the card runs there and the caller here (a command over ssh).
+    public var verifiedByPeer: String?
+    /// The card's title as that master gave it.
+    public var peerTitle: String?
 
     public init(cardId: String? = nil, claimedCardId: String? = nil, sessionId: String? = nil, pid: Int? = nil,
-                ancestry: [String] = [], remoteDevice: String? = nil) {
+                ancestry: [String] = [], remoteDevice: String? = nil, cwd: String? = nil, byToken: Bool? = nil,
+                verifiedByPeer: String? = nil, peerTitle: String? = nil) {
+        self.verifiedByPeer = verifiedByPeer
+        self.peerTitle = peerTitle
         self.cardId = cardId
         self.claimedCardId = claimedCardId
         self.sessionId = sessionId
         self.pid = pid
         self.ancestry = ancestry
         self.remoteDevice = remoteDevice
+        self.cwd = cwd
+        self.byToken = byToken
     }
 
     public var insideCard: Bool { cardId != nil && remoteDevice == nil }
+
+    /// How the caller reached this machine from the card's own, for the
+    /// human: "via ssh from <machine>" when sshd is in its process chain.
+    public var peerOrigin: String? {
+        guard let machine = verifiedByPeer else { return nil }
+        let overSsh = ancestry.contains { $0.hasPrefix("sshd") }
+        return overSsh ? "via ssh from \(machine)" : "from \(machine)"
+    }
+
+    /// How the audit log says the card was found.
+    public var tokenNote: String? {
+        guard byToken == true else { return nil }
+        return verifiedByPeer.map { "by session token, verified by \($0)" } ?? "by session token"
+    }
 
     /// The OpenClaw agent behind `cardId` when the caller is an OpenClaw
     /// agent rather than a card ("openclaw:<agent>"). Those get the tiers

@@ -97,7 +97,8 @@ extension MasterEngine {
                                    data: data.base64EncodedString())
             }
             forwardToOwner(cardId, "send the prompt") { client in
-                try await client.sendPrompt(cardId: cardId, text: prompt.body, mode: .queue, images: images)
+                try await client.sendPrompt(cardId: cardId, text: prompt.body, mode: .queue, images: images,
+                                            human: prompt.isHuman)
             }
             return true
         case .sendQueuedPrompt(let cardId, let promptId):

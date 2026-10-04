@@ -16,9 +16,9 @@ import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { kanbanHome } from "./paths.js";
 
-export type RemoteScope = "full" | "agent";
+export type RemoteScope = "full" | "agent" | "peer" | "terminal";
 
-export const REMOTE_SCOPES: readonly RemoteScope[] = ["full", "agent"];
+export const REMOTE_SCOPES: readonly RemoteScope[] = ["full", "agent", "peer", "terminal"];
 export const REMOTE_DEFAULT_PORT = 7780;
 
 export interface PairedDevice {

@@ -9,9 +9,17 @@ import {
   EXIT_DENIED,
   VaultClient,
   checkedReason,
+  describeInvoker,
+  invokingCommand,
+  readNamePlan,
   envFromVault,
+  environmentOf,
   findEnvVault,
   hookRewrite,
+  manifestName,
+  manifestRequest,
+  parseSecretName,
+  secretDisplay,
   execProviderAnswer,
   leasePolicyFlags,
   parseEnvVault,
@@ -20,7 +28,7 @@ import {
   shellQuote,
   type VaultIO,
 } from "./vault.js";
-import { envVaultFor, isSecret, planAws, planSecrets, renderPlan, tierFor } from "./vault-import.js";
+import { envVaultFor, environmentOfEnvFile, isSecret, planAws, planSecrets, renderPlan, tierFor } from "./vault-import.js";
 
 test("parses .env.vault references and plain values", () => {
   const entries = parseEnvVault(`# comment\nOPENAI_API_KEY={{vault:OPENAI_API_KEY}}\nexport DB={{ vault:DB_URL }}\nPORT=3000\nNAME="a b"\n`);
@@ -81,13 +89,13 @@ test("the hook answers Codex with permissionDecision allow and Claude Code witho
 });
 
 async function fakeMaster(handler: (method: string, path: string, body: any) => { status: number; body: unknown }) {
-  const calls: { method: string; path: string; body: any }[] = [];
+  const calls: { method: string; path: string; body: any; headers: Record<string, string | string[] | undefined> }[] = [];
   const server = createServer((req, res) => {
     let data = "";
     req.on("data", (c) => (data += c));
     req.on("end", () => {
       const body = data ? JSON.parse(data) : undefined;
-      calls.push({ method: req.method!, path: req.url!, body });
+      calls.push({ method: req.method!, path: req.url!, body, headers: req.headers });
       const r = handler(req.method!, req.url!, body);
       res.writeHead(r.status, { "Content-Type": "application/json" });
       res.end(JSON.stringify(r.body));
@@ -198,8 +206,8 @@ test("import dedupes by value and never writes values into the plan", () => {
     ],
     "/h"
   );
-  assert.deepEqual(plans.map((p) => p.name), ["OPENAI_API_KEY", "OPENAI_API_KEY__D"]);
-  assert.equal(plans[0].sources.length, 3);
+  assert.deepEqual(plans.map((p) => p.name), ["d/dev/OPENAI_API_KEY", "OPENAI_API_KEY"]);
+  assert.equal(plans.find((p) => p.name === "OPENAI_API_KEY")?.sources.length, 3);
   const md = renderPlan(plans, ["/h/Projects/a/.env"], "/h");
   assert.ok(!md.includes("sk-proj-value"));
   assert.match(md, /`OPENAI_API_KEY`: ~\/Projects\/a\/.env OPENAI_API_KEY/);
@@ -220,7 +228,7 @@ test("import plans AWS profiles with read leases for prod", () => {
 
 test(".env.vault keeps names and plain config only", () => {
   const out = envVaultFor("OPENAI_API_KEY=sk-proj-abcdefghijklmnopqrstuvwxyz\nPORT=3000\nWEIRD=Zx9kLmQ2vB7nR4tY8uW1eA3sD6fG\n", new Map([["OPENAI_API_KEY", "OPENAI_API_KEY"]]));
-  assert.match(out, /OPENAI_API_KEY=\{\{vault:OPENAI_API_KEY\}\}/);
+  assert.match(out, /^OPENAI_API_KEY$/m);
   assert.match(out, /PORT=3000/);
   assert.ok(!out.includes("sk-proj"));
   assert.ok(!out.includes("Zx9kLmQ2"));
@@ -327,7 +335,7 @@ test("a pending approval outlives a master restart: kv waits for the master to c
   assert.equal(r.status, "granted");
   assert.equal(notes.filter((n) => /probably restarting; waiting up to 2 min/.test(n)).length, 1);
   assert.ok(notes.some((n) => /the master is back/.test(n)));
-  assert.deepEqual(slept, [1500, 1000, 2000, 4000]);
+  assert.deepEqual(slept, [500, 1000, 2000, 4000]);
 });
 
 test("kv gives up after two minutes of a master that does not answer", async () => {
@@ -367,4 +375,205 @@ test("exec-provider does not wait for an unreachable master", async () => {
   const answer = await execProviderAnswer(client, { ids: ["A"] }, { cwd: "/" });
   assert.deepEqual(answer.errors, { A: { code: "UNREACHABLE" } });
   assert.deepEqual(slept, []);
+});
+
+test("a secret name splits into project, environment and key", () => {
+  assert.deepEqual(parseSecretName("OPENAI_API_KEY"), { key: "OPENAI_API_KEY" });
+  assert.deepEqual(parseSecretName("shop/dev/OPENAI_API_KEY"), { key: "OPENAI_API_KEY", environment: "dev", project: "shop" });
+  assert.deepEqual(parseSecretName("shop/api/prod/DATABASE_URL"), { key: "DATABASE_URL", environment: "prod", project: "shop/api" });
+  assert.deepEqual(parseSecretName("aws:lw-prod:read"), { key: "aws:lw-prod:read" });
+  assert.deepEqual(parseSecretName("a/b"), { key: "a/b" });
+  assert.equal(secretDisplay("shop/dev/OPENAI_API_KEY"), "OPENAI_API_KEY · shop · dev");
+  assert.equal(secretDisplay("OPENAI_API_KEY__SHOP"), "OPENAI_API_KEY__SHOP");
+});
+
+test("a manifest has bare keys, named secrets and plain values", () => {
+  const entries = parseEnvVault("# shared\nOPENAI_API_KEY\nexport STRIPE_KEY\nDB={{vault:shop/prod/DATABASE_URL}}\nOLD={{vault:TOKEN__SHOP}}\nPORT=3000\n");
+  assert.deepEqual(entries, [
+    { key: "OPENAI_API_KEY", bare: true },
+    { key: "STRIPE_KEY", bare: true },
+    { key: "DB", secret: "shop/prod/DATABASE_URL" },
+    { key: "OLD", secret: "TOKEN__SHOP" },
+    { key: "PORT", value: "3000" },
+  ]);
+  // The project's values come first, the manifest's own lines win.
+  const env = envFromVault(
+    entries,
+    { "shop/prod/DATABASE_URL": "db", TOKEN__SHOP: "tok" },
+    { OPENAI_API_KEY: "own", STRIPE_KEY: "shared", GROUP_ONLY: "g", PORT: "9" }
+  );
+  assert.deepEqual(env, { OPENAI_API_KEY: "own", STRIPE_KEY: "shared", GROUP_ONLY: "g", PORT: "3000", DB: "db", OLD: "tok" });
+});
+
+test("the environment comes from the manifest name", () => {
+  assert.equal(environmentOf("/p/shop/.env.vault"), "dev");
+  assert.equal(environmentOf("/p/shop/.env.prod.vault"), "prod");
+  assert.equal(environmentOf(".env.webinar.vault"), "webinar");
+  assert.equal(manifestName("dev"), ".env.vault");
+  assert.equal(manifestName("prod"), ".env.prod.vault");
+  assert.equal(environmentOfEnvFile("/p/shop/.env"), "dev");
+  assert.equal(environmentOfEnvFile("/p/shop/.env.local"), "dev");
+  assert.equal(environmentOfEnvFile("/p/shop/.env.prod"), "prod");
+});
+
+test("a manifest asks for its names, its bare keys and the project's group", () => {
+  const root = mkdtempSync(join(tmpdir(), "kv-manifest-"));
+  writeFileSync(join(root, ".env.prod.vault"), "OPENAI_API_KEY\nDB={{vault:OTHER}}\nPORT=3000\n");
+  const { body } = manifestRequest(join(root, ".env.prod.vault"), { cwd: "/elsewhere" });
+  assert.deepEqual(body, {
+    names: ["OTHER"],
+    keys: ["OPENAI_API_KEY"],
+    defined: ["DB", "PORT"],
+    group: true,
+    nearest: false,
+    dir: root,
+    project: undefined,
+    environment: "prod",
+  });
+  // No manifest: the group of the folder's project alone.
+  assert.deepEqual(manifestRequest(undefined, { cwd: "/p/shop", environment: "prod", project: "shop" }).body, {
+    names: [],
+    keys: [],
+    defined: [],
+    group: true,
+    nearest: true,
+    dir: "/p/shop",
+    project: "shop",
+    environment: "prod",
+  });
+});
+
+test("kv env loads the project's group with the manifest and sends the session token", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kv-env-"));
+  writeFileSync(join(root, ".env.vault"), "SHARED\nRENAMED={{vault:OLD__NAME}}\nPORT=3000\n");
+  const m = await fakeMaster(() => ({
+    status: 200,
+    body: { status: "granted", message: "released", values: { OLD__NAME: "old" }, env: { SHARED: "s", OWN: "o" } },
+  }));
+  const kvIo = io(m.url, []);
+  kvIo.env.KANBAN_CARD_TOKEN = "kct_abc";
+  const check = 'test "$SHARED$OWN$RENAMED$PORT" = soold3000';
+  const code = await runKv(["env", join(root, ".env.vault"), "--", "sh", "-c", check], kvIo);
+  m.close();
+  assert.equal(code, 0);
+  const sent = m.calls[0];
+  assert.equal(sent.path, "/v1/vault/release");
+  assert.equal(sent.headers["x-kanban-card-token"], "kct_abc");
+  assert.deepEqual(sent.body.names, ["OLD__NAME"]);
+  assert.deepEqual(sent.body.keys, ["SHARED"]);
+  assert.deepEqual(sent.body.defined, ["RENAMED", "PORT"]);
+  assert.equal(sent.body.group, true);
+  assert.equal(sent.body.environment, "dev");
+  assert.equal(sent.body.mode, "env");
+});
+
+test("kv env --env prod without a file uses the prod manifest of the folder, else the group alone", async () => {
+  const m = await fakeMaster(() => ({ status: 200, body: { status: "granted", message: "released", env: { A: "1" } } }));
+  const code = await runKv(["env", "--env", "prod", "--project", "shop", "--", "sh", "-c", 'test "$A" = 1'], io(m.url, []));
+  m.close();
+  assert.equal(code, 0);
+  assert.equal(m.calls[0].body.environment, "prod");
+  assert.equal(m.calls[0].body.project, "shop");
+  assert.equal(m.calls[0].body.group, true);
+});
+
+test("kv set stores a project's secret, kv ls filters by project, kv mv renames", async () => {
+  const m = await fakeMaster((method, path) => {
+    if (path.startsWith("/v1/vault/secrets?project=")) return { status: 200, body: [] };
+    if (path.startsWith("/v1/vault/rename")) return { status: 200, body: { status: "granted", message: "renamed 1 of 1 secrets", resolved: { A__SHOP: "rename" } } };
+    return { status: 200, body: { status: "granted", message: "added shop/prod/A" } };
+  });
+  await assert.rejects(runKv(["set", "A", "--env", "prod"], io(m.url, [])), /--env needs --project/);
+  assert.equal(await runKv(["ls", "--project", "shop/api"], io(m.url, [])), 0);
+  assert.equal(m.calls[0].path, "/v1/vault/secrets?project=shop%2Fapi");
+  assert.equal(await runKv(["mv", "A__SHOP", "shop/dev/A", "--reason", "Give the shop key its project name"], io(m.url, [])), 0);
+  m.close();
+  assert.deepEqual(m.calls[1].body.renames, [{ from: "A__SHOP", to: "shop/dev/A" }]);
+});
+
+test("import names a second value after its project and environment", () => {
+  const plans = planSecrets(
+    [
+      { key: "API_KEY", value: "value-one-aaaaaaaaaaaaaaaa", file: "/h/Projects/a/.env" },
+      { key: "API_KEY", value: "value-one-aaaaaaaaaaaaaaaa", file: "/h/Projects/b/.env" },
+      { key: "API_KEY", value: "value-one-aaaaaaaaaaaaaaaa", file: "/h/Projects/c/.env" },
+      { key: "API_KEY", value: "value-two-bbbbbbbbbbbbbbbb", file: "/h/Projects/shop/api/.env.prod" },
+      { key: "API_KEY", value: "value-two-bbbbbbbbbbbbbbbb", file: "/h/Projects/shop/api/.env.prod" },
+      { key: "API_KEY", value: "value-thr-cccccccccccccccc", file: "/h/Projects/shop/api/.env.prod" },
+    ],
+    "/h",
+    (file) => (file.includes("/shop/api/") ? "shop/api" : "a")
+  );
+  assert.deepEqual(plans.map((p) => p.name).sort(), ["API_KEY", "shop/api/prod-2/API_KEY", "shop/api/prod/API_KEY"]);
+  const manifest = envVaultFor("API_KEY=value-two-bbbbbbbbbbbbbbbb\nOTHER=value-one-aaaaaaaaaaaaaaaa\n",
+    new Map([["API_KEY", "shop/api/prod/API_KEY"], ["OTHER", "API_KEY"]]), "shop/api/prod");
+  assert.match(manifest, /^API_KEY$/m);
+  assert.match(manifest, /^OTHER=\{\{vault:API_KEY\}\}$/m);
+});
+
+test("the invoking command is the outermost tool above kv, below the shell", () => {
+  const eks = "aws --region eu-central-1 eks get-token --cluster-name dev --output json";
+  assert.equal(
+    describeInvoker([eks, "kubectl get pods -n langwatch", "/bin/bash -c kubectl get pods -n langwatch", "claude"]),
+    `kubectl get pods -n langwatch  (through: ${eks})`
+  );
+  assert.equal(describeInvoker(["aws s3 ls s3://bucket", "-zsh", "tmux"]), "aws s3 ls s3://bucket");
+  assert.equal(describeInvoker(["terraform apply -auto-approve", "/bin/zsh -c terraform apply -auto-approve"]), "terraform apply -auto-approve");
+  // Started straight from a shell or a script runner: that is all there is to show.
+  assert.equal(describeInvoker(["/bin/bash ./deploy.sh", "claude"]), "/bin/bash ./deploy.sh");
+  assert.equal(describeInvoker([]), undefined);
+});
+
+test("the invoking command is read from the process ancestry", () => {
+  const tree: Record<number, { ppid: number; args: string }> = {
+    30: { ppid: 20, args: "aws eks get-token --cluster-name dev" },
+    20: { ppid: 10, args: "helm upgrade api ./chart" },
+    10: { ppid: 5, args: "/bin/zsh -c helm upgrade api ./chart" },
+    5: { ppid: 1, args: "claude" },
+  };
+  assert.equal(invokingCommand(30, (pid) => tree[pid]), "helm upgrade api ./chart  (through: aws eks get-token --cluster-name dev)");
+  assert.equal(invokingCommand(99, (pid) => tree[pid]), undefined);
+});
+
+test("kv aws takes its reason from KV_REASON and sends the invoking command", async () => {
+  const credentials = { Version: 1, AccessKeyId: "ASIA", SecretAccessKey: "x", SessionToken: "t", Expiration: "2030-01-01T00:00:00Z" };
+  const m = await fakeMaster(() => ({ status: 200, body: { status: "granted", message: "released", credentials } }));
+  const reason = "Check the dev cluster pods after the nlpgo deploy";
+  const base = io(m.url, []);
+  const code = await runKv(["aws", "lw-dev"], { ...base, env: { ...base.env, KV_REASON: reason } });
+  assert.equal(code, 0);
+  assert.equal(m.calls[0].path, "/v1/vault/aws");
+  assert.equal(m.calls[0].body.reason, reason);
+  assert.equal(typeof m.calls[0].body.command, "string");
+  assert.ok(!/^kv aws/.test(m.calls[0].body.command));
+  // A KV_REASON a human could not read is refused like --reason is.
+  await assert.rejects(runKv(["aws", "lw-dev"], { ...base, env: { ...base.env, KV_REASON: "kubectl get pods" } }), (e: any) => e.code === 2);
+  m.close();
+  assert.equal(m.calls.length, 1);
+});
+
+test("kv rm deletes several secrets in one request and needs a reason", async () => {
+  const m = await fakeMaster(() => ({
+    status: 200,
+    body: { status: "granted", message: "deleted 2 of 2 secrets", resolved: { OLD__A: "deleted", OLD__B: "deleted" } },
+  }));
+  await assert.rejects(runKv(["rm", "OLD__A"], io(m.url, [])), (e: any) => e.code === 2);
+  assert.equal(m.calls.length, 0);
+  const reason = "Delete two leftover secrets nothing uses any more";
+  assert.equal(await runKv(["rm", "OLD__A", "OLD__B", "--reason", reason], io(m.url, [])), 0);
+  assert.equal(m.calls[0].path.split("?")[0], "/v1/vault/delete");
+  assert.deepEqual(m.calls[0].body, { names: ["OLD__A", "OLD__B"], reason, dryRun: false });
+
+  const dir = mkdtempSync(join(tmpdir(), "kv-rm-"));
+  const plan = join(dir, "names.txt");
+  writeFileSync(plan, "# leftovers\nOLD__A\n\nOLD__B\n");
+  assert.equal(await runKv(["rm", "--plan", plan, "--dry-run", "--reason", reason], io(m.url, [])), 0);
+  m.close();
+  assert.deepEqual(m.calls[1].body, { names: ["OLD__A", "OLD__B"], reason, dryRun: true });
+});
+
+test("a kv rm plan is a JSON array or one name per line", () => {
+  assert.deepEqual(readNamePlan('["A", "p/dev/B"]'), ["A", "p/dev/B"]);
+  assert.deepEqual(readNamePlan("A\n# note\n  p/dev/B  \n"), ["A", "p/dev/B"]);
+  assert.throws(() => readNamePlan('[{"from": "A"}]'), /JSON array of secret names/);
 });

@@ -131,6 +131,8 @@ final class ServerMaster {
             cardSessions: { [weak store] in await MainActor.run { store?.vaultCardSessions() ?? [:] } },
             peers: { [peerSync] in await peerSync.configuredPeers() }
         )
+        engine.cardSessionEnvironment = { [vault] cardId in await vault.sessionEnvironment(cardId: cardId) }
+        engine.vaultUnsealed = { [vault] id, unsealed in await vault.broker.deliver(id: id, unsealed: unsealed) }
     }
 
     /// Attention requests from this host go to the phone only: there is no

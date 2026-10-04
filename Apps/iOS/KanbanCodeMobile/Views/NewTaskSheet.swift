@@ -144,7 +144,8 @@ struct NewTaskSheet: View {
         let request = RemoteTaskRequest(
             project: projectPath,
             prompt: prompt.trimmingCharacters(in: .whitespacesAndNewlines),
-            worktree: useWorktree ? worktreeName.trimmingCharacters(in: .whitespaces) : nil
+            worktree: useWorktree ? worktreeName.trimmingCharacters(in: .whitespaces) : nil,
+            human: true
         )
         Task {
             defer { isLaunching = false }

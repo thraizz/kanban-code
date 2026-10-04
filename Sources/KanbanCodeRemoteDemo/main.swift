@@ -100,6 +100,17 @@ final class DemoHost: RemoteControlHost {
         var cards: [CardState] = []
         var continuations: [UUID: AsyncStream<Void>.Continuation] = [:]
         var counter = 0
+        var sideChats: [String: SideChat] = [:]
+        /// Each card's last catch-up and the message count it covered.
+        var keptCatchUps: [String: (run: String, covered: Int)] = [:]
+    }
+
+    /// A side chat answer written ahead and shown a bit more on every read,
+    /// as a streamed one is.
+    struct SideChat {
+        var run: RemoteSideChatRun
+        var answer: String
+        var startedAt = Date()
     }
 
     let state = Mutex(State())
@@ -170,6 +181,8 @@ final class DemoHost: RemoteControlHost {
                   messages: Self.conversation("Speed up the search index")),
             .init(card: card("card_long", "Write the release notes", .waiting, project: 1, runtime: .tmux, live: true, minutesAgo: 20),
                   messages: Self.longEnding("Write the release notes")),
+            .init(card: card("card_catchup", "Move the reports to the new API", .waiting, project: 1, runtime: .tmux, live: true, minutesAgo: 25),
+                  messages: Self.awayConversation("Move the reports to the new API")),
             .init(card: card("card_backlog", "Write the migration guide", .backlog, project: 0, runtime: .none, live: false, minutesAgo: 600),
                   messages: []),
             .init(card: card("card_huge", "Read the crash dump", .backlog, project: 1, runtime: .tmux, live: false, minutesAgo: 900),
@@ -186,7 +199,7 @@ final class DemoHost: RemoteControlHost {
         var t = Date().addingTimeInterval(-3600)
         func add(_ role: RemoteMessage.Role, _ text: String) {
             t = t.addingTimeInterval(40)
-            out.append(RemoteMessage(id: "m\(out.count)", role: role, text: text, at: t))
+            out.append(RemoteMessage(id: "\(out.count)", role: role, text: text, at: t))
         }
         add(.user, task)
         add(.assistant, "I'll start by looking at the code involved.")
@@ -197,6 +210,35 @@ final class DemoHost: RemoteControlHost {
             if i % 3 == 0 { add(.tool, "Bash pnpm test --filter part-\(i + 1)") }
         }
         add(.assistant, "Done. The change is in place and the tests pass.")
+        return out
+    }
+
+    /// A long session the human left alone after his first message: steps,
+    /// messages from another agent, and a long final report. Longer than two
+    /// pages, so its start is not loaded when the chat opens.
+    static func awayConversation(_ task: String) -> [RemoteMessage] {
+        var out: [RemoteMessage] = []
+        var t = Date().addingTimeInterval(-7200)
+        func add(_ role: RemoteMessage.Role, _ text: String) {
+            t = t.addingTimeInterval(50)
+            out.append(RemoteMessage(id: "\(out.count)", role: role, text: text, at: t))
+        }
+        add(.user, "\(task). Keep the old endpoints working until the dashboard has moved.")
+        add(.assistant, "I'll map the report endpoints first.")
+        for i in 0..<40 {
+            add(.tool, "Read src/reports/report-\(i + 1).ts")
+            add(.assistant, "Report \(i + 1) of 40 moved to the new API and its test passes.")
+            if i == 12 {
+                add(.user, "[Message from @deploy-bot]: staging is on the new API since 14:00")
+            }
+            if i == 27 {
+                add(.assistant, "The export report needs a new database index. I did not add it: it locks the table for minutes.")
+            }
+        }
+        let body = (1...12).map { "Part \($0): what moved, what stayed on the old endpoint and how it was checked. Long enough to wrap over several lines on a phone." }
+        add(.assistant, "## Final report\n\nAll 40 reports are on the new API.\n\n" + body.joined(separator: "\n\n"))
+        add(.user, "[Message from @deploy-bot]: the nightly export failed once and passed on retry")
+        add(.assistant, "Noted. Waiting for a decision on the export index.")
         return out
     }
 
@@ -211,8 +253,8 @@ final class DemoHost: RemoteControlHost {
             }
             return (body + [last]).joined(separator: "\n\n")
         }
-        out.append(RemoteMessage(id: "m\(out.count)", role: .assistant, text: long("Draft", paragraphs: 40, last: "That was the first draft."), at: t))
-        out.append(RemoteMessage(id: "m\(out.count)", role: .assistant, text: long("Final", paragraphs: 60, last: "End of the release notes."), at: t.addingTimeInterval(30)))
+        out.append(RemoteMessage(id: "\(out.count)", role: .assistant, text: long("Draft", paragraphs: 40, last: "That was the first draft."), at: t))
+        out.append(RemoteMessage(id: "\(out.count)", role: .assistant, text: long("Final", paragraphs: 60, last: "End of the release notes."), at: t.addingTimeInterval(30)))
         return out
     }
 
@@ -225,8 +267,8 @@ final class DemoHost: RemoteControlHost {
             .joined(separator: "\n")
         let json = "{" + (1...12000).map { "\"key\($0)\":\"value \($0)\"" }.joined(separator: ",") + "}"
         return [
-            RemoteMessage(id: "m0", role: .user, text: "\(task)\n\n\(log)", at: t),
-            RemoteMessage(id: "m1", role: .assistant, text: "The dump:\n\n```json\n\(json)\n```\n\nHuge chat end.", at: t.addingTimeInterval(30)),
+            RemoteMessage(id: "0", role: .user, text: "\(task)\n\n\(log)", at: t),
+            RemoteMessage(id: "1", role: .assistant, text: "The dump:\n\n```json\n\(json)\n```\n\nHuge chat end.", at: t.addingTimeInterval(30)),
         ]
     }
 
@@ -262,11 +304,11 @@ final class DemoHost: RemoteControlHost {
         Task {
             try? await Task.sleep(for: .seconds(1.5))
             self.update(id) { c in
-                c.messages.append(RemoteMessage(id: "m\(c.messages.count)", role: .tool, text: "Read src/demo.ts", at: Date()))
+                c.messages.append(RemoteMessage(id: "\(c.messages.count)", role: .tool, text: "Read src/demo.ts", at: Date()))
             }
             try? await Task.sleep(for: .seconds(2))
             self.update(id) { c in
-                c.messages.append(RemoteMessage(id: "m\(c.messages.count)", role: .assistant, text: reply, at: Date()))
+                c.messages.append(RemoteMessage(id: "\(c.messages.count)", role: .assistant, text: reply, at: Date()))
                 c.card.isBusy = false
                 c.card.column = .waiting
                 c.card.lastActivity = Date()
@@ -283,6 +325,81 @@ final class DemoHost: RemoteControlHost {
         let end = min(before.flatMap(Int.init) ?? all.count, all.count)
         let start = max(0, end - limit)
         return RemoteTranscript(cardId: cardId, messages: Array(all[start..<end]), olderCursor: start > 0 ? String(start) : nil)
+    }
+
+    // MARK: Side chat
+
+    func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
+        let messages = try cardState(cardId).messages
+        // Nothing new since the card's last catch-up: that one comes back, finished.
+        if request.kind == .catchup, request.fresh != true,
+           let kept = state.withLock({ $0.keptCatchUps[cardId] }), kept.covered == messages.count,
+           let chat = state.withLock({ $0.sideChats[kept.run] }) {
+            var run = chat.run
+            run.text = chat.answer
+            run.state = .done
+            run.finishedAt = chat.startedAt
+            run.reopened = true
+            return run
+        }
+        let id = "side_\(UUID().uuidString.prefix(8).lowercased())"
+        var run = RemoteSideChatRun(id: id, cardId: cardId, kind: request.kind)
+        var answer: String
+        switch request.kind {
+        case .btw:
+            let asked = (request.history?.count ?? 0) + 1
+            answer = "Side answer \(asked) to \"\(request.question ?? "")\": the session holds \(messages.count) messages. "
+                + "**Nothing** here was written into the conversation."
+        case .catchup:
+            let human = messages.lastIndex { $0.role == .user && !$0.text.hasPrefix("[Message from") }
+            let since = human.map { messages[$0] }
+            let scope = messages[(human ?? 0)...].filter { $0.role == .user || $0.role == .assistant }
+            let refs = scope.enumerated().map { index, message in
+                RemoteSideChatRef(ref: "m\(index + 1)", offset: Int(message.id) ?? 0,
+                                  role: message.id == since?.id ? "you" : message.role == .assistant ? "assistant" : "message from @deploy-bot",
+                                  at: message.at, preview: String(message.text.prefix(100)))
+            }
+            run.since = since.map { RemoteSideChatSince(text: $0.text, at: $0.at, offset: Int($0.id)) }
+            run.refs = refs
+            func ref(_ match: (RemoteMessage) -> Bool) -> String? {
+                scope.firstIndex(where: match).map { "m\($0 + 1)" }
+            }
+            func line(_ section: String, _ text: String, _ ref: String?) -> String? {
+                guard let ref else { return nil }
+                return "{\"section\": \"\(section)\", \"text\": \"\(text)\", \"refs\": [\"\(ref)\"]}"
+            }
+            let last = refs.last?.ref
+            answer = [
+                line("asked", "You asked to move the reports to the new API.", refs.first?.ref),
+                line("status", "Done: all 40 reports moved.", ref { $0.text.hasPrefix("## Final report") } ?? last),
+                line("report", "Full report", ref { $0.text.hasPrefix("## Final report") }),
+                line("facts", "Staging has been on the new API since 14:00.", ref { $0.text.contains("staging is on") }),
+                line("waiting", "Decide on the export index: adding it locks the table for minutes.", ref { $0.text.contains("database index") } ?? last),
+                line("other", "The nightly export failed once and passed on retry.", ref { $0.text.contains("nightly export") }),
+            ].compactMap { $0 }.joined(separator: "\n")
+        }
+        state.withLock {
+            $0.sideChats[id] = SideChat(run: run, answer: answer)
+            if request.kind == .catchup { $0.keptCatchUps[cardId] = (id, messages.count) }
+        }
+        return run
+    }
+
+    func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun {
+        guard let chat = state.withLock({ $0.sideChats[runId] }), chat.run.cardId == cardId else {
+            throw RemoteHostError.notFound("no side chat run \(runId)")
+        }
+        var run = chat.run
+        let shown = Int(Date().timeIntervalSince(chat.startedAt) * 300)
+        run.text = String(chat.answer.prefix(shown))
+        run.state = shown >= chat.answer.count ? .done : .running
+        return run
+    }
+
+    func cancelSideChat(cardId: String, runId: String) async throws {
+        state.withLock { s in
+            if !s.keptCatchUps.values.contains(where: { $0.run == runId }) { s.sideChats[runId] = nil }
+        }
     }
 
     func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard {
@@ -339,9 +456,9 @@ final class DemoHost: RemoteControlHost {
     private func deliver(_ cardId: String, text: String, interrupting: Bool) {
         update(cardId) { c in
             if interrupting {
-                c.messages.append(RemoteMessage(id: "m\(c.messages.count)", role: .system, text: "Interrupted", at: Date()))
+                c.messages.append(RemoteMessage(id: "\(c.messages.count)", role: .system, text: "Interrupted", at: Date()))
             }
-            c.messages.append(RemoteMessage(id: "m\(c.messages.count)", role: .user, text: text, at: Date()))
+            c.messages.append(RemoteMessage(id: "\(c.messages.count)", role: .user, text: text, at: Date()))
         }
         simulateTurn(cardId, reply: "Got it: \(text)")
     }
@@ -397,7 +514,7 @@ final class DemoHost: RemoteControlHost {
         update(cardId) { c in
             c.card.isBusy = false
             c.card.column = .waiting
-            c.messages.append(RemoteMessage(id: "m\(c.messages.count)", role: .system, text: "Interrupted", at: Date()))
+            c.messages.append(RemoteMessage(id: "\(c.messages.count)", role: .system, text: "Interrupted", at: Date()))
         }
     }
 

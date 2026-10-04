@@ -108,6 +108,61 @@ struct RemoteControlHostTests {
         for _ in 0..<50 where !condition() { try? await Task.sleep(for: .milliseconds(20)) }
     }
 
+    @Test("an approval that needs the device's vault key is refused without what the key unlocked")
+    func approvalNeedsTheDeviceKey() async throws {
+        let (host, store, _) = makeHost()
+        store.dispatch(.attentionRaised(AttentionRequest(
+            id: "vault_sealed", cardId: nil, kind: .vaultApproval, title: "A card wants to use the Stripe key", body: "",
+            options: AttentionRequest.vaultApprovalOptions, requiresBiometry: true,
+            unseal: VaultUnsealChallenge(secrets: [.init(name: "STRIPE", sealed: "AAAA")]))))
+        do {
+            try await host.resolveAttention(id: "vault_sealed", resolution: "Approve once", by: "phone")
+            Issue.record("an approval without the unlocked value must be refused")
+        } catch let error as RemoteHostError {
+            #expect(error.message == AttentionAnswerCopy.needsDeviceKey)
+        }
+        #expect(store.state.attentionRequests["vault_sealed"]?.isOpen == true)
+        let unsealed = VaultUnsealed(values: ["STRIPE": "sk"], device: "abcd")
+        try await host.resolveAttention(id: "vault_sealed", resolution: "Approve once", by: "phone", unsealed: unsealed)
+        #expect(store.state.attentionRequests["vault_sealed"]?.resolution == "Approve once")
+
+        // A denial needs no key.
+        store.dispatch(.attentionRaised(AttentionRequest(
+            id: "vault_sealed2", cardId: nil, kind: .vaultApproval, title: "A card wants to use the Stripe key", body: "",
+            options: AttentionRequest.vaultApprovalOptions,
+            unseal: VaultUnsealChallenge(secrets: [.init(name: "STRIPE", sealed: "AAAA")]))))
+        try await host.resolveAttention(id: "vault_sealed2", resolution: "Deny", by: "phone")
+        #expect(store.state.attentionRequests["vault_sealed2"]?.resolution == "Deny")
+    }
+
+    @Test("answering a request twice with the same answer is quiet, and no refusal names the request id")
+    func answeringTwice() async throws {
+        let (host, store, _) = makeHost()
+        store.dispatch(.attentionRaised(AttentionRequest(
+            id: "vault_abc123", cardId: nil, kind: .vaultApproval, title: "A card wants AWS lw-dev access", body: "",
+            options: AttentionRequest.vaultApprovalOptions)))
+        try await host.resolveAttention(id: "vault_abc123", resolution: "Approve once", by: "phone")
+        #expect(store.state.openAttentionRequests.isEmpty)
+        // The same answer again (a second tap, a retry) changes nothing.
+        try await host.resolveAttention(id: "vault_abc123", resolution: "Approve once", by: "phone")
+        #expect(store.state.attentionRequests["vault_abc123"]?.resolution == "Approve once")
+
+        do {
+            try await host.resolveAttention(id: "vault_abc123", resolution: "Deny", by: "mac")
+            Issue.record("a different answer to a settled request must be refused")
+        } catch let error as RemoteHostError {
+            #expect(error.kind == .conflict)
+            #expect(error.message == "This was already answered on the phone: Approve once.")
+        }
+        do {
+            try await host.resolveAttention(id: "vault_never", resolution: "Deny", by: "mac")
+            Issue.record("an unknown request must be refused")
+        } catch let error as RemoteHostError {
+            #expect(error.kind == .notFound)
+            #expect(!error.message.contains("vault_never"))
+        }
+    }
+
     @Test("the board lists the store's cards")
     func board() async {
         let (host, store, _) = makeHost()

@@ -9,7 +9,7 @@ import Glibc
 // over the kanban home of this machine, for hosts without the Mac app.
 //
 //   kanban-code-server                      serve on loopback + Tailscale, port from settings (7780)
-//   kanban-code-server pair <name> [--scope full|agent]
+//   kanban-code-server pair <name> [--scope full|agent|peer|terminal]
 //                                           add a device, print its token and pair link
 
 struct ServerOptions {
@@ -57,7 +57,7 @@ struct ServerOptions {
         if let error { FileHandle.standardError.write(Data("error: \(error)\n\n".utf8)) }
         say("""
         usage: kanban-code-server [--home <dir>] [--port <n>] [--devices <path>] [--host-name <name>] [--loopback-only] [--no-reconcile]
-               kanban-code-server pair <name> [--scope full|agent] [--home <dir>] [--devices <path>]
+               kanban-code-server pair <name> [--scope full|agent|peer|terminal] [--home <dir>] [--devices <path>]
 
           --home       kanban home (default ~/.kanban-code): links.json, settings.json, remote/devices.json
           --port       listen port (default: settings remoteControl.port, else \(RemoteAPI.defaultPort))
@@ -83,6 +83,10 @@ func fail(_ message: String) -> Never {
 
 signal(SIGPIPE, SIG_IGN)
 
+// A server started by hand from a card's shell, or from an ssh login that
+// carried a card's variables, must not hand them to the sessions it starts.
+InheritedSessionEnvironment.scrub()
+
 let options = ServerOptions.parse(Array(CommandLine.arguments.dropFirst()))
 let devices = RemoteDeviceStore(path: options.devicesFile)
 let settings = try? await SettingsStore(basePath: options.home).read()
@@ -104,6 +108,11 @@ await master.start()
 let host = MasterRemoteControlHost(engine: master.engine)
 let peerServer = BoardPeerLinksServer(store: master.store, peerSync: master.peerSync)
 
+let scrubber = SecretScrubber(vault: master.vault, machine: await master.vault.broker.machine) { [peerSync = master.peerSync] in
+    await peerSync.configuredPeers()
+}
+Task.detached(priority: .utility) { await scrubber.runSchedule() }
+
 let loopbackOnly = options.loopbackOnly
 let server = RemoteControlServer(
     host: host,
@@ -113,7 +122,8 @@ let server = RemoteControlServer(
     options: .init(appVersion: KanbanCodeServerVersion.current, hostName: hostName),
     peerServer: peerServer,
     syncEngine: master.agentSync,
-    vault: master.vault
+    vault: master.vault,
+    scrubber: scrubber
 )
 
 do {
