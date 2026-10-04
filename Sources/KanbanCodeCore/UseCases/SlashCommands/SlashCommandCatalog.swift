@@ -36,6 +36,12 @@ public enum SlashCommandCatalog {
                 ("compress", "Summarize the conversation to free context"),
                 ("clear", "Start a new conversation with an empty context"),
             ]
+        case .opencode:
+            pairs = [
+                ("compact", "Summarize the conversation to free context"),
+                ("new", "Start a new conversation"),
+                ("init", "Write an AGENTS.md for this project"),
+            ]
         }
         return pairs.map { RemoteSlashCommand(name: $0.0, description: $0.1, source: RemoteSlashCommand.Source.agent) }
     }
