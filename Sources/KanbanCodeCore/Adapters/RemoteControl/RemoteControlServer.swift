@@ -88,6 +88,9 @@ public final class RemoteControlServer: Sendable {
     public let vault: VaultService?
     /// Serves the scrubber routes (`/v1/scrub/*`) when set.
     public let scrubber: SecretScrubber?
+    /// Told the card of every request the human made to a card from
+    /// another device (`RemoteActivityPolicy`).
+    private let activity: (@Sendable (String) async -> Void)?
     private let bindAddresses: @Sendable () -> [String]
     private let options: Options
     private let requestedPort: Int
@@ -103,8 +106,10 @@ public final class RemoteControlServer: Sendable {
         peerServer: (any PeerLinksServing)? = nil,
         syncEngine: AgentSyncEngine? = nil,
         vault: VaultService? = nil,
-        scrubber: SecretScrubber? = nil
+        scrubber: SecretScrubber? = nil,
+        activity: (@Sendable (String) async -> Void)? = nil
     ) {
+        self.activity = activity
         self.host = host
         self.vault = vault
         self.scrubber = scrubber
@@ -378,6 +383,19 @@ public final class RemoteControlServer: Sendable {
             KanbanCodeLog.warn("remote", "refused \(method) /\(seg.joined(separator: "/")) for \(device.name) (\(device.scope.rawValue) scope)")
             return .response(.error(403, refusal))
         }
+        let forOwner = RemoteActivityPolicy.actsForOwner(scope: device.scope, header: request.header(RemoteActingFor.header.lowercased()))
+        if forOwner, let activity, let card = RemoteActivityPolicy.card(rest: Array(seg.dropFirst())) {
+            await activity(card)
+        }
+        // What this request forwards to another master goes for the human too.
+        return await RemoteActingFor.$owner.withValue(forOwner) {
+            await self.routeAuthenticated(request, device: device, peer: peer)
+        }
+    }
+
+    private func routeAuthenticated(_ request: RemoteHTTPRequest, device: RemoteDevice, peer: RemotePeerAddress?) async -> Outcome {
+        let seg = request.segments
+        let method = request.method
         if let scrubber, let response = await RemoteScrubRoutes.handle(
             method: method, rest: Array(seg.dropFirst()), body: request.body, device: device, scrubber: scrubber) {
             return .response(response)
@@ -433,12 +451,19 @@ public final class RemoteControlServer: Sendable {
                 }
             }
             let id = rest.count >= 2 && rest[0] == "cards" ? rest[1] : ""
-            let shape = rest.enumerated().map { item in
-                let wildcard = rest[0] == "cards"
-                    && (item.offset == 1 || (item.offset == 3 && (rest[2] == "queue" || rest[2] == "side-chat")))
-                return wildcard ? "*" : item.element
-            }.joined(separator: "/")
+            let shape = RemoteScopePolicy.shape(rest)
             switch (method, shape) {
+            case ("GET", "cards/search"):
+                let scope = request.query["scope"].flatMap { $0.isEmpty ? nil : $0 }
+                guard scope == nil || RemoteCardSearchScope(rawValue: scope!) != nil else {
+                    return .response(.error(400, "scope must be all, older or archived"))
+                }
+                return .response(.json(await host.searchCards(RemoteCardSearchRequest(
+                    query: request.formValue("q") ?? "",
+                    scope: scope.flatMap(RemoteCardSearchScope.init(rawValue:)) ?? .all,
+                    limit: Int(request.query["limit"] ?? "") ?? CardSearch.defaultLimit,
+                    local: Self.isOn(request.query["local"])))))
+
             case ("GET", "me"):
                 return .response(.json(device))
 
@@ -510,6 +535,12 @@ public final class RemoteControlServer: Sendable {
 
             case ("GET", "cards/*/side-chat/*"):
                 return .response(.json(try await host.sideChatRun(cardId: id, runId: rest[3])))
+
+            case ("GET", "cards/*/slash-commands"):
+                return .response(.json(try await host.slashCommands(cardId: id)))
+
+            case ("POST", "cards/*/pasted-image"):
+                return .response(.json(try await host.storePastedImage(cardId: id, image: request.body), status: 201))
 
             case ("DELETE", "cards/*/side-chat/*"):
                 try await host.cancelSideChat(cardId: id, runId: rest[3])
@@ -631,15 +662,21 @@ public final class RemoteControlServer: Sendable {
 
     /// `?all=1` asks for every card instead of the working set.
     static func wantsAll(_ request: RemoteHTTPRequest) -> Bool {
-        guard let value = request.query["all"]?.lowercased() else { return false }
+        isOn(request.query["all"])
+    }
+
+    /// A query flag: present with no value, or `1`, `true`, `yes`.
+    static func isOn(_ value: String?) -> Bool {
+        guard let value = value?.lowercased() else { return false }
         return value == "" || value == "1" || value == "true" || value == "yes"
     }
 
     private static let knownShapes: Set<String> = [
-        "me", "board", "machines", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
+        "me", "board", "machines", "cards/search", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
         "cards/*/interrupt", "cards/*/resume", "events", "cards/*/terminal",
         "cards/*/move", "cards/*/handover", "cards/*/transcript/raw",
         "cards/*/worktree/remove", "cards/*/discover", "cards/*/side-chat", "cards/*/side-chat/*",
+        "cards/*/slash-commands", "cards/*/pasted-image",
     ]
 
     static func response(for error: Error) -> RemoteHTTPResponse {

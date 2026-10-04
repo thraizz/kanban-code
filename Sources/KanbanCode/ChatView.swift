@@ -66,6 +66,12 @@ struct ChatView: View {
         assistant == .claude && !cardId.isEmpty ? SideChatCenter.controller(for: cardId) : nil
     }
 
+    /// What the composer offers after `/`, from the board state.
+    private var slashCommands: [RemoteSlashCommand] {
+        guard !cardId.isEmpty else { return [] }
+        return AppComposition.shared.engine.slashCommandsShown(cardId: cardId, assistant: assistant)
+    }
+
     /// Sends a prompt to the session, with the waiting bubble until it lands.
     private func sendToSession(_ text: String, _ images: [String]) {
         pendingMessage = text
@@ -174,22 +180,27 @@ struct ChatView: View {
                     .padding(.bottom, 2)
                 }
             }
+            // Only the panel animates, inside its overlay: the chat's top
+            // inset changes in one step, so its layout never follows an
+            // animated height.
             .overlay(alignment: .top) {
-                if let sideChat, sideChat.state.isOpen {
-                    SideChatPanel(
-                        controller: sideChat,
-                        collapsed: $sideChatCollapsed,
-                        onJump: { offset in
-                            // The panel folds so the message shows under it.
-                            withAnimation(.easeInOut(duration: 0.15)) { sideChatCollapsed = true }
-                            jumpRequest = ChatJumpRequest(offset: offset)
-                        },
-                        onSendToMain: { prompt in sendToSession(prompt, []) }
-                    )
-                    .transition(.move(edge: .top).combined(with: .opacity))
+                ZStack(alignment: .top) {
+                    if let sideChat, sideChat.state.isOpen {
+                        SideChatPanel(
+                            controller: sideChat,
+                            collapsed: $sideChatCollapsed,
+                            onJump: { offset in
+                                // The panel folds so the message shows under it.
+                                withAnimation(.easeInOut(duration: 0.15)) { sideChatCollapsed = true }
+                                jumpRequest = ChatJumpRequest(offset: offset)
+                            },
+                            onSendToMain: { prompt in sendToSession(prompt, []) }
+                        )
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                 }
+                .animation(.easeInOut(duration: 0.18), value: sideChat?.state.isOpen)
             }
-            .animation(.easeInOut(duration: 0.18), value: sideChat?.state.isOpen)
 
             if tmuxSessionName != nil {
             ChatInputBar(
@@ -199,7 +210,8 @@ struct ChatView: View {
                 contextUsage: contextUsage,
                 userMessageHistory: turns.filter { $0.role == "user" }.reversed().compactMap {
                     let text = $0.contentBlocks.compactMap { b in if case .text = b.kind { return b.text } else { return nil } }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                    return text.isEmpty ? nil : text
+                    // A compaction summary is not a message to recall.
+                    return text.isEmpty || HarnessNote.classify(text) == .compactionSummary ? nil : text
                 },
                 onSend: { text, images in
                     // /btw and /catchup open the side chat; nothing goes to the session.
@@ -218,6 +230,11 @@ struct ChatView: View {
                 },
                 onQueuePrompt: onQueuePrompt,
                 onEscape: onEscape,
+                slashCommands: slashCommands,
+                onSlashMenuOpen: {
+                    guard !cardId.isEmpty else { return }
+                    AppComposition.shared.engine.refreshSlashCommands(cardId: cardId)
+                },
                 text: $draftText,
                 pastedImages: $draftImages
             )

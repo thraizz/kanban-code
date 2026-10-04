@@ -169,6 +169,8 @@ export interface RemoteMessage {
   role: "user" | "assistant" | "tool" | "system";
   text: string;
   at?: string | null;
+  /** The long text behind a system note: the summary of a compaction. */
+  detail?: string | null;
 }
 
 export interface RemoteTranscript {
@@ -297,6 +299,16 @@ export class RemoteClient {
   /** The working set (no archived, no All Sessions, recent Done), or every card with `all`. */
   board(opts: { all?: boolean } = {}): Promise<RemoteBoard> {
     return this.request("GET", opts.all ? "/v1/board?all=1" : "/v1/board");
+  }
+
+  /**
+   * Cards matching every word of `query` among all the cards the master and
+   * its peers know, archived and All Sessions included. Board cards first,
+   * then the most recently active.
+   */
+  searchCards(query: string, opts: { limit?: number } = {}): Promise<RemoteCardSearchResult> {
+    const limit = opts.limit ? `&limit=${opts.limit}` : "";
+    return this.request("GET", `/v1/cards/search?q=${encodeURIComponent(query)}${limit}`);
   }
 
   card(id: string): Promise<RemoteCard> {
@@ -482,6 +494,14 @@ export function parseColumn(raw: string): RemoteColumn {
     .map(([wire, display]) => `${wire} (${display})`)
     .join(", ");
   throw new RemoteCliError(`Unknown column '${raw}'. Known: ${known}.`);
+}
+
+export interface RemoteCardSearchResult {
+  cards: RemoteCard[];
+  /** More cards matched than the limit let through. */
+  truncated?: boolean;
+  /** Peer masters that did not answer in time. */
+  unreachable?: string[];
 }
 
 export function filterCards(
@@ -771,9 +791,20 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
     .option("--column <column>", "backlog, in_progress, waiting (requires_attention), in_review, done")
     .option("--project <project>", "project name or path")
     .option("--all", "include archived, All Sessions and older Done cards")
+    .option("--search <text>", "cards matching every word, among all cards of every master (archived and All Sessions too)")
+    .option("--limit <n>", "with --search: how many cards at most (default 50, up to 200)", (v) => parseInt(v, 10))
     .option("--json", "output as JSON")
     .action(
-      run(async (opts: { column?: string; project?: string; all?: boolean; json?: boolean }) => {
+      run(async (opts: { column?: string; project?: string; all?: boolean; search?: string; limit?: number; json?: boolean }) => {
+        if (opts.search !== undefined) {
+          const result = await client().searchCards(opts.search, { limit: opts.limit });
+          const cards = filterCards(result.cards, { ...opts, all: true });
+          if (opts.json) return printJson(cards);
+          println(cards.length === 0 ? "No cards match." : formatCardsTable(cards));
+          if (result.truncated) io.err("More cards match; narrow the search or raise --limit.\n");
+          if (result.unreachable?.length) io.err(`No answer from: ${result.unreachable.join(", ")}.\n`);
+          return;
+        }
         const board = await client().board({ all: opts.all });
         const cards = filterCards(board.cards, opts);
         if (opts.json) return printJson(cards);

@@ -117,6 +117,9 @@ public final class AppState: @unchecked Sendable {
     public var rushQueues: [String: [String]] = [:]
     /// What each blocked rush host waits on, by session name.
     public var rushNeeds: [String: String] = [:]
+    /// What each card's chat composer offers after `/`, as last read from
+    /// the master that owns the card.
+    public var slashCommands: [String: [RemoteSlashCommand]] = [:]
     /// Single source of truth for which drawer is open. Only ONE thing can be
     /// selected at a time; the type system enforces that invariant. The legacy
     /// `selectedCardId` / `selectedChannelName` / `selectedDMParticipant`
@@ -737,6 +740,8 @@ public enum Action: Sendable {
     case rushQueuesScanned([String: [String]])
     /// What every blocked rush host waits on, from the same scan.
     case rushNeedsScanned([String: String])
+    /// The slash commands of a card's chat, read from its owner.
+    case slashCommandsLoaded(cardId: String, commands: [RemoteSlashCommand])
     /// One rush host's queue, read after acting on it.
     case rushQueueRead(sessionName: String, queue: [String])
     case gitHubIssuesUpdated(links: [Link])
@@ -1045,13 +1050,15 @@ public enum Reducer {
     }
 
     /// Takes a card out of the archive. A card in All Sessions goes to the
-    /// backlog, and reconciliation promotes it by real activity from there.
+    /// backlog as a manual placement, which reconciliation keeps: without
+    /// it a card whose session ended long ago is sent back to All Sessions
+    /// on the next pass. Resuming the card lifts the placement.
     static func unarchive(_ link: inout Link) {
         guard link.manuallyArchived else { return }
         link.manuallyArchived = false
         if link.column == .allSessions {
             link.column = .backlog
-            link.manualOverrides.column = false
+            link.manualOverrides.column = true
         }
     }
 
@@ -2498,6 +2505,10 @@ public enum Reducer {
 
         case .rushNeedsScanned(let needs):
             if state.rushNeeds != needs { state.rushNeeds = needs }
+            return []
+
+        case .slashCommandsLoaded(let cardId, let commands):
+            if state.slashCommands[cardId] != commands { state.slashCommands[cardId] = commands }
             return []
 
         case .rushQueueRead(let sessionName, let queue):

@@ -148,6 +148,11 @@ final class DemoHost: RemoteControlHost {
                 machineId: machine?.id, machineName: machine?.name
             )
         }
+        func archived(_ card: RemoteCard) -> RemoteCard {
+            var card = card
+            card.archived = true
+            return card
+        }
         if flavor == "box" {
             var cards: [CardState] = [
                 .init(card: card("box_backfill", "Nightly data backfill", .inProgress, project: 1, runtime: .tmux, live: true, busy: true, minutesAgo: 2),
@@ -183,6 +188,10 @@ final class DemoHost: RemoteControlHost {
                   messages: Self.longEnding("Write the release notes")),
             .init(card: card("card_catchup", "Move the reports to the new API", .waiting, project: 1, runtime: .tmux, live: true, minutesAgo: 25),
                   messages: Self.awayConversation("Move the reports to the new API")),
+            .init(card: card("card_compact", "Trim the session after the audit", .done, project: 0, runtime: .tmux, live: true, minutesAgo: 180),
+                  messages: Self.compactedConversation("Trim the session after the audit")),
+            .init(card: card("card_table", "Spring cleaning", .waiting, project: 0, runtime: .tmux, live: true, minutesAgo: 40),
+                  messages: Self.tableConversation("Spring cleaning")),
             .init(card: card("card_backlog", "Write the migration guide", .backlog, project: 0, runtime: .none, live: false, minutesAgo: 600),
                   messages: []),
             .init(card: card("card_huge", "Read the crash dump", .backlog, project: 1, runtime: .tmux, live: false, minutesAgo: 900),
@@ -190,6 +199,12 @@ final class DemoHost: RemoteControlHost {
             .init(card: card("card_done", "Bump dependencies", .done, project: 1, runtime: .tmux, live: false,
                              prs: [RemotePR(number: 398, title: "chore: bump deps", status: "merged")], minutesAgo: 2000),
                   messages: Self.conversation("Bump dependencies")),
+            .init(card: archived(card("card_old", "Export invoices to Parquet", .allSessions, project: 1, runtime: .tmux, live: false,
+                                      minutesAgo: 30_000)),
+                  messages: Self.conversation("Export invoices to Parquet")),
+            .init(card: archived(card("card_older", "Résumé parser for the careers page", .allSessions, project: 0, runtime: .tmux,
+                                      live: false, minutesAgo: 60_000)),
+                  messages: Self.conversation("Résumé parser for the careers page")),
         ]
         state.withLock { $0.cards = cards }
     }
@@ -258,6 +273,69 @@ final class DemoHost: RemoteControlHost {
         return out
     }
 
+    /// A session whose answers hold markdown tables: three columns with
+    /// long text in the first and last, a table too wide for a phone, and
+    /// lines with pipes that are not a table.
+    static func tableConversation(_ task: String) -> [RemoteMessage] {
+        let t = Date().addingTimeInterval(-2400)
+        let wide = """
+            Per folder, widest first:
+
+            | Folder | Size on disk | Files | Last touched | Owner | Safe to delete | Why |
+            |---|---:|---:|:---:|---|:---:|---|
+            | `~/Projects/acme-web/.claude/worktrees` | 48 GB | 1,204,331 | 12 days ago | you | yes | Every worktree older than a week has its branch merged |
+            | `~/Library/Caches/go-build` | 8 GB | 90,112 | today | go | yes | Rebuilt on the next build |
+            | `~/Movies/Screen recordings` | 22 GB | 41 | 3 months ago | you | ask | Not backed up anywhere |
+
+            To list them yourself run `du -sh * | sort -h` and then `ls | wc -l`.
+            """
+        let three = """
+            Here is what can go:
+
+            | What | Frees | Notes |
+            |---|---:|---|
+            | Go build cache in `~/Library/Caches/go-build`, rebuilt on demand | 8 GB | Safe. The next `go build` takes about **4 minutes** longer |
+            | Worktrees not touched for 14 days, `a \\| b` branches included | 48 GB | Each one is checked with `git status` first, see [the list](https://example.com/list) |
+            | Old `links.json` backups | 3.5 GB | Keeps the newest 5 |
+
+            - Totals by kind:
+
+              | Kind | Size |
+              |:---:|---:|
+              | Caches | 8 GB |
+              | Worktrees | 48 GB |
+
+            Say the word and I delete them.
+            """
+        return [
+            RemoteMessage(id: "0", role: .user, text: task, at: t),
+            RemoteMessage(id: "1", role: .assistant, text: wide, at: t.addingTimeInterval(40)),
+            RemoteMessage(id: "2", role: .assistant, text: three, at: t.addingTimeInterval(80)),
+        ]
+    }
+
+    /// A session that was compacted as its last act: the `/compact` note,
+    /// then the note that opens to the long summary the harness wrote.
+    static func compactedConversation(_ task: String) -> [RemoteMessage] {
+        var out = conversation(task)
+        let t = Date().addingTimeInterval(-10_800)
+        let parts = (1...45).map { i in
+            "\(i). Part \(i) of the earlier work: what was asked, which files changed, what failed and how it was fixed. Long enough to wrap over several lines on a phone."
+        }
+        let summary = "This session is being continued from a previous conversation that ran out of context. "
+            + "The summary below covers the earlier portion of the conversation.\n\nSummary:\n"
+            + parts.joined(separator: "\n\n")
+            + "\n\nContinue the conversation from where it left off without asking the user any further questions."
+        out.append(RemoteMessage(id: "\(out.count)", role: .system, text: "/compact", at: t))
+        out.append(RemoteMessage(id: "\(out.count)", role: .system, text: HarnessNote.compactedTitle,
+                                 at: t.addingTimeInterval(30), detail: summary))
+        return out
+    }
+
+    /// Cards whose prompts take a few seconds to be accepted, as a master
+    /// that forwards to a slow peer does.
+    static let slowSendCards: Set<String> = ["card_compact"]
+
     /// A pasted log of thousands of lines and a code block with one line of
     /// minified JSON a few hundred KB long: what made the phone's text
     /// layout stall for seconds.
@@ -325,6 +403,17 @@ final class DemoHost: RemoteControlHost {
         let end = min(before.flatMap(Int.init) ?? all.count, all.count)
         let start = max(0, end - limit)
         return RemoteTranscript(cardId: cardId, messages: Array(all[start..<end]), olderCursor: start > 0 ? String(start) : nil)
+    }
+
+    // MARK: Slash commands
+
+    func slashCommands(cardId: String) async throws -> [RemoteSlashCommand] {
+        _ = try cardState(cardId)
+        return SlashCommandCatalog.merged(assistant: .claude, sideChat: true, disk: [
+            RemoteSlashCommand(name: "deploy", description: "Ship the current branch to staging", source: RemoteSlashCommand.Source.project),
+            RemoteSlashCommand(name: "review", description: "Review recent changes before merge", source: RemoteSlashCommand.Source.user),
+            RemoteSlashCommand(name: "catalog:search", description: "Search the product catalog", source: RemoteSlashCommand.Source.plugin),
+        ])
     }
 
     // MARK: Side chat
@@ -433,6 +522,7 @@ final class DemoHost: RemoteControlHost {
     func sendPrompt(cardId: String, _ request: RemotePromptRequest, images: [RemotePromptImages.Decoded]) async throws {
         let c = try cardState(cardId)
         guard c.card.isLive else { throw RemoteHostError.conflict("card \(cardId) has no live session; resume it first") }
+        if Self.slowSendCards.contains(cardId) { try? await Task.sleep(for: .seconds(4)) }
         let text = Self.promptText(request.text, imageCount: images.count)
         if c.card.isBusy && request.mode != .now {
             let prompt = RemoteQueuedPrompt(id: "prompt_\(UUID().uuidString.prefix(8))", text: request.text, imageCount: images.count)

@@ -6,6 +6,10 @@ import KanbanCodeRemoteKit
 public protocol RemoteControlHost: AnyObject, Sendable {
     func board() async -> RemoteBoard
 
+    /// Cards matching the request among every card this master knows and,
+    /// unless the request is `local`, the ones its peers know.
+    func searchCards(_ request: RemoteCardSearchRequest) async -> RemoteCardSearchResult
+
     /// Newest `limit` messages of the card's conversation, older than
     /// `before` when given.
     func transcript(cardId: String, limit: Int, before: String?) async throws -> RemoteTranscript
@@ -97,10 +101,21 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// The run and its answer so far.
     func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun
     func cancelSideChat(cardId: String, runId: String) async throws
+
+    /// What the card's chat composer offers after `/`.
+    func slashCommands(cardId: String) async throws -> [RemoteSlashCommand]
+
+    /// Keeps an image pasted into the card's terminal as a file on the
+    /// master that owns the card, and returns where it is there.
+    func storePastedImage(cardId: String, image: Data) async throws -> RemotePastedImage
 }
 
 extension RemoteControlHost {
     public func machines() async -> [RemoteMachineEntry] { [] }
+
+    public func searchCards(_ request: RemoteCardSearchRequest) async -> RemoteCardSearchResult {
+        RemoteCardSearch.search(await board().cards, request)
+    }
 
     public func rawTranscript(cardId: String, offset: Int, limit: Int) async throws -> RemoteRawTranscript {
         throw RemoteHostError.notFound("this host does not serve raw transcripts")
@@ -172,6 +187,12 @@ extension RemoteControlHost {
 
     public func cancelSideChat(cardId: String, runId: String) async throws {
         throw RemoteHostError.notFound("this host has no side chat")
+    }
+
+    public func slashCommands(cardId: String) async throws -> [RemoteSlashCommand] { [] }
+
+    public func storePastedImage(cardId: String, image: Data) async throws -> RemotePastedImage {
+        throw RemoteHostError.notFound("this host does not keep pasted images")
     }
 }
 

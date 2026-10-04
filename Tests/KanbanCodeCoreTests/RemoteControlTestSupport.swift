@@ -26,6 +26,18 @@ final class FakeRemoteHost: RemoteControlHost {
         var sideChats: [String: RemoteSideChatRun] = [:]
         var sideChatRequests: [RemoteSideChatRequest] = []
         var sideChatCancels: [String] = []
+        var pastedImages: [(cardId: String, bytes: Data)] = []
+    }
+
+    func storePastedImage(cardId: String, image: Data) async throws -> RemotePastedImage {
+        _ = try card(cardId)
+        guard RemotePromptImages.fileExtension(of: image) != nil else {
+            throw RemoteHostError.badRequest("the image is not PNG, JPEG, GIF or WebP")
+        }
+        return state.withLock { s in
+            s.pastedImages.append((cardId, image))
+            return RemotePastedImage(path: "/owner/images/pasted/\(s.pastedImages.count).png")
+        }
     }
 
     func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
@@ -49,6 +61,13 @@ final class FakeRemoteHost: RemoteControlHost {
 
     func cancelSideChat(cardId: String, runId: String) async throws {
         state.withLock { $0.sideChatCancels.append(runId) }
+    }
+
+    func slashCommands(cardId: String) async throws -> [RemoteSlashCommand] {
+        _ = try card(cardId)
+        return SlashCommandCatalog.merged(assistant: .claude, sideChat: true, disk: [
+            RemoteSlashCommand(name: "deploy", description: "Ship it", source: RemoteSlashCommand.Source.user),
+        ])
     }
 
     let state: Mutex<State>

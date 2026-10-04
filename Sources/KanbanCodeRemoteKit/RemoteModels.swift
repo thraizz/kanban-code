@@ -27,9 +27,13 @@ public enum RemoteAPI {
         public static let worktrees = "worktrees"
         /// `/v1/cards/{id}/side-chat` (`/btw` and `/catchup`) and `human` on prompts.
         public static let sideChat = "sideChat"
+        /// `GET /v1/cards/{id}/slash-commands`.
+        public static let slashCommands = "slashCommands"
+        /// `GET /v1/cards/search`.
+        public static let cardSearch = "cardSearch"
     }
 
-    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees, Feature.sideChat]
+    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees, Feature.sideChat, Feature.slashCommands, Feature.cardSearch]
 }
 
 /// What a device may do. `full` is a phone: everything, terminals included.
@@ -473,12 +477,16 @@ public struct RemoteMessage: Codable, Sendable, Equatable, Identifiable {
     public var role: Role
     public var text: String
     public var at: Date?
+    /// The long text behind a `system` note, shown when the note is
+    /// opened: the summary of a compaction.
+    public var detail: String?
 
-    public init(id: String, role: Role, text: String, at: Date? = nil) {
+    public init(id: String, role: Role, text: String, at: Date? = nil, detail: String? = nil) {
         self.id = id
         self.role = role
         self.text = text
         self.at = at
+        self.detail = detail
     }
 }
 

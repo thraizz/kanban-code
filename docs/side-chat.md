@@ -12,7 +12,7 @@ Type them in the chat composer:
 The panel has a follow-up field with two actions:
 
 - **Ask here** (Return on the Mac) continues in the side chat. Earlier questions and answers go along.
-- **Send to main chat** (Command-Return on the Mac) sends your reply to the session, followed by the side chat as context for the agent. The panel closes.
+- **Send to main chat** (Command-Return on the Mac) sends your reply to the session, followed by the side chat as context for the agent. The panel closes at once, with no animation. On the phone the message shows right away as a pending bubble and the composer stays free while the machine takes it. A send that fails removes the bubble and puts the text in the composer, with what was typed there stashed.
 
 Closing the panel (the x button, or Esc on the Mac) forgets the side chat and stops a run that is still answering. The fold button keeps it and shows the chat under it.
 
@@ -53,6 +53,12 @@ claude -p --resume <session id> --fork-session --no-session-persistence \
 The prompt of a catch-up holds an index of the messages since your last one, one per line: `[m7] 14:02 assistant: first 100 characters`. An index over 400 messages keeps its first 40 and last 360. The model answers in JSON Lines, `{"section", "text", "refs"}`, so the panel fills in while the answer streams. One JSON document with `sections` and `report` parses too. An answer that is not JSON shows as markdown.
 
 Not supported: Codex and Gemini cards, and sessions that run on an ssh or boxd machine.
+
+## When the machine is offline
+
+On the phone, a side chat request that gets no answer (a timeout, a lost connection), or any failure while the app shows the card's machine as offline, reads "<machine name> is offline. It may be asleep." with a Retry button. Retry asks the same question again in its place. An error the machine itself answered with shows as it is, also with Retry.
+
+A request the phone makes to a card keeps a Mac awake for 10 minutes, so a run that started is not cut off by sleep. See "Staying awake for the phone" in [`remote-control.md`](remote-control.md).
 
 ## Your last message
 

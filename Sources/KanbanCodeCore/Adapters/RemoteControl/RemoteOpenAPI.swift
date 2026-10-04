@@ -24,6 +24,15 @@ enum RemoteOpenAPI {
       "parameters": [{"$ref": "#/components/parameters/All"}],
       "get": {"summary": "The working set (no archived, no All Sessions, the 30 most recent Done) and projects; all=1 for every card", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Board"}}}}, "401": {"$ref": "#/components/responses/Error"}}}
     },
+    "/v1/cards/search": {
+      "parameters": [
+        {"name": "q", "in": "query", "schema": {"type": "string"}, "description": "words separated by spaces; every word must be in the card's title, the first lines of its prompt, its project, branch, or a pull request (#N, title), whatever the case or the accents. Empty lists the most recent cards of the scope."},
+        {"name": "limit", "in": "query", "schema": {"type": "integer", "default": 50, "maximum": 200}},
+        {"name": "scope", "in": "query", "schema": {"type": "string", "enum": ["all", "older", "archived"], "default": "all"}, "description": "older: only cards outside the working set (archived, All Sessions, older Done). archived: archived cards that are not subagents."},
+        {"name": "local", "in": "query", "schema": {"type": "string", "enum": ["1"]}, "description": "answer from this master's cards only, without asking its peers"}
+      ],
+      "get": {"summary": "Search every card this master and its peers know, archived and All Sessions included: board cards first, then the most recently active", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/CardSearchResult"}}}}, "400": {"$ref": "#/components/responses/Error"}, "401": {"$ref": "#/components/responses/Error"}}}
+    },
     "/v1/machines": {
       "get": {"summary": "The machines a task can run on: this master (kind this, where a task with no machine runs), the other masters and the ssh machines", "responses": {"200": {"description": "ok", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/MachineList"}}}}, "401": {"$ref": "#/components/responses/Error"}}}
     },
@@ -69,6 +78,10 @@ enum RemoteOpenAPI {
       "get": {"summary": "The run and its answer so far", "responses": {"200": {"description": "the run", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/SideChatRun"}}}}, "404": {"$ref": "#/components/responses/Error"}}},
       "delete": {"summary": "Stop the run and forget it", "responses": {"204": {"description": "stopped"}}}
     },
+    "/v1/cards/{id}/slash-commands": {
+      "parameters": [{"$ref": "#/components/parameters/CardId"}],
+      "get": {"summary": "What the card's chat composer offers after /: the chat's own commands, the agent's, and the skills and custom commands the session can run, read on the master that owns the card", "responses": {"200": {"description": "the commands", "content": {"application/json": {"schema": {"type": "array", "items": {"$ref": "#/components/schemas/SlashCommand"}}}}}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
     "/v1/cards/{id}/queue/{promptId}": {
       "parameters": [{"$ref": "#/components/parameters/CardId"}, {"name": "promptId", "in": "path", "required": true, "description": "an id from the card's queuedPrompts", "schema": {"type": "string"}}],
       "post": {"summary": "Send a queued prompt now, interrupting the turn when one runs", "responses": {"204": {"description": "sent"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}},
@@ -106,6 +119,10 @@ enum RemoteOpenAPI {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "post": {"summary": "Re-scan the card's conversation for pushed branches and its pull requests, on the owning master", "responses": {"204": {"description": "done"}, "404": {"$ref": "#/components/responses/Error"}}}
     },
+    "/v1/cards/{id}/pasted-image": {
+      "parameters": [{"$ref": "#/components/parameters/CardId"}],
+      "post": {"summary": "Keep an image pasted into the card's terminal as a file on the owning master. The body is the image bytes (PNG, JPEG, GIF or WebP, at most 20 MiB)", "requestBody": {"content": {"application/octet-stream": {"schema": {"type": "string", "format": "binary"}}}}, "responses": {"201": {"description": "{\"path\"}: the file on the owning master"}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}}
+    },
     "/v1/cards/{id}/handover": {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "get": {"summary": "What a master adopting the card needs: repository origin, branch, uncommitted changes, transcript size", "responses": {"200": {"description": "RemoteHandoverInfo"}, "404": {"$ref": "#/components/responses/Error"}}}
@@ -141,7 +158,7 @@ enum RemoteOpenAPI {
     "responses": {"Error": {"description": "refused", "content": {"application/json": {"schema": {"$ref": "#/components/schemas/Error"}}}}},
     "schemas": {
       "Error": {"type": "object", "required": ["error"], "properties": {"error": {"type": "string"}}},
-      "Health": {"type": "object", "properties": {"app": {"type": "string"}, "version": {"type": "string"}, "apiVersion": {"type": "integer"}, "hostName": {"type": "string"}, "features": {"type": "array", "items": {"type": "string", "enum": ["images", "queue", "terminalScroll", "machines", "cardActions", "worktrees", "sideChat"]}, "description": "what the server supports beyond apiVersion 1; missing on older servers"}}},
+      "Health": {"type": "object", "properties": {"app": {"type": "string"}, "version": {"type": "string"}, "apiVersion": {"type": "integer"}, "hostName": {"type": "string"}, "features": {"type": "array", "items": {"type": "string", "enum": ["images", "queue", "terminalScroll", "machines", "cardActions", "worktrees", "sideChat", "slashCommands"]}, "description": "what the server supports beyond apiVersion 1; missing on older servers"}}},
       "Device": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "scope": {"type": "string", "enum": ["full", "agent"]}, "createdAt": {"type": "string", "format": "date-time"}, "lastSeenAt": {"type": ["string", "null"], "format": "date-time"}}},
       "PR": {"type": "object", "properties": {"number": {"type": "integer"}, "url": {"type": ["string", "null"]}, "title": {"type": ["string", "null"]}, "status": {"type": ["string", "null"], "description": "open, draft, merged or closed"}}},
       "Terminal": {"type": "object", "properties": {"sessionName": {"type": "string"}, "label": {"type": "string"}, "isPrimary": {"type": "boolean"}}},
@@ -178,6 +195,7 @@ enum RemoteOpenAPI {
       "MachineList": {"type": "object", "properties": {"machines": {"type": "array", "items": {"type": "object", "required": ["name", "kind"], "properties": {"id": {"type": "string", "description": "machine id of a master"}, "name": {"type": "string", "description": "what TaskRequest.machine accepts"}, "kind": {"type": "string", "enum": ["this", "master", "ssh"]}, "online": {"type": "boolean"}, "alwaysOn": {"type": "boolean"}}}}}},
       "Machine": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
       "Project": {"type": "object", "properties": {"path": {"type": "string"}, "name": {"type": "string"}}},
+      "CardSearchResult": {"type": "object", "required": ["cards"], "properties": {"cards": {"type": "array", "items": {"$ref": "#/components/schemas/Card"}}, "truncated": {"type": "boolean", "description": "more cards matched than limit; absent when false"}, "unreachable": {"type": "array", "items": {"type": "string"}, "description": "peer masters that did not answer in time; absent when empty"}}},
       "Board": {"type": "object", "properties": {"cards": {"type": "array", "items": {"$ref": "#/components/schemas/Card"}}, "projects": {"type": "array", "items": {"$ref": "#/components/schemas/Project"}}, "generatedAt": {"type": "string", "format": "date-time"}, "machine": {"$ref": "#/components/schemas/Machine", "description": "the master serving this board"}}},
       "Message": {"type": "object", "properties": {"id": {"type": "string"}, "role": {"type": "string", "enum": ["user", "assistant", "tool", "system"]}, "text": {"type": "string"}, "at": {"type": ["string", "null"], "format": "date-time"}}},
       "Transcript": {"type": "object", "properties": {"cardId": {"type": "string"}, "messages": {"type": "array", "items": {"$ref": "#/components/schemas/Message"}}, "olderCursor": {"type": ["string", "null"]}}},
@@ -198,6 +216,7 @@ enum RemoteOpenAPI {
         }
       },
       "PromptRequest": {"type": "object", "required": ["text"], "properties": {"text": {"type": "string", "description": "may be empty when images has some"}, "mode": {"type": "string", "enum": ["queue", "now"], "default": "queue"}, "images": {"type": "array", "maxItems": 6, "items": {"$ref": "#/components/schemas/Image"}}, "human": {"type": "boolean", "description": "true only when the human typed and sent this himself in a chat composer; ignored for scope agent"}}},
+      "SlashCommand": {"type": "object", "required": ["name", "description", "source"], "properties": {"name": {"type": "string", "description": "without the leading slash; a plugin's is plugin:name"}, "description": {"type": "string", "description": "one line"}, "source": {"type": "string", "enum": ["kanban", "agent", "project", "user", "plugin"]}}},
       "SideChatRequest": {"type": "object", "required": ["kind"], "properties": {"kind": {"type": "string", "enum": ["btw", "catchup"]}, "question": {"type": "string", "description": "required for btw"}, "fresh": {"type": "boolean", "description": "catchup: run a new one even when the card's last catch-up still covers the session"}, "catchUpId": {"type": "string", "description": "btw: the run id of the catch-up this follows up on, so the exchange is kept with it"}, "history": {"type": "array", "description": "earlier exchanges of the same side chat, oldest first", "items": {"type": "object", "required": ["question", "answer"], "properties": {"question": {"type": "string"}, "answer": {"type": "string"}}}}}},
       "SideChatRun": {"type": "object", "properties": {"finishedAt": {"type": ["string", "null"], "format": "date-time"}, "reopened": {"type": ["boolean", "null"], "description": "true for the card's last catch-up returned again, finished, because the session has no message after the last one it covers"}, "followUps": {"type": ["array", "null"], "description": "the follow-ups asked in the side chat of a reopened catch-up", "items": {"type": "object", "properties": {"question": {"type": "string"}, "answer": {"type": "string"}}}}, "id": {"type": "string"}, "cardId": {"type": "string"}, "kind": {"type": "string", "enum": ["btw", "catchup"]}, "state": {"type": "string", "enum": ["running", "done", "failed"]}, "text": {"type": "string", "description": "the answer so far. A catchup answers in JSON Lines: {\"section\": \"asked|status|report|facts|waiting|blocked|other\", \"text\", \"refs\": [\"m7\"]}"}, "error": {"type": ["string", "null"]}, "since": {"type": ["object", "null"], "description": "the human's last message, where a catchup starts", "properties": {"text": {"type": "string"}, "at": {"type": ["string", "null"], "format": "date-time"}, "offset": {"type": ["integer", "null"]}}}, "refs": {"type": ["array", "null"], "description": "the messages a catchup can cite", "items": {"type": "object", "properties": {"ref": {"type": "string"}, "offset": {"type": "integer", "description": "byte offset in the transcript; a transcript message id starts with it"}, "role": {"type": "string"}, "at": {"type": ["string", "null"], "format": "date-time"}, "preview": {"type": "string"}}}}}},
       "Image": {"type": "object", "required": ["mediaType", "data"], "properties": {"mediaType": {"type": "string", "enum": ["image/png", "image/jpeg", "image/gif", "image/webp"]}, "data": {"type": "string", "contentEncoding": "base64", "description": "at most 5 MiB decoded"}}},
