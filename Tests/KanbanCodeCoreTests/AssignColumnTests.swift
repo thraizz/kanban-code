@@ -315,4 +315,51 @@ struct AssignColumnTests {
         let col = AssignColumn.assign(link: link, hasWorktree: true)
         #expect(col == .waiting)
     }
+
+    @Test("Session quiet for over a day whose last hook asked for attention → allSessions")
+    func oldNeedsAttentionAgesOut() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            lastActivity: Date.now.addingTimeInterval(-72 * 3600),
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "s1")
+        )
+        for state in [ActivityState.needsAttention, .awaitingPermission] {
+            #expect(AssignColumn.assign(link: link, activityState: state) == .allSessions)
+        }
+    }
+
+    @Test("Recent session needing attention stays waiting")
+    func recentNeedsAttentionWaits() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            lastActivity: Date.now.addingTimeInterval(-2 * 3600),
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "s1")
+        )
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention) == .waiting)
+    }
+
+    @Test("Old session needing attention with a live terminal stays waiting")
+    func oldNeedsAttentionWithLiveSessionWaits() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            lastActivity: Date.now.addingTimeInterval(-72 * 3600),
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "s1")
+        )
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention, hasLiveSession: true) == .waiting)
+    }
+
+    @Test("Old session needing attention in a worktree stays waiting")
+    func oldNeedsAttentionWithWorktreeWaits() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            lastActivity: Date.now.addingTimeInterval(-72 * 3600),
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "s1"),
+            worktreeLink: WorktreeLink(path: "/tmp/wt", branch: "feat")
+        )
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention, hasWorktree: true) == .waiting)
+    }
 }
