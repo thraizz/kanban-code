@@ -172,6 +172,7 @@ struct PromptTabView: View {
     let card: KanbanCodeCard
     var onCopyToast: ((String) -> Void)?
     @Binding var showEditPromptSheet: Bool
+    @Binding var editPromptBody: String?
 
     var body: some View {
         ScrollView {
@@ -184,10 +185,12 @@ struct PromptTabView: View {
                     Spacer()
 
                     Button {
-                        if let body = card.link.promptBody {
-                            NSPasteboard.general.clearContents()
-                            NSPasteboard.general.setString(body, forType: .string)
-                            onCopyToast?("Copied prompt")
+                        Task {
+                            if let body = await PromptPreview.fullPrompt(for: card.link, transcriptPath: card.session?.jsonlPath) {
+                                NSPasteboard.general.clearContents()
+                                NSPasteboard.general.setString(body, forType: .string)
+                                onCopyToast?("Copied prompt")
+                            }
                         }
                     } label: {
                         Image(systemName: "doc.on.doc")
@@ -196,7 +199,12 @@ struct PromptTabView: View {
                     .buttonStyle(.borderless)
                     .help("Copy prompt")
 
-                    Button { showEditPromptSheet = true } label: {
+                    Button {
+                        Task {
+                            editPromptBody = await PromptPreview.fullPrompt(for: card.link, transcriptPath: card.session?.jsonlPath)
+                            showEditPromptSheet = true
+                        }
+                    } label: {
                         Image(systemName: "pencil")
                             .font(.app(.caption))
                     }
@@ -219,18 +227,36 @@ struct PromptTabView: View {
                         .padding(.top, 4)
 
                     ForEach(imagePaths, id: \.self) { path in
-                        if let nsImage = NSImage(contentsOfFile: path) {
-                            Image(nsImage: nsImage)
-                                .resizable()
-                                .aspectRatio(contentMode: .fit)
-                                .frame(maxWidth: 400, maxHeight: 300)
-                                .clipShape(RoundedRectangle(cornerRadius: 6))
-                                .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
-                        }
+                        PromptAttachedImage(path: path)
                     }
                 }
             }
             .padding(16)
+        }
+    }
+}
+
+/// Loads an attached prompt image off the main thread instead of reading it in the view body.
+private struct PromptAttachedImage: View {
+    let path: String
+    @State private var image: NSImage?
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(nsImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fit)
+                    .frame(maxWidth: 400, maxHeight: 300)
+                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                    .shadow(color: .black.opacity(0.15), radius: 4, y: 2)
+            }
+        }
+        .task(id: path) {
+            let path = path
+            image = await Task.detached(priority: .utility) {
+                NSImage(contentsOfFile: path)
+            }.value
         }
     }
 }

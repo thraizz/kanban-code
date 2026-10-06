@@ -469,6 +469,77 @@ struct ReducerTests {
         }))
     }
 
+    @Test("deleteCards removes every card and its subagents with one write of the links")
+    func deleteCardsBatchesCleanup() {
+        let a = makeLink(
+            id: "card_a", column: .allSessions,
+            tmuxLink: TmuxLink(sessionName: "tmux-a"),
+            sessionLink: SessionLink(sessionId: "sess_a", sessionPath: "/a.jsonl")
+        )
+        let b = makeLink(
+            id: "card_b", column: .allSessions,
+            sessionLink: SessionLink(sessionId: "sess_b", sessionPath: "/b.jsonl")
+        )
+        let child = Link(
+            id: "card_child", parentCardId: a.id,
+            sessionLink: SessionLink(sessionId: "sess_c", sessionPath: "/c.jsonl"),
+            tmuxLink: TmuxLink(sessionName: "tmux-c")
+        )
+        let kept = makeLink(id: "card_kept", column: .waiting)
+        var state = stateWith([a, b, child, kept])
+        state.selectedCardId = b.id
+
+        let effects = Reducer.reduce(state: &state, action: .deleteCards(cardIds: [a.id, b.id, "card_gone"]))
+
+        #expect(Set(state.links.keys) == [kept.id])
+        #expect(state.selectedCardId == nil)
+        #expect(state.deletedCardIds == [a.id, b.id, child.id])
+        #expect(state.deletedSessionIds == ["sess_a", "sess_b", "sess_c"])
+        #expect(!effects.contains { if case .removeLink = $0 { true } else { false } })
+        let writes = effects.compactMap { if case .persistLinks(let links) = $0 { links } else { nil } }
+        #expect(writes.count == 1)
+        #expect(writes.first?.map(\.id) == [kept.id])
+        let kills = effects.compactMap { if case .killTmuxSessions(let names) = $0 { names } else { nil } }
+        #expect(kills.count == 1)
+        #expect(Set(kills.first ?? []) == ["tmux-a", "tmux-c"])
+        let deletions = effects.compactMap { if case .deleteFiles(let paths) = $0 { paths } else { nil } }
+        #expect(deletions.count == 1)
+        #expect(Set(deletions.first ?? []) == ["/a.jsonl", "/b.jsonl", "/c.jsonl"])
+    }
+
+    @Test("deleteCards with no known card does nothing")
+    func deleteCardsUnknownIsNoop() {
+        var state = stateWith([makeLink(id: "card_kept")])
+        let effects = Reducer.reduce(state: &state, action: .deleteCards(cardIds: ["card_gone"]))
+        #expect(effects.isEmpty)
+        #expect(state.links.count == 1)
+    }
+
+    @Test("A deleted card's worktree does not come back as an orphan card")
+    func deletedWorktreeStaysDeleted() {
+        let worktree = WorktreeLink(path: "/test/project/.worktrees/feat-x", branch: "feat/x")
+        let deleted = makeLink(id: "card_wt", column: .allSessions, worktreeLink: worktree)
+        var state = stateWith([deleted])
+        let _ = Reducer.reduce(state: &state, action: .deleteCards(cardIds: [deleted.id]))
+        #expect(state.tombstones[deleted.id]?.worktreeLink?.path == worktree.path)
+
+        // The reconciler's next pass finds the worktree on disk with no card.
+        let orphan = Link(projectPath: "/test/project", source: .discovered, worktreeLink: worktree)
+        let other = Link(
+            projectPath: "/test/project", source: .discovered,
+            worktreeLink: WorktreeLink(path: "/test/project/.worktrees/feat-y", branch: "feat/y")
+        )
+        let _ = Reducer.reduce(state: &state, action: .reconciled(ReconciliationResult(
+            links: [orphan, other],
+            sessions: [],
+            activityMap: [:],
+            tmuxSessions: []
+        )))
+
+        #expect(state.links[orphan.id] == nil)
+        #expect(state.links[other.id] != nil)
+    }
+
     // MARK: - Rename Card
 
     @Test("renameCard sets name and manual override")
@@ -508,6 +579,23 @@ struct ReducerTests {
         #expect(unpinEffects.contains(where: { if case .upsertLink = $0 { return true }; return false }))
     }
 
+    @Test("A rebuild keeps the array of a lane whose cards did not change")
+    func rebuildKeepsUnchangedLaneStorage() {
+        let backlog = makeLink(id: "card_keep1", column: .backlog)
+        let waiting = makeLink(id: "card_change1", column: .waiting, name: "Old name")
+        var state = stateWith([backlog, waiting])
+        state.rebuildCards()
+        let before = state.unpinnedCards(in: .backlog).withUnsafeBufferPointer { $0.baseAddress }
+
+        let _ = Reducer.reduce(state: &state, action: .renameCard(cardId: "card_change1", name: "New name"))
+        state.rebuildCards()
+
+        // SwiftUI's `==` on a lane's cards returns at once for shared storage.
+        let after = state.unpinnedCards(in: .backlog).withUnsafeBufferPointer { $0.baseAddress }
+        #expect(before != nil && before == after)
+        #expect(state.unpinnedCards(in: .waiting).map(\.displayTitle) == ["New name"])
+    }
+
     @Test("Pinning an archived card brings it back onto the board")
     func setCardPinnedUnarchives() {
         var link = makeLink(id: "card_arch1", column: .allSessions)
@@ -522,8 +610,50 @@ struct ReducerTests {
         #expect(pinned?.isPinned == true)
         #expect(pinned?.manuallyArchived == false, "a pinned card must not stay archived")
         #expect(pinned?.column != .allSessions)
-        #expect(pinned?.manualOverrides.column == false, "reconcile should be free to place it")
+        #expect(pinned?.column == .backlog)
+        #expect(pinned?.manualOverrides.column == true, "reconcile must keep it on the board")
+        #expect(AssignColumn.assign(link: pinned!, activityState: .ended) == .backlog)
         #expect(state.pinnedCards.map(\.id) == ["card_arch1"])
+    }
+
+    @Test("an unarchived card whose session ended long ago is still in the backlog after a reconcile")
+    func unarchivedOldCardStaysOnBoard() {
+        var archived = makeLink(id: "card_old", column: .allSessions)
+        archived.manuallyArchived = true
+        archived.sessionLink = SessionLink(sessionId: "s-old")
+        archived.lastActivity = Date.now.addingTimeInterval(-40 * 24 * 3600)
+        var state = stateWith([archived])
+
+        _ = Reducer.reduce(state: &state, action: .unarchiveCard(cardId: "card_old"))
+        var link = state.links["card_old"]!
+        #expect(link.column == .backlog)
+        for activity in [ActivityState.ended, .stale, nil] {
+            #expect(AssignColumn.assign(link: link, activityState: activity) == .backlog)
+            UpdateCardColumn.update(link: &link, activityState: activity, hasWorktree: false, hasLiveSession: false)
+            #expect(link.column == .backlog)
+            #expect(!link.manuallyArchived)
+        }
+        // Resuming lifts the placement, and activity moves the card again.
+        link.manualOverrides.column = false
+        #expect(AssignColumn.assign(link: link, activityState: .activelyWorking, hasLiveSession: true) == .inProgress)
+    }
+
+    @Test("unarchiveCard puts an archived card in the backlog as a manual placement, and leaves other cards alone")
+    func unarchiveCard() {
+        var archived = makeLink(id: "card_ua1", column: .allSessions)
+        archived.manuallyArchived = true
+        archived.manualOverrides.column = true
+        let onBoard = makeLink(id: "card_ua2", column: .inReview)
+        var state = stateWith([archived, onBoard])
+
+        let effects = Reducer.reduce(state: &state, action: .unarchiveCard(cardId: "card_ua1"))
+        #expect(state.links["card_ua1"]?.manuallyArchived == false)
+        #expect(state.links["card_ua1"]?.column == .backlog)
+        #expect(state.links["card_ua1"]?.manualOverrides.column == true)
+        #expect(effects.contains(where: { if case .upsertLink = $0 { return true }; return false }))
+
+        #expect(Reducer.reduce(state: &state, action: .unarchiveCard(cardId: "card_ua2")).isEmpty)
+        #expect(state.links["card_ua2"]?.column == .inReview)
     }
 
     @Test("Pinning a card that is not archived leaves its column alone")

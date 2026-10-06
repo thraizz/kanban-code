@@ -13,6 +13,7 @@ struct ChatPane: View {
     @State private var isSending = false
     @State private var sendError: String?
     @State private var notice: String?
+    @State private var secretOffer: PendingSecretOffer?
     @State private var sentCount = 0
     @State private var queueActions: Set<String> = []
     @State private var showPhotoPicker = false
@@ -27,6 +28,11 @@ struct ChatPane: View {
     /// Top of the keyboard and bottom of the chat, in window coordinates.
     @State private var keyboardTop: CGFloat?
     @State private var paneBottom: CGFloat = 0
+    /// The card's side chat (`/btw`, `/catchup`), made when first used.
+    @State private var sideChat: SideChatController?
+    @State private var sideChatCollapsed = false
+    /// The message a catch-up link landed on, tinted for a moment.
+    @State private var highlightedMessage: String?
 
     /// How much of the chat the keyboard still covers after SwiftUI made
     /// room for it: nothing, unless SwiftUI missed the suggestion bar.
@@ -41,6 +47,23 @@ struct ChatPane: View {
     private final class FollowState {
         var followsEnd = true
         var userScrolling = false
+        /// A scroll to the end waits for the next turn of the run loop.
+        var scrollScheduled = false
+        /// When the last scrolls to the end were made, newest last.
+        var recentScrolls: [Date] = []
+
+        /// Scrolls to the end allowed within one second. A chat that
+        /// cannot reach its end (rows whose height keeps changing) then
+        /// retries at this pace instead of in every layout pass.
+        static let scrollsPerSecond = 30
+
+        /// Whether another scroll to the end may be made now, counting it.
+        func takeScroll(now: Date = .now) -> Bool {
+            recentScrolls.removeAll { now.timeIntervalSince($0) > 1 }
+            guard recentScrolls.count < Self.scrollsPerSecond else { return false }
+            recentScrolls.append(now)
+            return true
+        }
     }
 
     /// Distance from the end of the conversation to the bottom of what is shown.
@@ -52,6 +75,10 @@ struct ChatPane: View {
 
     private var supportsImages: Bool { board.supports(RemoteAPI.Feature.images) }
     private var supportsQueue: Bool { board.supports(RemoteAPI.Feature.queue) }
+    /// The side chat forks a Claude Code session.
+    private var supportsSideChat: Bool {
+        board.supports(RemoteAPI.Feature.sideChat) && card.assistant == "claude" && card.sessionId != nil
+    }
 
     var body: some View {
         ScrollView {
@@ -67,6 +94,15 @@ struct ChatPane: View {
                 }
                 ForEach(visibleMessages) { message in
                     MessageView(message: message)
+                        .background {
+                            if highlightedMessage == message.id {
+                                RoundedRectangle(cornerRadius: 12)
+                                    .fill(Color.accentColor.opacity(0.18))
+                                    .padding(-6)
+                                    .accessibilityElement()
+                                    .accessibilityIdentifier("citedMessage")
+                            }
+                        }
                         .id(message.id)
                 }
                 ForEach(card.queuedPrompts) { prompt in
@@ -108,13 +144,16 @@ struct ChatPane: View {
         // One scrollTo can still land short: the long rows it brings on
         // screen are measured only then and push the end further down. So
         // while the chat follows its end, every change that leaves it off
-        // the end scrolls again, until it is there.
+        // the end scrolls again, until it is there. The scroll is made on
+        // the next turn of the run loop, never inside the layout pass that
+        // reported the change: a scroll made there changes the geometry
+        // again within the same pass, and a chat whose end keeps moving
+        // (an inset in the middle of an animation, a long row measured
+        // late) would keep the main thread in that pass.
         .onScrollGeometryChange(for: CGFloat.self) { geo in
             Self.distanceToEnd(geo).rounded()
         } action: { _, distance in
-            if follow.followsEnd && !follow.userScrolling && distance > 1 {
-                scrollPosition.scrollTo(id: Self.bottomID, anchor: .bottom)
-            }
+            if distance > 1 { followEnd() }
         }
         .onScrollPhaseChange { _, phase, context in
             switch phase {
@@ -133,6 +172,31 @@ struct ChatPane: View {
         }
         .scrollDismissesKeyboard(.interactively)
         .overlay { emptyState }
+        // The room the folded panel takes at the top of the chat comes and
+        // goes in one step. Only the panel itself animates, inside its
+        // overlay: the chat's layout never follows an animated height.
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if sideChat?.state.isOpen == true {
+                Color.clear.frame(height: SideChatPanel.foldedHeight)
+            }
+        }
+        .overlay(alignment: .top) {
+            ZStack(alignment: .top) {
+                if let sideChat, sideChat.state.isOpen {
+                    // The reader's height is what shows above the composer and
+                    // the keyboard: the panel never reaches under them.
+                    GeometryReader { geo in
+                        SideChatPanel(controller: sideChat, collapsed: $sideChatCollapsed,
+                                      maxHeight: geo.size.height - keyboardShortfall - 12,
+                                      onJump: jump(toOffset:),
+                                      onSendToMain: handOff,
+                                      machineName: board.machineName, machineOffline: !board.isOnline)
+                    }
+                    .transition(.move(edge: .top).combined(with: .opacity))
+                }
+            }
+            .animation(.snappy, value: sideChat?.state.isOpen)
+        }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             bottomBar
                 .padding(.bottom, keyboardShortfall)
@@ -228,17 +292,33 @@ struct ChatPane: View {
                         self.notice = nil
                     }
             }
-            if card.isLive {
+            if secretOffer != nil {
+                VaultSecretOfferCard(offer: Binding(get: { secretOffer! }, set: { secretOffer = $0 }),
+                                     onSave: saveOfferedSecrets, onSendAsIs: sendOfferAsIs)
+            }
+            if card.isLive, card.sessionStatus?.kind != .machine {
                 composer
             } else {
+                // The same status the Mac shows in the card: a start or a
+                // move in flight, a failed start, a machine that is away.
+                let status = card.sessionStatus
                 HStack {
-                    Text("Session not running")
+                    if let status, status.kind == .starting || status.kind == .moving {
+                        ProgressView()
+                    }
+                    Text(status?.text ?? "Session not running")
                         .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(status?.kind == .failed ? AnyShapeStyle(Color.red) : AnyShapeStyle(.secondary))
+                        .accessibilityIdentifier("sessionStatus")
                     Spacer()
-                    Button("Resume", systemImage: "play.fill", action: onResume)
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("resumeBar")
+                    if supportsSideChat {
+                        catchUpButton
+                    }
+                    if status == nil || status?.canResume == true {
+                        Button("Resume", systemImage: "play.fill", action: onResume)
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("resumeBar")
+                    }
                 }
             }
         }
@@ -251,13 +331,6 @@ struct ChatPane: View {
     /// left and send on the right. Touch and hold send to send now.
     private var composer: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if card.isBusy && !draft.isEmpty {
-                Text("Sends when this turn ends. Touch and hold send to send now or stash.")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.horizontal, 6)
-                    .accessibilityIdentifier("queueHint")
-            }
             VStack(alignment: .leading, spacing: 6) {
                 if !draft.images.isEmpty {
                     attachments
@@ -275,6 +348,9 @@ struct ChatPane: View {
                     if !draft.stashes.isEmpty {
                         stashButton
                     }
+                    if supportsSideChat {
+                        catchUpButton
+                    }
                     Spacer()
                     sendButton
                 }
@@ -289,6 +365,33 @@ struct ChatPane: View {
             .contentShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
             .onTapGesture { composerFocused = true }
         }
+        // The list lies over the chat, above the composer: it takes no
+        // room, so the chat keeps its place while it opens and closes.
+        .overlay(alignment: .top) {
+            if !slashMatches.isEmpty {
+                SlashCommandList(matches: slashMatches, onSelect: pickSlashCommand)
+                    .frame(height: 0, alignment: .bottom)
+                    .offset(y: -8)
+            }
+        }
+        // The list is read again each time a command name starts.
+        .onChange(of: SlashCommandMenu.query(in: draft.text) != nil) { _, typing in
+            if typing { board.loadSlashCommands(cardId: card.id) }
+        }
+    }
+
+    /// The commands matching the `/name` being typed; empty outside one.
+    private var slashMatches: [RemoteSlashCommand] {
+        guard secretOffer == nil, let query = SlashCommandMenu.query(in: draft.text) else { return [] }
+        let known = board.slashCommands[card.id] ?? RemoteSlashCommand.kanban
+        let usable = supportsSideChat ? known : known.filter { $0.source != RemoteSlashCommand.Source.kanban }
+        return SlashCommandMenu.matches(query: query, in: usable)
+    }
+
+    private func pickSlashCommand(_ command: RemoteSlashCommand) {
+        draft.text = SlashCommandMenu.completion(for: command)
+        composerSelection = TextSelection(insertionPoint: draft.text.endIndex)
+        composerFocused = true
     }
 
     /// The typed text; a deletion into an [Image #N] marker takes the
@@ -318,7 +421,11 @@ struct ChatPane: View {
     private var caretOffset: Int? {
         guard let composerSelection, case .selection(let range) = composerSelection.indices else { return nil }
         let text = draft.text
-        let utf16 = min(range.upperBound.utf16Offset(in: text), text.utf16.count)
+        // The selection can outlive the text it was made in (a send or a
+        // dictation rewrite shortens the draft), so its index is clamped
+        // before any distance is measured.
+        let upper = min(range.upperBound, text.endIndex)
+        let utf16 = text.utf16.distance(from: text.utf16.startIndex, to: upper)
         let index = String.Index(utf16Offset: utf16, in: text)
         return text.distance(from: text.startIndex, to: index)
     }
@@ -398,6 +505,53 @@ struct ChatPane: View {
         .accessibilityLabel(draft.stashes.count == 1 ? "Restore stashed message" : "Restore stashed message, \(draft.stashes.count) stashed")
         .accessibilityHint("Touch and hold to pick or delete a stash.")
         .accessibilityIdentifier("unstash")
+    }
+
+    /// What happened since the human's last message, in the side chat.
+    private var catchUpButton: some View {
+        Button {
+            runSideChat(.catchup)
+        } label: {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 16, weight: .medium))
+                .foregroundStyle(Color(.label))
+                .frame(width: 34, height: 34)
+                .background(Color(.tertiarySystemFill), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Catch me up")
+        .accessibilityHint("Sums up what happened since your last message.")
+        .accessibilityIdentifier("catchUp")
+    }
+
+    private func runSideChat(_ command: SideChatCommand) {
+        guard let client = board.client else { return }
+        let controller = sideChat ?? SideChatController(transport: .remote(client, cardId: card.id))
+        sideChat = controller
+        composerFocused = false
+        sideChatCollapsed = false
+        controller.run(command)
+    }
+
+    /// Shows the message at a transcript offset: older pages load until it
+    /// is there, then the chat scrolls to it and tints it. The side chat
+    /// folds so the message shows under it.
+    private func jump(toOffset offset: Int) {
+        withAnimation(.snappy) { sideChatCollapsed = true }
+        follow.followsEnd = false
+        Task {
+            guard let message = await transcript.message(atOffset: offset) else { return }
+            // One turn later, so rows that just loaded are laid out.
+            try? await Task.sleep(for: .milliseconds(120))
+            withAnimation(.snappy) {
+                scrollPosition.scrollTo(id: message.id, anchor: .top)
+                highlightedMessage = message.id
+            }
+            try? await Task.sleep(for: .seconds(3))
+            if highlightedMessage == message.id {
+                withAnimation(.easeOut(duration: 0.6)) { highlightedMessage = nil }
+            }
+        }
     }
 
     private var attachButton: some View {
@@ -491,21 +645,113 @@ struct ChatPane: View {
         return true
     }
 
+    /// Sends the draft, or first offers to save the secrets it carries.
     private func send(_ mode: RemotePromptRequest.Mode) {
         let text = draft.text.trimmingCharacters(in: .whitespacesAndNewlines)
-        let images = draft.remoteImages
+        guard secretOffer == nil, !isSending else { return }
+        // /btw and /catchup open the side chat; nothing goes to the session.
+        if supportsSideChat, draft.images.isEmpty, let command = SideChatCommand.parse(text) {
+            draft.clear()
+            runSideChat(command)
+            return
+        }
+        guard !text.isEmpty, !SecretDetector.find(in: text).isEmpty, let client = board.client else {
+            deliver(text, mode)
+            return
+        }
+        isSending = true
+        Task {
+            let names = (try? await client.vaultSecretNames()) ?? []
+            let proposals = SecretDetector.proposals(in: text, existingNames: names)
+            isSending = false
+            if proposals.isEmpty {
+                deliver(text, mode)
+            } else {
+                composerFocused = false
+                withAnimation(.snappy) { secretOffer = PendingSecretOffer(text: text, mode: mode, proposals: proposals) }
+            }
+        }
+    }
+
+    private func sendOfferAsIs() {
+        guard let offer = secretOffer else { return }
+        secretOffer = nil
+        deliver(offer.text, offer.mode)
+    }
+
+    private func saveOfferedSecrets() {
+        guard var offer = secretOffer, !offer.isSaving, let client = board.client else { return }
+        offer.isSaving = true
+        offer.error = nil
+        secretOffer = offer
+        Task {
+            let result = await PhoneVault.save(offer, client: client)
+            if let error = result.error {
+                // What was saved stays referenced; the rest stays offered.
+                secretOffer = PendingSecretOffer(text: result.text, mode: offer.mode, proposals: result.remaining, error: error)
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+                return
+            }
+            secretOffer = nil
+            deliver(result.text, offer.mode)
+        }
+    }
+
+    /// Sends what the human wrote: the draft with its images, or with
+    /// `fromDraft` false a text of its own that leaves the draft alone.
+    private func deliver(_ text: String, _ mode: RemotePromptRequest.Mode, fromDraft: Bool = true) {
+        let images = fromDraft ? draft.remoteImages : []
         guard !text.isEmpty || !images.isEmpty, let client = board.client, !isSending else { return }
         isSending = true
         sendError = nil
         Task {
             defer { isSending = false }
             do {
-                try await client.sendPrompt(cardId: card.id, text: text, mode: mode, images: images)
-                draft.clear()
+                try await client.sendPrompt(cardId: card.id, text: text, mode: mode, images: images, human: true)
+                if fromDraft { draft.clear() }
                 follow.followsEnd = true
                 sentCount += 1
                 transcript.appendPending(text, imageCount: images.count)
             } catch {
+                sendError = error.localizedDescription
+                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            }
+        }
+    }
+
+    /// Scrolls to the end on the next turn of the run loop, when the chat
+    /// follows its end. Changes reported in between share that one scroll.
+    private func followEnd() {
+        guard follow.followsEnd, !follow.userScrolling, !follow.scrollScheduled else { return }
+        follow.scrollScheduled = true
+        Task { @MainActor in
+            follow.scrollScheduled = false
+            guard follow.followsEnd, !follow.userScrolling, follow.takeScroll() else { return }
+            var transaction = Transaction()
+            transaction.disablesAnimations = true
+            withTransaction(transaction) {
+                scrollPosition.scrollTo(id: Self.bottomID, anchor: .bottom)
+            }
+        }
+    }
+
+    /// Sends a side chat follow-up to the session. The message shows at
+    /// once as a pending bubble and the composer stays free while the
+    /// machine takes it. A send that fails takes the bubble away and puts
+    /// the text in the composer, with what was typed there stashed.
+    private func handOff(_ text: String) {
+        guard !text.isEmpty, let client = board.client else { return }
+        sendError = nil
+        follow.followsEnd = true
+        let pending = transcript.appendPending(text)
+        Task {
+            do {
+                try await client.sendPrompt(cardId: card.id, text: text, mode: .queue, human: true)
+                sentCount += 1
+            } catch {
+                transcript.removePending(pending)
+                if !draft.isEmpty { draft.stash() }
+                draft.load(text: text, images: [])
                 sendError = error.localizedDescription
                 UINotificationFeedbackGenerator().notificationOccurred(.error)
             }
@@ -648,13 +894,39 @@ struct WorkingIndicator: View {
 struct MessageView: View {
     let message: RemoteMessage
     @State private var expanded = false
+    @State private var showsWhole = false
+
+    /// Characters of a message shown before "Show the whole message": a
+    /// pasted log or a dump runs to hundreds of KB, which the phone lays out
+    /// slowly and the user rarely reads in full.
+    static let shownLimit = 20_000
+
+    /// The message as shown: cut at `shownLimit` until the user asks for all of it.
+    private var text: String {
+        guard !showsWhole, message.text.utf16.count > Self.shownLimit else { return message.text }
+        return String(message.text.prefix(Self.shownLimit)) + "\n…"
+    }
+
+    private var isCut: Bool { !showsWhole && message.text.utf16.count > Self.shownLimit }
 
     var body: some View {
+        VStack(alignment: message.role == .user ? .trailing : .leading, spacing: 6) {
+            content
+            if isCut {
+                Button("Show the whole message (\(message.text.count.formatted()) characters)") { showsWhole = true }
+                    .font(.caption.weight(.medium))
+                    .frame(maxWidth: .infinity, alignment: message.role == .user ? .trailing : .leading)
+                    .accessibilityIdentifier("showWholeMessage")
+            }
+        }
+    }
+
+    @ViewBuilder private var content: some View {
         switch message.role {
         case .user:
             HStack {
                 Spacer(minLength: 48)
-                SelectableText(text: SelectableTextStyle.plain(message.text, color: .white))
+                SelectableText(text: SelectableTextStyle.plain(text, color: .white))
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 14)
                     .padding(.vertical, 9)
@@ -663,7 +935,7 @@ struct MessageView: View {
                     .foregroundStyle(.white)
             }
         case .assistant:
-            MarkdownText(text: message.text)
+            MarkdownText(text: text)
                 .frame(maxWidth: .infinity, alignment: .leading)
         case .tool:
             Button {
@@ -672,7 +944,7 @@ struct MessageView: View {
                 HStack(alignment: .firstTextBaseline, spacing: 6) {
                     Image(systemName: "wrench.and.screwdriver")
                         .font(.caption2)
-                    Text(message.text)
+                    Text(text)
                         .font(.caption.monospaced())
                         .lineLimit(expanded ? nil : 1)
                         .multilineTextAlignment(.leading)
@@ -685,16 +957,56 @@ struct MessageView: View {
             }
             .buttonStyle(.plain)
         case .system:
-            SelectableText(text: SelectableTextStyle.plain(message.text, font: .preferredFont(forTextStyle: .caption1),
-                                                           color: .secondaryLabel),
-                           alignment: .center)
+            if let detail = message.detail {
+                systemNote(detail: detail)
+            } else {
+                SelectableText(text: SelectableTextStyle.plain(text, font: .preferredFont(forTextStyle: .caption1),
+                                                               color: .secondaryLabel),
+                               alignment: .center)
+                    .frame(maxWidth: .infinity)
+            }
+        }
+    }
+
+    /// A note that opens to the long text behind it: a compaction and
+    /// its summary.
+    private func systemNote(detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Button {
+                withAnimation(.snappy) { expanded.toggle() }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: "arrow.down.right.and.arrow.up.left")
+                    Text(message.text)
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                }
+                .font(.caption)
+                .foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .accessibilityIdentifier("systemNote")
+            if expanded {
+                let shown = !showsWhole && detail.utf16.count > Self.shownLimit
+                    ? String(detail.prefix(Self.shownLimit)) + "\n…" : detail
+                SelectableText(text: SelectableTextStyle.plain(shown, font: .preferredFont(forTextStyle: .caption1),
+                                                               color: .secondaryLabel))
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(10)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color(.tertiarySystemFill), in: RoundedRectangle(cornerRadius: 8))
+                if detail.utf16.count > Self.shownLimit, !showsWhole {
+                    Button("Show the whole text (\(detail.count.formatted()) characters)") { showsWhole = true }
+                        .font(.caption.weight(.medium))
+                }
+            }
         }
     }
 }
 
-/// Assistant markdown: fenced code as monospaced blocks, headings and lists
-/// by line, inline styles through AttributedString.
+/// Assistant markdown: fenced code as monospaced blocks, tables as grids,
+/// headings and lists by line, inline styles through AttributedString.
 struct MarkdownText: View {
     let text: String
 
@@ -702,6 +1014,7 @@ struct MarkdownText: View {
         case code(String)
         case heading(String)
         case paragraph(String)
+        case table(MarkdownTable)
     }
 
     var body: some View {
@@ -709,11 +1022,20 @@ struct MarkdownText: View {
             ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
                 switch block {
                 case .code(let code):
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        SelectableText(text: SelectableTextStyle.plain(
-                            code, font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .footnote).pointSize, weight: .regular)
-                        ), wraps: false)
-                        .padding(10)
+                    let styled = SelectableTextStyle.plain(
+                        code, font: .monospacedSystemFont(ofSize: UIFont.preferredFont(forTextStyle: .footnote).pointSize, weight: .regular)
+                    )
+                    Group {
+                        if Self.wrapsCode(code) {
+                            SelectableText(text: styled)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .padding(10)
+                        } else {
+                            ScrollView(.horizontal, showsIndicators: false) {
+                                SelectableText(text: styled, wraps: false)
+                                    .padding(10)
+                            }
+                        }
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color(.secondarySystemBackground), in: RoundedRectangle(cornerRadius: 8))
@@ -723,9 +1045,18 @@ struct MarkdownText: View {
                 case .paragraph(let para):
                     SelectableText(text: SelectableTextStyle.markdown(para))
                         .fixedSize(horizontal: false, vertical: true)
+                case .table(let table):
+                    MarkdownTableView(table: table)
                 }
             }
         }
+    }
+
+    /// Code with a line too long to scroll sideways (minified JSON, a
+    /// base64 blob) wraps: unwrapped it would be a text view hundreds of
+    /// thousands of points wide.
+    static func wrapsCode(_ code: String) -> Bool {
+        code.split(separator: "\n", omittingEmptySubsequences: false).contains { $0.utf16.count > 2_000 }
     }
 
     private var blocks: [Block] {
@@ -737,7 +1068,11 @@ struct MarkdownText: View {
             if !joined.isEmpty { out.append(.paragraph(joined)) }
             paragraph = []
         }
-        for raw in text.components(separatedBy: "\n") {
+        let lines = text.components(separatedBy: "\n")
+        var index = 0
+        while index < lines.count {
+            let raw = lines[index]
+            index += 1
             let trimmed = raw.trimmingCharacters(in: .whitespaces)
             if trimmed.hasPrefix("```") {
                 if let lines = code {
@@ -750,6 +1085,12 @@ struct MarkdownText: View {
                 continue
             }
             if code != nil { code!.append(raw); continue }
+            if let (table, lineCount) = MarkdownTable.parse(lines, at: index - 1) {
+                flush()
+                out.append(.table(table))
+                index += lineCount - 1
+                continue
+            }
             if trimmed.hasPrefix("#") {
                 flush()
                 out.append(.heading(String(trimmed.drop { $0 == "#" }).trimmingCharacters(in: .whitespaces)))

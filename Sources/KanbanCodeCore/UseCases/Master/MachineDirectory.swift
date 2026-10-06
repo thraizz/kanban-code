@@ -96,6 +96,31 @@ extension AppState {
         return machineChoices.first { $0.name.lowercased() == lower }?.master
     }
 
+    /// The name the machine choices give the peer master that owns the
+    /// card (or takes it over), when that is not this master.
+    public func ownerMachineChoice(cardId: String) -> String? {
+        guard let owner = links[cardId]?.ownerMachine, !localMachineId.isEmpty, owner != localMachineId else { return nil }
+        return machineChoices.first { $0.master?.id == owner }?.name
+            ?? peerStatuses.values.first { $0.machine?.id == owner }?.machine?.name
+    }
+
+    /// The line of a card moving between masters, with how far its
+    /// transcript copy got; nil when the card is not moving.
+    public func handoverLine(cardId: String) -> String? {
+        guard let link = links[cardId], link.migrating == true else { return nil }
+        func name(_ id: String?) -> String {
+            guard let id else { return "another master" }
+            return peerStatuses.values.first { $0.machine?.id == id }?.machine?.name ?? id
+        }
+        var text = isOwnedLocally(link)
+            ? "Moving here from \(name(link.ownerRev?.machine))"
+            : "Moving to \(name(link.ownerMachine))"
+        if case .moving(let progress) = cardStarts[cardId], progress.totalBytes > 0 {
+            text += ", copying the transcript (\(progress.label))"
+        }
+        return text
+    }
+
     /// The ssh machine `name` names, when its master is the peer `machineId`.
     public func sshMachine(named name: String, runningMaster machineId: String) -> SshMachine? {
         machineChoices.first { $0.name.lowercased() == name.lowercased() && $0.master?.id == machineId }?.sshMachine

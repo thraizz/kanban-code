@@ -31,6 +31,9 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     public let liveModel: String?
     /// Another master that owns and runs the card; nil for this one.
     public let owner: CardOwner?
+    /// Where its assistant session stands: running, starting, moving,
+    /// failed, ended. The one value every surface renders.
+    public let sessionStatus: CardSessionStatus
 
     public init(
         link: Link,
@@ -39,7 +42,8 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
         isBusy: Bool = false,
         isRateLimited: Bool = false,
         liveModel: String? = nil,
-        owner: CardOwner? = nil
+        owner: CardOwner? = nil,
+        sessionStatus: CardSessionStatus? = nil
     ) {
         self.id = link.id
         self.link = link
@@ -49,6 +53,8 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
         self.isRateLimited = isRateLimited
         self.liveModel = liveModel
         self.owner = owner
+        self.sessionStatus = sessionStatus
+            ?? CardSessionStatus.of(link: link, moving: nil, report: nil, machineState: nil)
     }
 
     /// Whether Claude is confirmed actively working right now (not just waiting).
@@ -56,9 +62,13 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
         activityState == .activelyWorking
     }
 
-    /// Whether to show a spinner on the card.
+    /// Whether to show a spinner on the card: a turn, a start or a move in
+    /// flight, or other work on the card.
     public var showSpinner: Bool {
-        isActivelyWorking || link.isLaunching == true || isBusy
+        switch sessionStatus {
+        case .starting, .moving: return true
+        default: return isActivelyWorking || link.isLaunching == true || isBusy
+        }
     }
 
     /// Best display title: link name → session display title → link fallback chain.

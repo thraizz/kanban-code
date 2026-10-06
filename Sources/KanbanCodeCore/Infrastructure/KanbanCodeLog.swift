@@ -15,14 +15,24 @@ public enum KanbanCodeLog {
         return dir
     }()
 
+    /// Test runs log to their own file, so the app's log only holds what
+    /// the app did.
+    static let isTestRun: Bool = {
+        let env = ProcessInfo.processInfo.environment
+        let name = ProcessInfo.processInfo.processName
+        return env["XCTestConfigurationFilePath"] != nil || env["XCTestBundlePath"] != nil
+            || name == "xctest" || name.hasSuffix("PackageTests") || name == "swiftpm-testing-helper"
+            || Bundle.main.bundlePath.hasSuffix(".xctest")
+    }()
+
     private static let logPath: String = {
-        let path = (logDir as NSString).appendingPathComponent("kanban-code.log")
+        let path = (logDir as NSString).appendingPathComponent(isTestRun ? "kanban-code-tests.log" : "kanban-code.log")
         rotateIfNeeded(path: path)
         return path
     }()
 
     private static let queue = DispatchQueue(label: "kanban-code.log", qos: .utility)
-    private static let debugEnabled: Bool = {
+    public static let debugEnabled: Bool = {
         let env = ProcessInfo.processInfo.environment
         return env["KANBAN_CODE_DEBUG_LOGS"] == "1" || env["KANBAN_DEBUG"] == "1"
     }()
@@ -60,9 +70,9 @@ public enum KanbanCodeLog {
     }
 
     /// Log verbose diagnostics. Disabled by default; set KANBAN_CODE_DEBUG_LOGS=1.
-    public nonisolated static func debug(_ subsystem: String, _ message: String) {
+    public nonisolated static func debug(_ subsystem: String, _ message: @autoclosure () -> String) {
         guard debugEnabled else { return }
-        write("DEBUG", subsystem, message)
+        write("DEBUG", subsystem, message())
     }
 
     private nonisolated static func write(_ level: String, _ subsystem: String, _ message: String) {

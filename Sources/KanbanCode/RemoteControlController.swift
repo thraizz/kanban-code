@@ -26,14 +26,19 @@ final class RemoteControlController {
     @ObservationIgnored private weak var engine: MasterEngine?
     @ObservationIgnored private var peerServer: (any PeerLinksServing)?
     @ObservationIgnored private var syncEngine: AgentSyncEngine?
+    @ObservationIgnored private var vault: VaultService?
+    /// Set by the composition root before `attach`.
+    @ObservationIgnored var scrubber: SecretScrubber?
     @ObservationIgnored private var settingsObserver: NSObjectProtocol?
 
     private init() {}
 
     /// Wires the controller to the app's master engine and starts following
     /// the settings. Called once by the composition root.
-    func attach(engine: MasterEngine, peerServer: (any PeerLinksServing)?, syncEngine: AgentSyncEngine?, settingsStore: SettingsStore) {
+    func attach(engine: MasterEngine, peerServer: (any PeerLinksServing)?, syncEngine: AgentSyncEngine?, vault: VaultService?,
+                settingsStore: SettingsStore) {
         self.syncEngine = syncEngine
+        self.vault = vault
         self.engine = engine
         self.peerServer = peerServer
         settingsObserver = NotificationCenter.default.addObserver(
@@ -65,7 +70,15 @@ final class RemoteControlController {
         }
         guard let engine else { return }
         let host = MasterRemoteControlHost(engine: engine)
-        let server = RemoteControlServer(host: host, devices: deviceStore, port: settings.port, peerServer: peerServer, syncEngine: syncEngine)
+        let store = engine.store
+        let server = RemoteControlServer(
+            host: host, devices: deviceStore, port: settings.port, peerServer: peerServer, syncEngine: syncEngine,
+            vault: vault, scrubber: scrubber,
+            // The phone using a card this Mac owns keeps the Mac awake for a while.
+            activity: { cardId in
+                let ownedHere = await MainActor.run { store.state.links[cardId].map(store.state.isOwnedLocally) ?? false }
+                if ownedHere { RemoteWakeHold.shared.touch(card: cardId) }
+            })
         do {
             try await server.start()
             self.host = host

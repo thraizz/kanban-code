@@ -80,6 +80,10 @@ public enum CardReconciler {
         // Track which sessions we've matched so we can detect new ones
         var matchedSessionIds: Set<String> = []
 
+        // The fuzzy matches below only consider cards with a terminal: a
+        // handful, looked up for every session instead of scanning every card.
+        let tmuxCardIds = existing.filter { $0.tmuxLink != nil }.map(\.id)
+
         // A. Match sessions to existing cards
         for session in snapshot.sessions {
             let cardId = findCardForSession(
@@ -87,7 +91,8 @@ public enum CardReconciler {
                 cardIdBySessionId: cardIdBySessionId,
                 cardIdByTmuxName: cardIdByTmuxName,
                 cardIdsByBranch: cardIdsByBranch,
-                linksById: linksById
+                linksById: linksById,
+                tmuxCardIds: tmuxCardIds
             )
 
             if let cardId, var link = linksById[cardId] {
@@ -385,6 +390,20 @@ public enum CardReconciler {
 
             for sess in externalSessions {
                 guard !alreadyLinkedTmux.contains(sess.name) else { continue }
+                // A rush host is the assistant session of the card whose
+                // conversation it runs, never a tool in a folder: it goes to
+                // that card only, and only when the card has no session (a
+                // resume in flight names it in its own time).
+                if let rushId = RushSessionName.rushId(fromName: sess.name) {
+                    guard let (cardId, link) = linksById.first(where: {
+                        $0.value.sessionLink.map { RushSessionName.rushId(sessionId: $0.sessionId) } == rushId
+                    }), link.tmuxLink == nil else { continue }
+                    var linked = link
+                    linked.tmuxLink = TmuxLink(sessionName: sess.name)
+                    linksById[cardId] = linked
+                    KanbanCodeLog.info("reconciler", "rush host \(sess.name) matched to card \(cardId.prefix(12)) by session")
+                    continue
+                }
                 // Find the best card: prefer exact worktree/project match over prefix
                 var bestMatch: (String, Link)?
                 var prefixMatch: (String, Link)?
@@ -532,8 +551,13 @@ public enum CardReconciler {
         cardIdBySessionId: [String: String],
         cardIdByTmuxName: [String: String],
         cardIdsByBranch: [String: [String]],
-        linksById: [String: Link]
+        linksById: [String: Link],
+        tmuxCardIds: [String]
     ) -> String? {
+        // Cards with a terminal, as they stand now.
+        var tmuxLinks: [Link] {
+            tmuxCardIds.compactMap { linksById[$0] }.filter { $0.tmuxLink != nil }
+        }
         // 1. Exact match by sessionId
         if let cardId = cardIdBySessionId[session.id] {
             KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) matched by sessionId → card=\(cardId.prefix(12))")
@@ -541,11 +565,11 @@ public enum CardReconciler {
         }
 
         // A headless session (`claude -p` from a script) is not the one a
-        // card's terminal started. Only a card hosted on agtop, which runs
+        // card's terminal started. Only a card hosted on rush, which runs
         // Claude headless itself, may take one by the fuzzy rules below.
         let acceptsSession: (Link) -> Bool = { link in
             !session.isHeadless
-                || link.tmuxLink.map { AgtopSessionName.isAgtop($0.sessionName) } == true
+                || link.tmuxLink.map { RushSessionName.isRush($0.sessionName) } == true
         }
 
         // 2. Match by worktree branch (session has gitBranch matching a card's worktreeLink)
@@ -576,7 +600,7 @@ public enum CardReconciler {
         //    Also matches when session is in a worktree under the card's project
         //    (e.g., session in <project>/.claude/worktrees/<name> matches card with projectPath=<project>)
         if let projectPath = session.projectPath {
-            let candidates = linksById.values.filter { link in
+            let candidates = tmuxLinks.filter { link in
                 link.tmuxLink != nil
                     && link.sessionLink == nil
                     && acceptsSession(link)
@@ -589,7 +613,7 @@ public enum CardReconciler {
                 return link.id
             }
             // Log when no match found for debugging
-            let tmuxCards = linksById.values.filter { $0.tmuxLink != nil && $0.sessionLink == nil }
+            let tmuxCards = KanbanCodeLog.debugEnabled ? tmuxLinks.filter { $0.sessionLink == nil } : []
             if !tmuxCards.isEmpty {
                 for card in tmuxCards {
                     KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) projectPath=\(projectPath) — tmux card=\(card.id.prefix(12)) has projectPath=\(card.projectPath ?? "nil") (no match)")
@@ -607,7 +631,7 @@ public enum CardReconciler {
             if let worktreeRange = dirName.range(of: "--claude-worktrees-") {
                 let rootEncodedName = String(dirName[dirName.startIndex..<worktreeRange.lowerBound])
                 let projectRoot = JsonlParser.decodeDirectoryName(rootEncodedName)
-                let candidates = linksById.values.filter { link in
+                let candidates = tmuxLinks.filter { link in
                     link.tmuxLink != nil
                         && link.sessionLink == nil
                         && acceptsSession(link)
@@ -626,7 +650,7 @@ public enum CardReconciler {
         //    match it to the existing card to prevent duplicates.
         //    The card keeps its original sessionLink — we just suppress a new card.
         if let projectPath = session.projectPath {
-            let candidates = linksById.values.filter { link in
+            let candidates = tmuxLinks.filter { link in
                 link.tmuxLink != nil
                     && link.sessionLink != nil
                     && acceptsSession(link)

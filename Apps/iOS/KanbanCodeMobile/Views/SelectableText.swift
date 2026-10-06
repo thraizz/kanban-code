@@ -15,7 +15,11 @@ struct SelectableText: UIViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     func makeUIView(context: Context) -> UITextView {
-        let view = UITextView()
+        // TextKit 1. A non-scrolling TextKit 2 text view sizes itself by
+        // walking every caret offset of every line, which takes seconds on a
+        // pasted log or a long line of JSON: the main thread stalled long
+        // enough for the watchdog to kill the app.
+        let view = UITextView(usingTextLayoutManager: false)
         // A tap on the text also reaches `selectableTextTap` (the chat puts
         // the keyboard away with it); the text view keeps its own taps.
         let tap = UITapGestureRecognizer(target: context.coordinator, action: #selector(Coordinator.tapped))

@@ -17,19 +17,15 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     private let tmux: TmuxManagerPort?
     private let prTracker: PRTrackerPort?
     private let notificationDedup: NotificationDeduplicator
-    private var notifier: NotifierPort?
     private let registry: CodingAssistantRegistry?
 
     private var backgroundTask: Task<Void, Never>?
     private var didInitialLoad = false
     private var dispatch: (@MainActor @Sendable (Action) -> Void)?
 
-    /// This master's machine id: cards another master owns are notified by
-    /// that master, not here.
-    public var localMachineId: String?
-    /// Whether a session no card knows still notifies. A headless master
-    /// turns it off: those are sessions another master runs on this host.
-    public var notifiesUnlinkedSessions = true
+    /// Hook events attention requests follow: permission prompts, stops
+    /// and prompts. The master engine raises and resolves requests from them.
+    public var onAttentionHook: (@Sendable (HookEvent) async -> Void)?
 
     /// Prompt IDs currently being edited in the UI — skip auto-send for these.
     private var editingQueuedPromptIds: Set<String> = []
@@ -42,7 +38,6 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         tmux: TmuxManagerPort? = nil,
         prTracker: PRTrackerPort? = nil,
         notificationDedup: NotificationDeduplicator = .init(),
-        notifier: NotifierPort? = nil,
         registry: CodingAssistantRegistry? = nil
     ) {
         self.discovery = discovery
@@ -52,7 +47,6 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
         self.tmux = tmux
         self.prTracker = prTracker
         self.notificationDedup = notificationDedup
-        self.notifier = notifier
         self.registry = registry
     }
 
@@ -68,11 +62,6 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 try? await Task.sleep(for: .seconds(5))
             }
         }
-    }
-
-    /// Update the notifier (e.g. when settings change).
-    public func updateNotifier(_ newNotifier: NotifierPort?) {
-        self.notifier = newNotifier
     }
 
     /// Mark a queued prompt as being edited — auto-send will skip it.
@@ -227,7 +216,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     // MARK: - Event-driven notification path (called from file watcher)
 
     private let passLock = NSLock()
-    private var lastPass: Task<Void, Never>?
+    private var lastPass: Task<[String], Never>?
 
     /// Process new hook events and send notifications. Called directly by file watcher
     /// for instant response — mirrors claude-pushover's hook-driven approach.
@@ -238,20 +227,24 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
     /// detector after a newer one for the same session. Chaining each call
     /// behind the previous keeps the detector fed in file order, and a caller
     /// returns only after its own events are in.
-    public func processHookEvents() async {
+    ///
+    /// Returns the ids of the sessions the newly read events belong to, so a
+    /// caller can refresh just those cards.
+    @discardableResult
+    public func processHookEvents() async -> [String] {
         let current = passLock.withLock {
             let previous = lastPass
-            let chained = Task { [weak self] in
-                await previous?.value
-                await self?.runHookEventsPass()
+            let chained = Task { [weak self] () -> [String] in
+                _ = await previous?.value
+                return await self?.runHookEventsPass() ?? []
             }
             lastPass = chained
             return chained
         }
-        await current.value
+        return await current.value
     }
 
-    private func runHookEventsPass() async {
+    private func runHookEventsPass() async -> [String] {
         do {
             let events = try await hookEventStore.readNewEvents()
 
@@ -264,7 +257,7 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 let _ = await activityDetector.resolvePendingStops()
                 await notificationDedup.clearAllPending()
                 didInitialLoad = true
-                return
+                return []
             }
 
             if !events.isEmpty {
@@ -281,8 +274,11 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                 let eventName = HookManager.normalizeEventName(event.eventName)
                 switch eventName {
                 case "Stop":
-                    // claude-pushover: sleep 0.5s, check if user prompted, send if not.
-                    // NO 62s dedup — Stop always sends (dedup only applies to Notification events).
+                    // A stop never notifies; it only drives the queued prompt auto-send
+                    // and ends any permission prompt the session showed.
+                    if let onAttentionHook = self.onAttentionHook {
+                        await onAttentionHook(event)
+                    }
                     KanbanCodeLog.info("notify", "Stop event for session \(event.sessionId.prefix(8)) at \(event.timestamp)")
                     let stopTime = event.timestamp
                     let sessionId = event.sessionId
@@ -300,8 +296,6 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                             KanbanCodeLog.info("notify", "Stop skipped: user prompted within 0.5s after stop")
                             return
                         }
-                        // Send directly — no dedup for Stop events (matches claude-pushover)
-                        await self.doNotify(sessionId: sessionId)
 
                         // Auto-send queued prompt: wait 0.5 more seconds (1s total from Stop),
                         // re-check that user hasn't prompted, then send first auto prompt.
@@ -317,95 +311,38 @@ public final class BackgroundOrchestrator: @unchecked Sendable {
                     }
 
                 case "Notification":
-                    // claude-pushover: send if not within 62s dedup window
-                    KanbanCodeLog.info("notify", "Notification event for session \(event.sessionId.prefix(8)) at \(event.timestamp)")
-                    let sessionId = event.sessionId
-                    let eventTime = event.timestamp
-                    Task { [weak self] in
-                        // Notification events go through 62s dedup
-                        let shouldNotify = await self?.notificationDedup.shouldNotify(
-                            sessionId: sessionId, eventTime: eventTime
-                        ) ?? false
-                        guard shouldNotify else {
-                            KanbanCodeLog.info("notify", "Notification deduped for \(sessionId.prefix(8))")
-                            return
-                        }
-                        await self?.doNotify(sessionId: sessionId)
+                    // Only a prompt that needs a decision is reported, not the idle reminder.
+                    KanbanCodeLog.info("notify", "Notification event for session \(event.sessionId.prefix(8)) type=\(event.notificationType ?? "?")")
+                    guard Self.needsDecision(notificationType: event.notificationType) else { break }
+                    if let onAttentionHook = self.onAttentionHook {
+                        await onAttentionHook(event)
                     }
 
                 case "UserPromptSubmit":
                     KanbanCodeLog.info("notify", "UserPromptSubmit for session \(event.sessionId.prefix(8)) at \(event.timestamp)")
                     await notificationDedup.recordPrompt(sessionId: event.sessionId, at: event.timestamp)
+                    if let onAttentionHook = self.onAttentionHook {
+                        await onAttentionHook(event)
+                    }
 
                 default:
                     break
                 }
             }
+            var seen = Set<String>()
+            return events.compactMap { seen.insert($0.sessionId).inserted ? $0.sessionId : nil }
         } catch {
             KanbanCodeLog.info("notify", "processHookEvents error: \(error)")
+            return []
         }
+    }
+
+    static func needsDecision(notificationType: String?) -> Bool {
+        guard let notificationType else { return false }
+        return ["permission_prompt", "elicitation_dialog"].contains(notificationType)
     }
 
     // MARK: - Private
-
-    /// Send notification — no dedup check, just format and send.
-    /// Mirrors claude-pushover's do_notify() exactly.
-    private func doNotify(sessionId: String) async {
-        guard let notifier else {
-            KanbanCodeLog.info("notify", "Notification skipped: notifier is nil")
-            return
-        }
-
-        let link = try? await coordinationStore.linkForSession(sessionId)
-        if link == nil, !notifiesUnlinkedSessions { return }
-        if let owner = link?.ownerMachine, let localMachineId, owner != localMachineId { return }
-        let title = link?.displayTitle ?? "Session done"
-
-        // Mirrors claude-pushover's do_notify() exactly:
-        // 1. Get last assistant response
-        // 2. If multi-line + render enabled: render image, message = "Task completed"
-        // 3. If multi-line + no image: truncate to 1000 chars
-        // 4. If single line: use as-is
-        // 5. No response: "Waiting for input"
-        var message = "Waiting for input"
-        var imageData: Data?
-
-        let renderMarkdown = (try? await SettingsStore().read())?.notifications.renderMarkdownImage ?? false
-
-        if let transcriptPath = link?.sessionLink?.sessionPath {
-            // Use the correct session store for the assistant (Gemini=JSON, Claude=JSONL)
-            let assistant = link?.assistant ?? .claude
-            let lastText: String?
-            lastText = await TranscriptNotificationReader.lastAssistantText(
-                transcriptPath: transcriptPath,
-                assistant: assistant
-            )
-
-            if let lastText {
-                let lineCount = lastText.components(separatedBy: "\n").count
-                if lineCount > 1 {
-                    if renderMarkdown {
-                        imageData = await MarkdownImageRenderer.renderToImage(markdown: lastText)
-                    }
-                    if imageData != nil {
-                        message = "Task completed"
-                    } else {
-                        message = String(lastText.prefix(1000)) + (lastText.count > 1000 ? "..." : "")
-                    }
-                } else {
-                    message = lastText
-                }
-            }
-        }
-
-        KanbanCodeLog.info("notify", "Sending notification: title=\(title), message=\(message.prefix(60))..., hasImage=\(imageData != nil)")
-        try? await notifier.sendNotification(
-            title: title,
-            message: message,
-            imageData: imageData,
-            cardId: link?.id
-        )
-    }
 
     /// Auto-send the first queued prompt with sendAutomatically=true for a session.
     private func autoSendQueuedPrompt(sessionId: String) async {

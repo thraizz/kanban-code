@@ -72,6 +72,14 @@ specs/
 │   ├── liquid-glass.feature      # Apple liquid glass design, native interactions
 │   └── performance.feature       # Virtualization, caching, startup speed
 │
+├── performance/                   # Responsiveness budgets and how they are measured
+│   ├── measurement.feature       # Signposts, latency/staleness metrics, hang watchdog, benchmarks
+│   ├── main-thread-budget.feature # No blocking I/O or IPC on the main thread
+│   ├── reconcile-pipeline.feature # Indexed lookups, off-main merge, cheap change detection
+│   ├── event-driven-updates.feature # Hook/tmux/file events first, polling as fallback
+│   ├── system-tray-cost.feature  # Tray menu rebuilds and helper tracking
+│   └── terminal-rendering.feature # Typing latency, dirty-row drawing, GPU fallback
+│
 └── architecture/                  # Technical architecture
     ├── adapter-pattern.feature   # Clean architecture, port/adapter pattern
     ├── coordination-file.feature # links.json structure and operations

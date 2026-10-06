@@ -8,10 +8,8 @@ extension ProjectColor {
         case .green: .green
         case .orange: .orange
         case .purple: .purple
-        case .pink: .pink
         case .teal: .teal
         case .yellow: .yellow
-        case .red: .red
         case .indigo: .indigo
         case .mint: .mint
         case .cyan: .cyan

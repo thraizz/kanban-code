@@ -32,7 +32,7 @@ final class MemoryDiagnostics: @unchecked Sendable {
     private let growthThreshold: UInt64 = 256 * 1024 * 1024
     private let warningThreshold: UInt64 = 1_024 * 1024 * 1024
     private let criticalThreshold: UInt64 = 4 * 1_024 * 1024 * 1024
-    private let artifactInterval: TimeInterval = 120
+    private let artifactInterval: TimeInterval = 600
 
     private var lastLoggedAt = OSAllocatedUnfairLock(initialState: Date.distantPast)
     private var lastLoggedFootprint = OSAllocatedUnfairLock(initialState: UInt64(0))
@@ -92,7 +92,12 @@ final class MemoryDiagnostics: @unchecked Sendable {
             guard let snapshot = Self.currentSnapshot() else { return }
             self.log(snapshot, reason: "pressure-\(level)")
             self.logSessionTrees(reason: "pressure-\(level)")
-            self.captureArtifactsIfNeeded(snapshot: snapshot, reason: "pressure-\(level)")
+            // A warning fires many times a day on a busy machine, and `vmmap`
+            // plus a full `ps` cost the most exactly when memory is short:
+            // only a critical event earns the artifacts.
+            if level == "critical" {
+                self.captureArtifactsIfNeeded(snapshot: snapshot, reason: "pressure-\(level)")
+            }
             self.lastLoggedFootprint.withLock { $0 = snapshot.footprint }
         }
         source.activate()

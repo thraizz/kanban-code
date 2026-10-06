@@ -175,6 +175,13 @@ struct RemoteControlServerTests {
 
         let (garbage, _) = try await f.request("POST", "/v1/tasks", token: f.agentToken, body: Data("{".utf8))
         #expect(garbage == 400)
+
+        // Only a full-scope device can say the human typed the prompt.
+        let typed = try JSONEncoder.remote.encode(RemoteTaskRequest(project: "acme", prompt: "fix it", human: true))
+        _ = try await f.request("POST", "/v1/tasks", token: f.agentToken, body: typed)
+        #expect(f.host.state.withLock { $0.tasks.last?.human } == nil)
+        _ = try await f.request("POST", "/v1/tasks", token: f.fullToken, body: typed)
+        #expect(f.host.state.withLock { $0.tasks.last?.human } == true)
     }
 
     @Test("prompt, interrupt and resume reach the host")
@@ -184,7 +191,8 @@ struct RemoteControlServerTests {
         let prompt = try JSONEncoder.remote.encode(RemotePromptRequest(text: "also run the tests", mode: .queue))
         let (status, _) = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.agentToken, body: prompt)
         #expect(status == 204)
-        #expect(f.host.state.withLock { $0.prompts.first?.request.text } == "also run the tests")
+        // An agent-scope device is another sender, never Rogerio typing.
+        #expect(f.host.state.withLock { $0.prompts.first?.request.text } == "[Message from openclaw (remote agent)]: also run the tests")
 
         let (conflict, _) = try await f.request("POST", "/v1/cards/card_idle/prompt", token: f.agentToken, body: prompt)
         #expect(conflict == 409)
@@ -199,6 +207,85 @@ struct RemoteControlServerTests {
         let (resume, resumeData) = try await f.request("POST", "/v1/cards/card_idle/resume", token: f.agentToken)
         #expect(resume == 200)
         #expect(try JSONDecoder.remote.decode(RemoteCard.self, from: resumeData).isLive)
+    }
+
+    @Test("only a full-scope device can mark a prompt as typed by the human")
+    func humanPrompt() async throws {
+        let f = try await RemoteServerFixture()
+        defer { f.shutdown() }
+        let prompt = try JSONEncoder.remote.encode(RemotePromptRequest(text: "ship it", mode: .queue, human: true))
+        let (status, _) = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.fullToken, body: prompt)
+        #expect(status == 204)
+        #expect(f.host.state.withLock { $0.prompts.last?.request.human } == true)
+        #expect(f.host.state.withLock { $0.prompts.last?.request.text } == "ship it")
+
+        let (agent, _) = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.agentToken, body: prompt)
+        #expect(agent == 204)
+        #expect(f.host.state.withLock { $0.prompts.last?.request.human } == nil)
+    }
+
+    @Test("a card's slash commands are listed for the phone and for an agent, and only read")
+    func slashCommands() async throws {
+        let f = try await RemoteServerFixture()
+        defer { f.shutdown() }
+        let cardId = try #require(await f.host.board().cards.first?.id)
+        for token in [f.fullToken, f.agentToken] {
+            let (status, data) = try await f.request("GET", "/v1/cards/\(cardId)/slash-commands", token: token)
+            #expect(status == 200)
+            let commands = try JSONDecoder.remote.decode([RemoteSlashCommand].self, from: data)
+            #expect(commands.first == RemoteSlashCommand.kanban.first)
+            #expect(commands.contains(RemoteSlashCommand(name: "deploy", description: "Ship it", source: "user")))
+        }
+        let raw = try #require(try JSONSerialization.jsonObject(
+            with: try await f.request("GET", "/v1/cards/\(cardId)/slash-commands", token: f.fullToken).1) as? [[String: String]])
+        #expect(raw.first.map { Set($0.keys) } == ["name", "description", "source"])
+        #expect(try await f.request("GET", "/v1/cards/nope/slash-commands", token: f.fullToken).0 == 404)
+        #expect(try await f.request("POST", "/v1/cards/\(cardId)/slash-commands", token: f.fullToken).0 == 405)
+        #expect(try await f.request("GET", "/v1/cards/\(cardId)/slash-commands").0 == 401)
+        let health = try JSONDecoder.remote.decode(RemoteHealth.self, from: try await f.request("GET", "/v1/health").1)
+        #expect(health.features?.contains(RemoteAPI.Feature.slashCommands) == true)
+    }
+
+    @Test("a side chat run is started, read and cancelled")
+    func sideChat() async throws {
+        let f = try await RemoteServerFixture()
+        defer { f.shutdown() }
+        let ask = try JSONEncoder.remote.encode(RemoteSideChatRequest(
+            kind: .btw, question: "what is left?",
+            history: [RemoteSideChatExchange(question: "status?", answer: "half done")]))
+        let (status, data) = try await f.request("POST", "/v1/cards/card_live/side-chat", token: f.fullToken, body: ask)
+        #expect(status == 201)
+        let run = try JSONDecoder.remote.decode(RemoteSideChatRun.self, from: data)
+        #expect(run.state == .running)
+        #expect(run.kind == .btw)
+        #expect(f.host.state.withLock { $0.sideChatRequests.first?.history?.first?.answer } == "half done")
+        // Nothing was sent to the session.
+        #expect(f.host.state.withLock { $0.prompts.isEmpty })
+
+        let (read, readData) = try await f.request("GET", "/v1/cards/card_live/side-chat/\(run.id)", token: f.fullToken)
+        #expect(read == 200)
+        let done = try JSONDecoder.remote.decode(RemoteSideChatRun.self, from: readData)
+        #expect(done.state == .done)
+        #expect(done.text == "The answer")
+
+        let (missing, _) = try await f.request("GET", "/v1/cards/card_live/side-chat/nope", token: f.fullToken)
+        #expect(missing == 404)
+        let (noCard, _) = try await f.request("POST", "/v1/cards/nope/side-chat", token: f.fullToken, body: ask)
+        #expect(noCard == 404)
+        let (bad, _) = try await f.request("POST", "/v1/cards/card_live/side-chat", token: f.fullToken, body: Data("{}".utf8))
+        #expect(bad == 400)
+
+        // A catch-up may ask for a new run; a follow-up names its catch-up.
+        let fresh = try JSONEncoder.remote.encode(RemoteSideChatRequest(kind: .catchup, fresh: true))
+        _ = try await f.request("POST", "/v1/cards/card_live/side-chat", token: f.fullToken, body: fresh)
+        #expect(f.host.state.withLock { $0.sideChatRequests.last?.fresh } == true)
+        let follow = try JSONEncoder.remote.encode(RemoteSideChatRequest(kind: .btw, question: "and then?", catchUpId: "side_2"))
+        _ = try await f.request("POST", "/v1/cards/card_live/side-chat", token: f.fullToken, body: follow)
+        #expect(f.host.state.withLock { $0.sideChatRequests.last?.catchUpId } == "side_2")
+
+        let (cancel, _) = try await f.request("DELETE", "/v1/cards/card_live/side-chat/\(run.id)", token: f.fullToken)
+        #expect(cancel == 204)
+        #expect(f.host.state.withLock { $0.sideChatCancels } == [run.id])
     }
 
     @Test("a prompt may carry images, checked before the host sees them")
@@ -233,14 +320,14 @@ struct RemoteControlServerTests {
         // Markers out of order, image 2 (the jpeg) no longer named.
         let body = try JSONEncoder.remote.encode(RemotePromptRequest(
             text: "see [Image #3] then [Image #1]", images: [png, jpeg, gif]))
-        let (status, _) = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.agentToken, body: body)
+        let (status, _) = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.fullToken, body: body)
         #expect(status == 204)
         #expect(f.host.state.withLock { $0.prompts.last?.request.text } == "see [Image #1] then [Image #2]")
         #expect(f.host.state.withLock { $0.promptImages.last?.map(\.fileExtension) } == ["gif", "png"])
 
         // No marker at all (an older client): every image, text as sent.
         let legacy = try JSONEncoder.remote.encode(RemotePromptRequest(text: "look", images: [png, jpeg]))
-        _ = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.agentToken, body: legacy)
+        _ = try await f.request("POST", "/v1/cards/card_live/prompt", token: f.fullToken, body: legacy)
         #expect(f.host.state.withLock { $0.prompts.last?.request.text } == "look")
         #expect(f.host.state.withLock { $0.promptImages.last?.map(\.fileExtension) } == ["png", "jpg"])
     }

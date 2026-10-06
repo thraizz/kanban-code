@@ -41,10 +41,10 @@ struct RemoteControlHostTests {
 
     private let tmuxCommands = TmuxCommands()
 
-    /// A stand-in `agtop` that logs each call and answers `info` with the
-    /// queue in `queue.json`.
-    private struct FakeAgtop {
-        let dir = NSTemporaryDirectory() + "kanban-remote-agtop-\(UUID().uuidString)"
+    /// A stand-in for the older `agtop` build of rush that logs each call
+    /// and answers `info` with the queue in `queue.json`.
+    private struct FakeRush {
+        let dir = NSTemporaryDirectory() + "kanban-remote-rush-\(UUID().uuidString)"
         var path: String { "\(dir)/agtop" }
 
         init() throws {
@@ -66,11 +66,11 @@ struct RemoteControlHostTests {
         }
 
         func calls() -> String { (try? String(contentsOfFile: "\(dir)/calls.log", encoding: .utf8)) ?? "" }
-        func adapter() -> AgtopCliAdapter { AgtopCliAdapter(executable: path, scratchDirectory: "\(dir)/scratch") }
+        func adapter() -> RushCliAdapter { RushCliAdapter(executable: path, scratchDirectory: "\(dir)/scratch") }
         func cleanup() { try? FileManager.default.removeItem(atPath: dir) }
     }
 
-    private func makeHost(agtop: AgtopCliAdapter = AgtopCliAdapter(executable: "/nonexistent/agtop")) -> (MasterRemoteControlHost, BoardStore, SentPrompts) {
+    private func makeHost(rush: RushCliAdapter = RushCliAdapter(executable: "/nonexistent/rush")) -> (MasterRemoteControlHost, BoardStore, SentPrompts) {
         let tmux = SentPrompts()
         let dir = NSTemporaryDirectory() + "kanban-remote-host-\(UUID().uuidString)"
         let store = BoardStore(
@@ -87,10 +87,10 @@ struct RemoteControlHostTests {
             store: store,
             settingsStore: SettingsStore(basePath: dir),
             launcher: LaunchSession(tmux: tmux),
-            tmux: RoutingTmuxAdapter(agtop: agtop),
+            tmux: RoutingTmuxAdapter(rush: rush),
             registry: CodingAssistantRegistry()
         )
-        let host = MasterRemoteControlHost(engine: engine, agtop: agtop, runTmux: { commands.record($0, $1) }) { session in tmux.escape(session) }
+        let host = MasterRemoteControlHost(engine: engine, rush: rush, runTmux: { commands.record($0, $1) }) { session in tmux.escape(session) }
         return (host, store, tmux)
     }
 
@@ -106,6 +106,61 @@ struct RemoteControlHostTests {
 
     private func waitFor(_ condition: () -> Bool) async {
         for _ in 0..<50 where !condition() { try? await Task.sleep(for: .milliseconds(20)) }
+    }
+
+    @Test("an approval that needs the device's vault key is refused without what the key unlocked")
+    func approvalNeedsTheDeviceKey() async throws {
+        let (host, store, _) = makeHost()
+        store.dispatch(.attentionRaised(AttentionRequest(
+            id: "vault_sealed", cardId: nil, kind: .vaultApproval, title: "A card wants to use the Stripe key", body: "",
+            options: AttentionRequest.vaultApprovalOptions, requiresBiometry: true,
+            unseal: VaultUnsealChallenge(secrets: [.init(name: "STRIPE", sealed: "AAAA")]))))
+        do {
+            try await host.resolveAttention(id: "vault_sealed", resolution: "Approve once", by: "phone")
+            Issue.record("an approval without the unlocked value must be refused")
+        } catch let error as RemoteHostError {
+            #expect(error.message == AttentionAnswerCopy.needsDeviceKey)
+        }
+        #expect(store.state.attentionRequests["vault_sealed"]?.isOpen == true)
+        let unsealed = VaultUnsealed(values: ["STRIPE": "sk"], device: "abcd")
+        try await host.resolveAttention(id: "vault_sealed", resolution: "Approve once", by: "phone", unsealed: unsealed)
+        #expect(store.state.attentionRequests["vault_sealed"]?.resolution == "Approve once")
+
+        // A denial needs no key.
+        store.dispatch(.attentionRaised(AttentionRequest(
+            id: "vault_sealed2", cardId: nil, kind: .vaultApproval, title: "A card wants to use the Stripe key", body: "",
+            options: AttentionRequest.vaultApprovalOptions,
+            unseal: VaultUnsealChallenge(secrets: [.init(name: "STRIPE", sealed: "AAAA")]))))
+        try await host.resolveAttention(id: "vault_sealed2", resolution: "Deny", by: "phone")
+        #expect(store.state.attentionRequests["vault_sealed2"]?.resolution == "Deny")
+    }
+
+    @Test("answering a request twice with the same answer is quiet, and no refusal names the request id")
+    func answeringTwice() async throws {
+        let (host, store, _) = makeHost()
+        store.dispatch(.attentionRaised(AttentionRequest(
+            id: "vault_abc123", cardId: nil, kind: .vaultApproval, title: "A card wants AWS lw-dev access", body: "",
+            options: AttentionRequest.vaultApprovalOptions)))
+        try await host.resolveAttention(id: "vault_abc123", resolution: "Approve once", by: "phone")
+        #expect(store.state.openAttentionRequests.isEmpty)
+        // The same answer again (a second tap, a retry) changes nothing.
+        try await host.resolveAttention(id: "vault_abc123", resolution: "Approve once", by: "phone")
+        #expect(store.state.attentionRequests["vault_abc123"]?.resolution == "Approve once")
+
+        do {
+            try await host.resolveAttention(id: "vault_abc123", resolution: "Deny", by: "mac")
+            Issue.record("a different answer to a settled request must be refused")
+        } catch let error as RemoteHostError {
+            #expect(error.kind == .conflict)
+            #expect(error.message == "This was already answered on the phone: Approve once.")
+        }
+        do {
+            try await host.resolveAttention(id: "vault_never", resolution: "Deny", by: "mac")
+            Issue.record("an unknown request must be refused")
+        } catch let error as RemoteHostError {
+            #expect(error.kind == .notFound)
+            #expect(!error.message.contains("vault_never"))
+        }
     }
 
     @Test("the board lists the store's cards")
@@ -208,21 +263,21 @@ struct RemoteControlHostTests {
         }
     }
 
-    @Test("terminal scroll drives tmux copy-mode; agtop is left to mouse reporting")
+    @Test("terminal scroll drives tmux copy-mode; rush is left to mouse reporting")
     func terminalScroll() async {
         let (host, _, _) = makeHost()
         await host.scrollTerminal(sessionName: "card-a", lines: 4)
-        await host.scrollTerminal(sessionName: AgtopSessionName.name(agtopId: "abcd1234"), lines: 4)
+        await host.scrollTerminal(sessionName: RushSessionName.name(rushId: "abcd1234"), lines: 4)
         #expect(tmuxCommands.runs.map(\.session) == ["card-a"])
         #expect(tmuxCommands.runs.first?.commands == RemoteTerminalScroll.tmuxCommands(session: "card-a", lines: 4))
     }
 
-    @Test("an agtop card sends through agtop: queue lets agtop queue it, now goes mid-turn, never Esc")
-    func agtopPrompts() async throws {
-        let fake = try FakeAgtop()
+    @Test("a rush card sends through rush: queue lets rush queue it, now goes mid-turn, never Esc")
+    func rushPrompts() async throws {
+        let fake = try FakeRush()
         defer { fake.cleanup() }
-        let (host, store, tmux) = makeHost(agtop: fake.adapter())
-        addCard(store, id: "card_a", session: "agtop-0a1b2c3d", live: true, busy: true)
+        let (host, store, tmux) = makeHost(rush: fake.adapter())
+        addCard(store, id: "card_a", session: "rush-0a1b2c3d", live: true, busy: true)
         try fake.setQueue(["after this"])
         try await host.sendPrompt(cardId: "card_a", RemotePromptRequest(text: "after this", mode: .queue), images: [])
         try await host.sendPrompt(cardId: "card_a", RemotePromptRequest(text: "right now", mode: .now), images: [])
@@ -232,19 +287,19 @@ struct RemoteControlHostTests {
         #expect(tmux.escapes.isEmpty)
         #expect(tmux.sent.isEmpty)
         #expect(store.state.links["card_a"]?.queuedPrompts == nil)
-        // The queue agtop reports is the card's queue.
-        #expect(store.state.agtopQueues == ["agtop-0a1b2c3d": ["after this"]])
+        // The queue rush reports is the card's queue.
+        #expect(store.state.rushQueues == ["rush-0a1b2c3d": ["after this"]])
         let card = await host.board().cards.first { $0.id == "card_a" }
         #expect(card?.queuedPrompts.map(\.text) == ["after this"])
         #expect(card?.queuedPromptCount == 1)
     }
 
-    @Test("an agtop card gets the text with its [Image #N] markers and the images as files")
-    func agtopImageMarkers() async throws {
-        let fake = try FakeAgtop()
+    @Test("a rush card gets the text with its [Image #N] markers and the images as files")
+    func rushImageMarkers() async throws {
+        let fake = try FakeRush()
         defer { fake.cleanup() }
-        let (host, store, _) = makeHost(agtop: fake.adapter())
-        addCard(store, id: "card_a", session: "agtop-0a1b2c3d", live: true, busy: false)
+        let (host, store, _) = makeHost(rush: fake.adapter())
+        addCard(store, id: "card_a", session: "rush-0a1b2c3d", live: true, busy: false)
         let jpeg = RemotePromptImages.Decoded(bytes: Data([0xFF, 0xD8, 0xFF, 0xE0]), fileExtension: "jpg")
         try await host.sendPrompt(cardId: "card_a", RemotePromptRequest(text: "what is [Image #1] showing"), images: [jpeg])
         let calls = fake.calls()
@@ -253,13 +308,13 @@ struct RemoteControlHostTests {
         #expect(!calls.contains("![]("))
     }
 
-    @Test("send now and remove on an agtop queued message map to agtop's queue commands")
-    func agtopQueueActions() async throws {
-        let fake = try FakeAgtop()
+    @Test("send now and remove on a rush queued message map to rush's queue commands")
+    func rushQueueActions() async throws {
+        let fake = try FakeRush()
         defer { fake.cleanup() }
-        let (host, store, _) = makeHost(agtop: fake.adapter())
-        addCard(store, id: "card_a", session: "agtop-0a1b2c3d", live: true, busy: true)
-        store.dispatch(.agtopQueueRead(sessionName: "agtop-0a1b2c3d", queue: ["one", "two"]))
+        let (host, store, _) = makeHost(rush: fake.adapter())
+        addCard(store, id: "card_a", session: "rush-0a1b2c3d", live: true, busy: true)
+        store.dispatch(.rushQueueRead(sessionName: "rush-0a1b2c3d", queue: ["one", "two"]))
         try fake.setQueue(["one", "two"])
         let ids = await host.board().cards.first { $0.id == "card_a" }?.queuedPrompts.map(\.id) ?? []
         #expect(ids.count == 2)
@@ -274,7 +329,7 @@ struct RemoteControlHostTests {
         await #expect(throws: RemoteHostError.self) {
             try await host.sendQueuedPromptNow(cardId: "card_a", promptId: ids[1])
         }
-        #expect(store.state.agtopQueues.isEmpty)
+        #expect(store.state.rushQueues.isEmpty)
     }
 
     @Test("interrupt sends Esc to the live session")
@@ -285,13 +340,14 @@ struct RemoteControlHostTests {
         #expect(tmux.escapes == ["card-a"])
     }
 
-    @Test("terminals: agtop opens its own UI, tmux attaches, unknown sessions are refused")
+    @Test("terminals: rush opens its own UI, tmux attaches, unknown sessions are refused")
     func terminals() async throws {
         let (host, store, _) = makeHost()
-        addCard(store, id: "card_a", session: "agtop-0123abcd", live: true, busy: false)
+        addCard(store, id: "card_a", session: "rush-0123abcd", live: true, busy: false)
         addCard(store, id: "card_b", session: "card-b", live: true, busy: false)
-        let agtop = try await host.terminalCommand(cardId: "card_a", sessionName: "agtop-0123abcd")
-        #expect(Array(agtop.suffix(3)) == ["open", "0123abcd", "--solo"])
+        let rush = try await host.terminalCommand(cardId: "card_a", sessionName: "rush-0123abcd")
+        #expect(rush == RushCliAdapter.openCommand(id: "0123abcd"))
+        #expect(rush.contains("open") && rush.contains("0123abcd"))
         let tmux = try await host.terminalCommand(cardId: "card_b", sessionName: "card-b")
         #expect(Array(tmux.suffix(3)) == ["attach-session", "-t", "card-b"])
         await #expect(throws: RemoteHostError.self) {

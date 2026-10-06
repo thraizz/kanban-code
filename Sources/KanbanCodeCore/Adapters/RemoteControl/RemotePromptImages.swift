@@ -2,7 +2,7 @@ import Foundation
 import KanbanCodeRemoteKit
 
 /// Images that come with a remote prompt or task: checked, then written to
-/// files that the app's own image flow (clipboard paste into tmux, agtop
+/// files that the app's own image flow (clipboard paste into tmux, rush
 /// `--image`) takes by path.
 public enum RemotePromptImages {
 

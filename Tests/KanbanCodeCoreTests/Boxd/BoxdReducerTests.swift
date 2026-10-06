@@ -477,6 +477,20 @@ struct BoxdReducerTests {
         #expect(state.links["card_1"]?.tmuxLink?.sessionName == "repo-card_1")
     }
 
+    @Test("Only a card on a boxd machine runs on a disposable machine, not one on an ssh machine")
+    func disposableMachineSkipsSshMachines() {
+        var state = stateWith([
+            remoteCard(id: "boxd-card", machine: "kanban-repo-1"),
+            remoteCard(id: "ssh-card", machine: "box"),
+            localCard(id: "local-card"),
+        ])
+        state.boxdSettings = BoxdSettings(sshMachines: [SshMachine(name: "box", target: "root@10.0.0.1")])
+
+        #expect(state.runsOnDisposableMachine("boxd-card"))
+        #expect(!state.runsOnDisposableMachine("ssh-card"))
+        #expect(!state.runsOnDisposableMachine("local-card"))
+    }
+
     // MARK: - settingsLoaded
 
     @Test("settingsLoaded carries the remote mode and the boxd settings into the state")
@@ -519,7 +533,7 @@ struct BoxdReducerTests {
         let effects = Reducer.reduce(state: &state, action: .launchProgress(cardId: "card_1", message: "Creating machine"))
 
         #expect(effects.isEmpty)
-        #expect(state.launchProgress["card_1"] == "Creating machine")
+        #expect(state.launchStep("card_1") == "Creating machine")
         let updated = try #require(state.links["card_1"])
         #expect(Date.now.timeIntervalSince(updated.updatedAt) < 5)
     }
@@ -530,7 +544,7 @@ struct BoxdReducerTests {
 
         _ = Reducer.reduce(state: &state, action: .launchProgress(cardId: "card_1", message: "late"))
 
-        #expect(state.launchProgress["card_1"] == nil)
+        #expect(state.launchStep("card_1") == nil)
     }
 
     @Test("launchCompleted and launchFailed drop the progress line")
@@ -540,14 +554,14 @@ struct BoxdReducerTests {
         var state = stateWith([link])
         _ = Reducer.reduce(state: &state, action: .launchProgress(cardId: "card_1", message: "step"))
         _ = Reducer.reduce(state: &state, action: .launchTmuxReady(cardId: "card_1"))
-        #expect(state.launchProgress["card_1"] == nil)
+        #expect(state.launchStep("card_1") == nil)
 
         var again = localCard(id: "card_2", sessionName: "repo-card_2")
         again.isLaunching = true
         state = stateWith([again])
         _ = Reducer.reduce(state: &state, action: .launchProgress(cardId: "card_2", message: "step"))
         _ = Reducer.reduce(state: &state, action: .launchFailed(cardId: "card_2", error: "boom"))
-        #expect(state.launchProgress["card_2"] == nil)
+        #expect(state.launchStep("card_2") == nil)
     }
 
     // MARK: - Reconciled merge

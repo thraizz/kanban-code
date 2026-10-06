@@ -10,6 +10,11 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
     /// repo identity.
     private let slugLock = NSLock()
     private var slugCache: [String: (owner: String, name: String, host: String)] = [:]
+    /// When a root last failed to resolve. A root with no `origin` remote
+    /// falls through to `gh repo view`, a network call; without this it ran
+    /// on every reconcile pass for each such configured project.
+    private var slugMisses: [String: Date] = [:]
+    private let slugMissRetryInterval: TimeInterval = 600
 
     public init() {
         self.ghPath = ShellCommand.findExecutable("gh") ?? "gh"
@@ -51,7 +56,10 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
     }
 
     private func storeSlug(_ slug: (owner: String, name: String, host: String), for repoRoot: String) {
-        slugLock.withLock { slugCache[repoRoot] = slug }
+        slugLock.withLock {
+            slugCache[repoRoot] = slug
+            slugMisses[repoRoot] = nil
+        }
     }
 
     /// Records the repository ("host/owner/name") of a path with no checkout
@@ -66,6 +74,10 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
         if let hit = cachedSlug(for: repoRoot) {
             return hit
         }
+        let recentMiss = slugLock.withLock {
+            slugMisses[repoRoot].map { Date().timeIntervalSince($0) < slugMissRetryInterval } ?? false
+        }
+        if recentMiss { return nil }
 
         var resolved: (owner: String, name: String, host: String)?
         let gitPath = ShellCommand.findExecutable("git") ?? "git"
@@ -95,6 +107,8 @@ public final class GhCliAdapter: PRTrackerPort, @unchecked Sendable {
 
         if let resolved {
             storeSlug(resolved, for: repoRoot)
+        } else {
+            slugLock.withLock { slugMisses[repoRoot] = Date() }
         }
         return resolved
     }

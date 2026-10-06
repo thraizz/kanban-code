@@ -6,10 +6,10 @@ import Glibc
 ///
 /// Foundation's `Process` on Linux leaks a pipe and a socketpair per child
 /// when several start at once (a headless master runs dozens of git, tmux
-/// and agtop commands concurrently), and hit the 1024 descriptor limit in
+/// and rush commands concurrently), and hit the 1024 descriptor limit in
 /// under a minute. Here every descriptor is created close-on-exec, the
 /// child starts with no signal blocked, and the output is read until the
-/// child exits: a daemon it leaves behind (an agtop host) may keep the pipe
+/// child exits: a daemon it leaves behind (a rush host) may keep the pipe
 /// open forever, so its output stops counting a moment after the exit.
 enum LinuxSpawn {
     /// Held from the creation of a child's pipes until it is spawned, so no
@@ -61,7 +61,7 @@ enum LinuxSpawn {
         // The child keeps only 0, 1 and 2. Any other descriptor open in this
         // process at that moment (a file another thread is writing, a
         // socket) would otherwise live on in children that outlast the
-        // command, such as agtop hosts: descriptors pile up, and a file
+        // command, such as rush hosts: descriptors pile up, and a file
         // still open for writing cannot be executed (ETXTBSY).
         _ = addCloseFrom?(&actions, 3)
 

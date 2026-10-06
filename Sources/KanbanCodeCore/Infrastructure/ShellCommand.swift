@@ -22,35 +22,44 @@ public enum ShellCommand {
     /// which causes tmux socket mismatches, missing binaries, etc. We resolve the real
     /// environment from the user's login shell and inject it into every subprocess.
     private static let userEnvironment: [String: String] = {
-        // Run the user's login shell to dump its environment
+        // The user's shell environment: interactive too, since tools such as
+        // nvm only add themselves to PATH in ~/.zshrc. A login-only dump
+        // stands in when the interactive one fails or takes too long.
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let env = dumpEnvironment(shell: shell, arguments: ["-l", "-i", "-c", "env"])
+            ?? dumpEnvironment(shell: shell, arguments: ["-l", "-c", "env"])
+        return env ?? ProcessInfo.processInfo.environment
+    }()
+
+    private static func dumpEnvironment(shell: String, arguments: [String], timeout: TimeInterval = 8) -> [String: String]? {
         let proc = Process()
         proc.executableURL = URL(fileURLWithPath: shell)
-        proc.arguments = ["-l", "-c", "env"]
+        proc.arguments = arguments
         let pipe = Pipe()
         proc.standardOutput = pipe
         proc.standardError = FileHandle.nullDevice
+        proc.standardInput = FileHandle.nullDevice
         defer { try? pipe.fileHandleForReading.close() }
         do {
             try proc.runUnmasked()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            proc.waitUntilExit()
-            guard proc.terminationStatus == 0,
-                  let output = String(data: data, encoding: .utf8) else {
-                return ProcessInfo.processInfo.environment
-            }
-            var env: [String: String] = [:]
-            for line in output.components(separatedBy: "\n") {
-                guard let eq = line.firstIndex(of: "=") else { continue }
-                let key = String(line[..<eq])
-                let value = String(line[line.index(after: eq)...])
-                env[key] = value
-            }
-            return env.isEmpty ? ProcessInfo.processInfo.environment : env
         } catch {
-            return ProcessInfo.processInfo.environment
+            return nil
         }
-    }()
+        let deadline = DispatchWorkItem { if proc.isRunning { proc.terminate() } }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: deadline)
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        deadline.cancel()
+        guard proc.terminationStatus == 0, let output = String(data: data, encoding: .utf8) else { return nil }
+        var env: [String: String] = [:]
+        for line in output.components(separatedBy: "\n") {
+            guard let eq = line.firstIndex(of: "="), eq != line.startIndex else { continue }
+            let key = String(line[..<eq])
+            guard key.allSatisfy({ $0.isLetter || $0.isNumber || $0 == "_" }) else { continue }
+            env[key] = String(line[line.index(after: eq)...])
+        }
+        return env["PATH"] == nil ? nil : env
+    }
 
     /// The login-shell environment every subprocess of the app gets.
     public static var loginEnvironment: [String: String] { userEnvironment }
@@ -228,7 +237,7 @@ public enum ShellCommand {
         var searchPaths = [
             "\(home)/.claude/local",   // Claude Code managed install
             "\(home)/.local/bin",      // XDG local bin / claude installer
-            "\(home)/go/bin",          // go install (agtop)
+            "\(home)/go/bin",          // go install (rush)
             "\(home)/.opencode/bin",   // OpenCode install script
             "\(home)/.pi/agent/bin",   // Pi managed install
             "/opt/homebrew/bin",       // Homebrew (Apple Silicon)

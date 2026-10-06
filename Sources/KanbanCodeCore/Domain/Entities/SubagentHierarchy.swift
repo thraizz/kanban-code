@@ -71,7 +71,7 @@ public enum SubagentHierarchy {
     /// Number of descendants for every parent, built in O(cards * hierarchy depth).
     public static func descendantCounts(in links: [String: Link]) -> [String: Int] {
         var counts: [String: Int] = [:]
-        for link in links.values {
+        for link in links.values where link.parentCardId != nil {
             var parentId = link.parentCardId
             var visited = Set([link.id])
             while let id = parentId, visited.insert(id).inserted {

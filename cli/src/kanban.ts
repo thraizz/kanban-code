@@ -4,6 +4,7 @@ import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { homedir, userInfo } from "node:os";
 import { join, resolve } from "node:path";
+import { markCardMessage, markSelfCompactFollowUp } from "./delivery-marker.js";
 import {
   readLinks,
   readSettings,
@@ -34,6 +35,7 @@ import {
   formatTmuxSessions,
 } from "./format.js";
 import { agentIdentity } from "./agents/identity.js";
+import { runVaultAlias } from "./vault-alias.js";
 import { ensureAgentSession } from "./agents/launch.js";
 import { loadAgentsConfig } from "./agents/config.js";
 import { reconcileAll } from "./agents/reconcile.js";
@@ -84,6 +86,15 @@ import {
 import { deriveHandle, formatHandle, stripAt } from "./handles.js";
 import { parseDeliveryMode, type DeliveryMode } from "./delivery.js";
 import { queueCardPrompt } from "./cards.js";
+import {
+  EXPORT_BINARY,
+  claudeSessionFile,
+  exportArguments,
+  findExportBinary,
+  resolveExportTarget,
+  runExport,
+  type ExportTarget,
+} from "./export.js";
 import { parseDuration, runShare } from "./share-cli.js";
 import {
   assertOwnedSubagent,
@@ -523,6 +534,11 @@ program
       process.exit(1);
     }
 
+    // A card's message is marked with its sender, so the receiving card
+    // (and the vault reading its transcript) never takes it for Rogerio's.
+    const sender = callerCard(links);
+    message = sender ? markCardMessage(message, cardParticipant(sender).handle) : message;
+
     if (isForeignCard(card, readLocalMachine()?.id)) {
       sendToForeignCard(card, message, mode, { json: opts.json });
       return;
@@ -747,6 +763,7 @@ slackCmd
   .description("Post a message to a Slack channel as the bot (needs SLACK_BOT_TOKEN)")
   .argument("<channel>", "Channel name (e.g. #dev) or id")
   .argument("<message>", "Message text (Slack mrkdwn)")
+  .option("-f, --file <path>", "Attach a file to the message (repeatable, needs the files:write scope)", (p: string, all: string[]) => [...all, p], [] as string[])
   .option("-j, --json", "Output as JSON")
   .action(async (channel: string, message: string, opts) => {
     const token = process.env.SLACK_BOT_TOKEN;
@@ -754,7 +771,12 @@ slackCmd
       process.stderr.write("Error: SLACK_BOT_TOKEN must be set\n");
       process.exit(1);
     }
-    const result = await postToSlack(new SlackClient(token), channel, message);
+    const missing = (opts.file as string[]).filter((p) => !existsSync(p));
+    if (missing.length) {
+      process.stderr.write(`Error: file not found: ${missing.join(", ")}\n`);
+      process.exit(1);
+    }
+    const result = await postToSlack(new SlackClient(token), channel, message, opts.file);
     if (opts.json) {
       output(result, { json: true });
       if (!result.ok) process.exit(1);
@@ -766,6 +788,9 @@ slackCmd
       process.stderr.write(`Failed to post to ${channel}: ${result.error}\n`);
       if (String(result.error).includes("not_in_channel")) {
         process.stderr.write("The bot is not a member of that channel — invite it there first.\n");
+      }
+      if (String(result.error).includes("missing_scope")) {
+        process.stderr.write("The Slack app lacks a scope: attaching files needs files:write. Add it and reinstall the app.\n");
       }
       process.exit(1);
     }
@@ -911,7 +936,7 @@ Examples:
       // can be pasted but the later Enter/follow-up steps never run.
       assertTmuxResult(
         "schedule self-compact",
-        scheduleTmuxSelfCompact(tmuxSession, followUp, Number.isFinite(followUpDelay) ? followUpDelay : 1)
+        scheduleTmuxSelfCompact(tmuxSession, markSelfCompactFollowUp(followUp), Number.isFinite(followUpDelay) ? followUpDelay : 1)
       );
 
       // Surface the compact in Slack — the bridge's buffer-until-next-text
@@ -1025,6 +1050,67 @@ program
         console.log(`[${prefix}] ${text}`);
         console.log("");
       }
+    }
+  });
+
+// ── kanban export [card] ─────────────────────────────────────────────
+
+program
+  .command("export")
+  .description("Export a whole session as Markdown, the same text the app copies")
+  .argument("[card]", "Card ID or prefix, @handle, card name, or Claude session id (default: this card)")
+  .option("-o, --out <file>", "Write the Markdown to a file instead of stdout")
+  .option("-j, --json", "Output as JSON: the card, session and Markdown (or the file written)")
+  .addHelpText(
+    "after",
+    `
+
+Examples:
+  kanban export                      # the card this agent runs in
+  kanban export @judge-lab --out /tmp/judge-lab.md
+  kanban export 3f0c2a9e-...-session-id > session.md
+`
+  )
+  .action(async (cardRef: string | undefined, opts) => {
+    const fail = (message: string): never => {
+      if (opts.json) output({ ok: false, error: message }, { json: true });
+      else console.error(message);
+      process.exit(1);
+    };
+    let target: ExportTarget;
+    try {
+      target = resolveExportTarget(cardRef, {
+        links: readLinks(),
+        tmuxSession: currentTmuxSessionName,
+        cardForHandle: findCardByHandle,
+        sessionFile: claudeSessionFile,
+      });
+    } catch (e) {
+      return fail(e instanceof Error ? e.message : String(e));
+    }
+    const binary = findExportBinary();
+    if (!binary) {
+      return fail(
+        `${EXPORT_BINARY} not found. Build it with \`make app\` (or \`swift build --product ${EXPORT_BINARY}\`), or point KANBAN_CODE_EXPORT at it.`
+      );
+    }
+    const out = opts.out ? resolve(opts.out) : undefined;
+    const result = await runExport(binary, exportArguments(target), { out, capture: Boolean(opts.json) && !out });
+    if (result.code !== 0) return fail(result.stderr || `${EXPORT_BINARY} exited with ${result.code}`);
+    if (opts.json) {
+      const card = target.kind === "card" ? target.card : undefined;
+      output(
+        {
+          ok: true,
+          cardId: card?.id,
+          sessionId: card?.sessionLink?.sessionId ?? (target.kind === "session" ? target.sessionId : undefined),
+          bytes: result.bytes,
+          ...(out ? { out } : { markdown: result.markdown }),
+        },
+        { json: true }
+      );
+    } else if (out) {
+      console.error(`Wrote ${result.bytes} bytes to ${out}`);
     }
   });
 
@@ -1233,6 +1319,15 @@ function liveTmuxSet(): Set<string> {
   }
   for (const name of remoteTmuxSessionNames()) names.add(name);
   return names;
+}
+
+/// The card this command runs in: `KANBAN_CARD_ID`, else the tmux session
+/// it was started from. Undefined for a shell outside any card.
+function callerCard(links: Link[]): Link | undefined {
+  const declared = cardFromEnvironment(links);
+  if (declared) return declared;
+  const session = currentTmuxSessionName();
+  return session ? cardForTmuxSession(links, session) : undefined;
 }
 
 function cardParticipant(card: Link): { cardId: string; handle: string } {
@@ -1524,7 +1619,7 @@ subagentCmd
       const links = readLinks();
       const caller = currentCardOrThrow(links);
       const target = requireSubagentTarget(caller, query, links);
-      const body = await readMessageFromArgsOrStdin(message);
+      const body = markCardMessage(await readMessageFromArgsOrStdin(message), cardParticipant(caller).handle);
       if (mode === "queue") {
         await queuePromptForCard(target, body, { json: opts.json });
         return;
@@ -2303,6 +2398,14 @@ program
 
 registerRemoteCommands(program);
 
+// Listed for help only: `kanban vault ...` is handed to kv before commander parses.
+program
+  .command("vault")
+  .description("Secrets from the Kanban Vault (same as kv; run `kanban vault --help`)")
+  .helpOption(false)
+  .allowUnknownOption()
+  .argument("[args...]");
+
 sortTopLevelCommands([
   "open",
   "list",
@@ -2316,12 +2419,17 @@ sortTopLevelCommands([
   "send",
 ]);
 
+// ── Vault alias ──────────────────────────────────────────────────────
+
+// kv talks to the master on this machine, so a remote card never proxies it.
+const proxyArgv = process.argv.slice(2);
+if (proxyArgv[0] === "vault") process.exit(runVaultAlias(proxyArgv.slice(1)));
+
 // ── Remote proxy gate ────────────────────────────────────────────────
 
 // A remote card runs its assistant on the machine, where there is no board and
 // no links.json. Everything except the commands that belong to the machine is
 // handed to the Mac, which runs the same CLI with the same arguments.
-const proxyArgv = process.argv.slice(2);
 if (shouldProxy(proxyArgv)) {
   const code = await runProxiedCommand(proxyArgv, {
     write: (text) => writeSyncToFd(1, text),

@@ -127,7 +127,6 @@ final class ChatAndTerminalTests: KanbanUITestCase {
         app.buttons["Edit"].tap()
         XCTAssertTrue(waitFor(10) { queued.count == 0 })
         XCTAssertEqual(composer.value as? String, "Also run the e2e suite once it passes")
-        XCTAssertTrue(app.staticTexts["queueHint"].exists)
         shot("24-queued-edit")
 
         // Sending it again queues it again; Delete drops it.
@@ -354,6 +353,23 @@ final class ChatAndTerminalTests: KanbanUITestCase {
         }
     }
 
+    /// A pasted log of thousands of lines and a code block holding one line
+    /// of JSON hundreds of KB long open in seconds, cut with a way to show
+    /// the rest, and the app keeps answering: going back works at once.
+    func testAHugeChatOpensWithoutStalling() throws {
+        let card = app.buttons["card-card_huge"]
+        XCTAssertTrue(app.buttons["card-card_wait"].waitForExistence(timeout: 30))
+        for _ in 0..<6 where !card.isHittable { app.swipeUp() }
+        let start = Date()
+        card.tap()
+        XCTAssertTrue(app.buttons["showWholeMessage"].firstMatch.waitForExistence(timeout: 30), "long messages are not cut")
+        shot("52-huge-chat")
+        goBack()
+        XCTAssertTrue(app.buttons["newTask"].waitForExistence(timeout: 30), "the board did not come back")
+        let took = Date().timeIntervalSince(start)
+        XCTAssertLessThan(took, 30, "opening and leaving the huge chat took \(took) s")
+    }
+
     // MARK: Terminal
 
     func testTerminalScrollsTmuxHistory() throws {
@@ -413,5 +429,36 @@ final class ChatAndTerminalTests: KanbanUITestCase {
     /// tmux's copy-mode position, e.g. `[12/400]`, or nil outside copy-mode.
     private func copyModePosition(_ text: String) -> String? {
         text.range(of: #"\[\d+/\d+\]"#, options: .regularExpression).map { String(text[$0]) }
+    }
+}
+
+/// Markdown tables in assistant messages, against the demo server's
+/// `card_table`.
+final class MarkdownTableTests: KanbanUITestCase {
+    func testTablesShowAsGridsAndAWideOneScrollsOnItsOwn() throws {
+        openCard("card_table")
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        let tables = app.descendants(matching: .any).matching(identifier: "markdownTable")
+        XCTAssertTrue(tables.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(message(containing: "Say the word").waitForExistence(timeout: 5))
+
+        // Cells are text of their own, with no pipes and no separator row.
+        XCTAssertTrue(message(containing: "Old links.json backups").exists)
+        XCTAssertFalse(message(containing: "|---").exists)
+        XCTAssertFalse(message(containing: "| What").exists)
+        // An escaped pipe is in its cell.
+        XCTAssertTrue(message(containing: "a | b branches").exists)
+        let suffix = ProcessInfo.processInfo.environment["KC_SHOT_SUFFIX"] ?? ""
+        shot("73-table-three-columns\(suffix)")
+
+        // The seven-column table is above; it scrolls sideways alone.
+        app.swipeDown()
+        let wide = app.scrollViews["markdownTableScroll"]
+        XCTAssertTrue(wide.waitForExistence(timeout: 5))
+        XCTAssertTrue(message(containing: "du -sh * | sort -h").exists)
+        shot("74-table-wide\(suffix)")
+        wide.swipeLeft()
+        XCTAssertTrue(waitFor(5) { self.message(containing: "Rebuilt on the next build").isHittable })
+        shot("75-table-wide-scrolled\(suffix)")
     }
 }

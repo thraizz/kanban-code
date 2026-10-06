@@ -51,7 +51,7 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     var passthroughMode = false
 
     /// Never drops output. Set for programs that redraw only what changed
-    /// (agtop), where a dropped byte stays on screen as a broken line.
+    /// (rush), where a dropped byte stays on screen as a broken line.
     /// tmux repaints the whole screen, so its terminals can skip frames.
     var lossless = false
 
@@ -111,7 +111,7 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         // Small chunks (typing, cursor moves): feed directly on this main-thread
         // call — zero scheduling overhead for instant keystroke response.
         // Large chunks (Claude streaming): batch to avoid frame-per-byte overhead.
-        // A lossless program (agtop) paces its own frames, so each one is
+        // A lossless program (rush) paces its own frames, so each one is
         // drawn as it arrives instead of waiting for the batch timer.
         if (totalPending <= Self.interactiveThreshold || lossless) && !flushScheduled {
             // Feed directly — we're already on main thread (LocalProcess dispatches here).
@@ -242,7 +242,7 @@ final class BatchedTerminalView: LocalProcessTerminalView {
 
     /// With nothing selected here and the program drawing its own selection
     /// (it asked for the mouse), cmd+c goes to the program as a kitty-encoded
-    /// super+c, so agtop copies what was dragged over.
+    /// super+c, so rush copies what was dragged over.
     override func copy(_ sender: Any) {
         if (getSelection() ?? "").isEmpty, terminal.mouseMode != .off {
             send(txt: "\u{1b}[99;9u")
@@ -266,8 +266,15 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     /// Claude Code always expects bracketed paste for image detection.
     override func paste(_ sender: Any) {
         let clipboard = NSPasteboard.general
-        if pasteImageToMachine(clipboard) { return }
-        sendBracketedPaste(text: clipboard.string(forType: .string) ?? "")
+        let text = clipboard.string(forType: .string)
+        if text == nil, let session = enclosingSessionName(),
+           case .upload(let route) = TerminalPastePlan.plan(
+               hasText: false, hasImage: Self.hasImage(clipboard), route: AppServices.terminalImageRoute(forSession: session)),
+           let data = Self.pngData(from: clipboard),
+           pasteImage(data, session: session, route: route) {
+            return
+        }
+        sendBracketedPaste(text: text ?? "")
     }
 
     private func sendBracketedPaste(text: String) {
@@ -283,28 +290,56 @@ final class BatchedTerminalView: LocalProcessTerminalView {
         send(data: pasteEnd[0...])
     }
 
-    /// An image pasted into the terminal of a session on a machine. Claude
-    /// there reads the machine's clipboard, which has nothing, so the bytes
-    /// go over the bridge and the paste types the path of the file on the
-    /// machine, as a dropped file does.
-    private func pasteImageToMachine(_ clipboard: NSPasteboard) -> Bool {
-        guard clipboard.string(forType: .string) == nil else { return false }
-        guard let session = enclosingSessionName(),
-              let machine = AppServices.machine(forSession: session),
-              let supervisor = AppServices.boxdSupervisor,
-              let data = Self.pngData(from: clipboard) else { return false }
-        Task {
-            do {
-                let remotePath = try await supervisor.uploadPastedImage(machineName: machine, data: data)
-                // Pasted through the tmux server of the machine, which runs
-                // after the upload on the same bridge, so the assistant
-                // finds the file when it checks the pasted path.
-                try await AppServices.tmux.pasteText(to: session, text: remotePath + " ")
-            } catch {
-                KanbanCodeLog.warn("terminal", "Image paste to \(machine) failed: \(error.localizedDescription)")
+    /// An image pasted into the terminal of a session that runs somewhere
+    /// else. The assistant there reads the clipboard of its own machine,
+    /// which has nothing, so the bytes go to that machine and the paste
+    /// types the path of the file there, as a dropped file does. False when
+    /// nothing can carry the bytes.
+    private func pasteImage(_ data: Data, session: String, route: TerminalImageRoute) -> Bool {
+        switch route {
+        case .local:
+            return false
+        case .peer(let machineId, let cardId):
+            let engine = AppComposition.shared.engine
+            Task { [weak self] in
+                do {
+                    let remotePath = try await engine.uploadPastedImage(cardId: cardId, data: data)
+                    // Typed through the terminal's own stream to the owner,
+                    // the way keystrokes go.
+                    self?.sendBracketedPaste(text: remotePath + " ")
+                } catch {
+                    Self.reportPasteFailure(session: session, place: engine.peerDisplayName(machineId), error: error)
+                }
             }
+            return true
+        case .machine(let machine):
+            guard let supervisor = AppServices.boxdSupervisor else { return false }
+            Task {
+                do {
+                    let remotePath = try await supervisor.uploadPastedImage(machineName: machine, data: data)
+                    // Pasted through the tmux server of the machine, which runs
+                    // after the upload on the same bridge, so the assistant
+                    // finds the file when it checks the pasted path.
+                    try await AppServices.tmux.pasteText(to: session, text: remotePath + " ")
+                } catch {
+                    Self.reportPasteFailure(session: session, place: machine, error: error)
+                }
+            }
+            return true
         }
-        return true
+    }
+
+    /// Says in the terminal and in the app's banner that the image did not
+    /// arrive, so the paste does not look like it did nothing.
+    private static func reportPasteFailure(session: String, place: String, error: Error) {
+        let message = "Could not paste the image on \(place): \(error.localizedDescription)"
+        KanbanCodeLog.warn("terminal", message)
+        TerminalCache.shared.showNotice(message, sessions: [session])
+        AppComposition.shared.store.dispatch(.setError(message))
+    }
+
+    private static func hasImage(_ clipboard: NSPasteboard) -> Bool {
+        clipboard.availableType(from: [.png, .tiff]) != nil
     }
 
     private func enclosingSessionName() -> String? {
@@ -334,17 +369,30 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     private var urlHighlightLayer: CAShapeLayer?
     private var isCommandHeld = false
     private var urlEventMonitor: Any?
+    private var linkClickGate = CommandClickGate()
+
+    /// The link under the pointer of a mouse event, if the pointer is over
+    /// this terminal and on one.
+    private func linkURL(at event: NSEvent) -> String? {
+        guard bounds.contains(convert(event.locationInWindow, from: nil)) else { return nil }
+        let pos = screenPosition(from: event)
+        return detectURL(col: pos.col, screenRow: pos.screenRow)?.url
+    }
 
     func installURLMonitor() {
         guard urlEventMonitor == nil else { return }
         urlEventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.flagsChanged, .mouseMoved, .leftMouseUp]
+            matching: [.flagsChanged, .mouseMoved, .leftMouseDown, .leftMouseDragged, .leftMouseUp]
         ) { [weak self] event in
             guard let self,
                   !self.isHidden,
                   self.window == event.window else { return event }
+            // The drag and release of a kept cmd+press are handled wherever
+            // the pointer goes, so the program never sees half of the click.
+            let keptPress = self.linkClickGate.pressedLink != nil
+                && (event.type == .leftMouseDragged || event.type == .leftMouseUp)
             // For mouse events, check the mouse is actually over this view
-            if event.type != .flagsChanged {
+            if event.type != .flagsChanged, !keptPress {
                 let point = self.convert(event.locationInWindow, from: nil)
                 guard self.bounds.contains(point) else {
                     // Mouse left this terminal — clear any highlight
@@ -361,6 +409,7 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             NSEvent.removeMonitor(monitor)
             urlEventMonitor = nil
         }
+        linkClickGate = CommandClickGate()
         clearURLHighlight()
     }
 
@@ -383,22 +432,31 @@ final class BatchedTerminalView: LocalProcessTerminalView {
             }
             return event
 
+        case .leftMouseDown:
+            let command = event.modifierFlags.contains(.command)
+            let link = command ? linkURL(at: event) : nil
+            return linkClickGate.mouseDown(command: command, link: link) == .pass ? event : nil
+
+        case .leftMouseDragged:
+            return linkClickGate.mouseDragged() == .pass ? event : nil
+
         case .leftMouseUp:
-            if event.modifierFlags.contains(.command) {
-                let pos = screenPosition(from: event)
-                if let detected = detectURL(col: pos.col, screenRow: pos.screenRow) {
-                    clearURLHighlight()
-                    let raw = detected.url
-                    // File paths: use URL(fileURLWithPath:) to handle +, spaces, etc.
-                    if raw.hasPrefix("/"), FileManager.default.fileExists(atPath: raw) {
-                        NSWorkspace.shared.open(URL(fileURLWithPath: raw))
-                    } else if let url = URL(string: raw) {
-                        NSWorkspace.shared.open(url)
-                    }
-                    return nil // consume the event
+            let link = linkClickGate.pressedLink == nil ? nil : linkURL(at: event)
+            switch linkClickGate.mouseUp(link: link) {
+            case .pass:
+                return event
+            case .consume:
+                return nil
+            case .open(let raw):
+                clearURLHighlight()
+                // File paths: use URL(fileURLWithPath:) to handle +, spaces, etc.
+                if raw.hasPrefix("/"), FileManager.default.fileExists(atPath: raw) {
+                    NSWorkspace.shared.open(URL(fileURLWithPath: raw))
+                } else if let url = URL(string: raw) {
+                    NSWorkspace.shared.open(url)
                 }
+                return nil
             }
-            return event
 
         default:
             return event
@@ -647,8 +705,8 @@ final class TerminalCache {
 
             guard let window = event.window else { return event }
             guard let session = self?.sessionUnderPoint(event.locationInWindow, in: window) else { return event }
-            // agtop reads the wheel itself, through mouse reporting.
-            if AgtopSessionName.isAgtop(session) { return event }
+            // rush reads the wheel itself, through mouse reporting.
+            if RushSessionName.isRush(session) { return event }
 
             let inCopyMode = self?.copyModeSessions.contains(session) ?? false
 
@@ -816,10 +874,10 @@ final class TerminalCache {
         terminal.kanbanSession = sessionName
         // The assistant may ask for mouse tracking to select text on its
         // own. The terminal keeps its native selection instead, and the
-        // wheel reaches tmux through the scroll monitor. agtop draws its own
+        // wheel reaches tmux through the scroll monitor. rush draws its own
         // scrollback, so its sessions get the mouse.
-        terminal.allowMouseReporting = AgtopSessionName.isAgtop(sessionName)
-        terminal.lossless = AgtopSessionName.isAgtop(sessionName)
+        terminal.allowMouseReporting = RushSessionName.isRush(sessionName)
+        terminal.lossless = RushSessionName.isRush(sessionName)
         // Dark terminal colors matching a real terminal
         terminal.nativeBackgroundColor = NSColor(red: 0.07, green: 0.07, blue: 0.07, alpha: 1.0)
         terminal.nativeForegroundColor = NSColor(red: 0.93, green: 0.93, blue: 0.93, alpha: 1.0)
@@ -886,10 +944,10 @@ final class TerminalCache {
             // Another master runs the card: its terminal streams from there.
             script = peerScript
         } else if let machine = AppServices.machine(forSession: sessionName),
-                  let agtopId = AgtopSessionName.agtopId(fromName: sessionName),
+                  let rushId = RushSessionName.rushId(fromName: sessionName),
                   let target = AppServices.sshTargets[machine] {
-            script = Self.remoteAgtopScript(
-                target: target, id: agtopId, readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName))
+            script = Self.remoteRushScript(
+                target: target, id: rushId, readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName))
         } else if let machine = AppServices.machine(forSession: sessionName) {
             script = Self.remoteAttachScript(
                 boxd: AppServices.boxdPath,
@@ -907,8 +965,8 @@ final class TerminalCache {
                 readyMarker: AppServices.remoteReadyMarkerPath(for: sessionName),
                 sshTargets: AppServices.sshTargets
             )
-        } else if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
-            script = Self.agtopScript(agtop: AgtopCliAdapter.findExecutable(), id: agtopId)
+        } else if let rushId = RushSessionName.rushId(fromName: sessionName) {
+            script = Self.rushScript(rush: RushCliAdapter.findExecutable(), id: rushId)
         } else {
             script = Self.attachScript(tmux: Self.tmuxPath, session: sessionName)
         }
@@ -1054,30 +1112,33 @@ final class TerminalCache {
             + " sleep 0.1; done; echo 'Session ended.'"
     }
 
-    /// The shell command a terminal runs to show an agtop session on an ssh
-    /// machine: `agtop open <id> --solo` there, over `ssh -tt`, which sizes
-    /// the remote pty and follows resizes. It waits for the ready marker of
-    /// the launch first, like `remoteAttachScript`, and opens the view again
-    /// when it is quit or the connection drops. ssh passes TERM on;
-    /// COLORTERM it does not, so it is set on the machine.
-    static func remoteAgtopScript(target: String, id: String, readyMarker: String?) -> String {
+    /// The shell command a terminal runs to show a rush session on an ssh
+    /// machine: `rush open <id>` there (`agtop open <id> --solo` on a machine
+    /// that has only agtop), over `ssh -tt`, which sizes the remote pty and
+    /// follows resizes. It waits for the ready marker of the launch first,
+    /// like `remoteAttachScript`, and opens the view again when it is quit
+    /// or the connection drops. ssh passes TERM on; COLORTERM it does not,
+    /// so it is set on the machine.
+    static func remoteRushScript(target: String, id: String, readyMarker: String?) -> String {
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
-        let remote = "PATH=\"$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/go/bin\" COLORTERM=truecolor AGTOP_COPY_ON_SELECT=0 "
-            + "exec agtop open \(quote(id)) --solo"
+        let remote = "PATH=\"$PATH:/usr/local/bin:$HOME/.local/bin:$HOME/go/bin\" COLORTERM=truecolor; "
+            + "export COLORTERM \(RushCliAdapter.copyOnSelectOff); \(RushCliAdapter.remoteOpenScript(id: id))"
         let ssh = "/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "
             + "\(quote(target)) -- \(quote(remote))"
         let wait = readyMarker.map { "for i in $(seq 1 2400); do [ -e \(quote($0)) ] && break; sleep 0.5; done; " } ?? ""
         return wait + "while :; do \(ssh); sleep 1; done"
     }
 
-    /// The shell command a terminal runs to show an agtop session. The view
+    /// The shell command a terminal runs to show a rush session. The view
     /// shows that one session only, and quitting it leaves the host running,
     /// so it opens again.
-    static func agtopScript(agtop: String?, id: String) -> String {
-        guard let agtop else { return "echo 'agtop is not installed.'" }
-        let bin = agtop.replacingOccurrences(of: "'", with: "'\\''")
+    static func rushScript(rush: String?, id: String) -> String {
+        guard let rush else { return "echo 'rush is not installed.'" }
+        let open = RushCliAdapter.openArguments(executable: rush, id: id)
+            .map { "'" + $0.replacingOccurrences(of: "'", with: "'\\''") + "'" }
+            .joined(separator: " ")
         // Copying is asked for with cmd+c here, never by letting go of a drag.
-        return "export AGTOP_COPY_ON_SELECT=0; while :; do '\(bin)' open '\(id)' --solo; sleep 0.3; done"
+        return "export \(RushCliAdapter.copyOnSelectOff); while :; do \(open); sleep 0.3; done"
     }
 
     /// Remove and terminate a specific terminal (e.g., when user kills a session).

@@ -8,6 +8,10 @@ public protocol TmuxManagerPort: Sendable {
     /// Create a new tmux session.
     func createSession(name: String, path: String, command: String?) async throws
 
+    /// Create a new tmux session whose processes get `environment`, set on
+    /// the session itself and never typed into its pane.
+    func createSession(name: String, path: String, command: String?, environment: [String: String]) async throws
+
     /// Kill a tmux session by name.
     func killSession(name: String) async throws
 
@@ -40,4 +44,10 @@ public protocol TmuxManagerPort: Sendable {
 
     /// Check if tmux is available on this system.
     func isAvailable() async -> Bool
+}
+
+extension TmuxManagerPort {
+    public func createSession(name: String, path: String, command: String?, environment: [String: String]) async throws {
+        try await createSession(name: name, path: path, command: command)
+    }
 }

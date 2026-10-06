@@ -159,6 +159,25 @@ public struct RemoteClient: Sendable {
         try await send(makeRequest("GET", "v1/board", query: all ? [URLQueryItem(name: "all", value: "1")] : []))
     }
 
+    /// Cards matching `query` among every card the master and its peers
+    /// know, board cards first. `local` keeps the master from asking its
+    /// peers; `timeout` bounds the wait for the answer.
+    public func searchCards(_ query: String, scope: RemoteCardSearchScope = .all, limit: Int = CardSearch.defaultLimit,
+                            local: Bool = false, timeout: TimeInterval? = nil) async throws -> RemoteCardSearchResult {
+        var items = [URLQueryItem(name: "q", value: query), URLQueryItem(name: "limit", value: String(limit))]
+        if scope != .all { items.append(URLQueryItem(name: "scope", value: scope.rawValue)) }
+        if local { items.append(URLQueryItem(name: "local", value: "1")) }
+        var request = makeRequest("GET", "v1/cards/search", query: items)
+        // The server reads `q` as a form field, where a bare plus is a space.
+        if let url = request.url, var parts = URLComponents(url: url, resolvingAgainstBaseURL: false),
+           let encoded = parts.percentEncodedQuery, encoded.contains("+") {
+            parts.percentEncodedQuery = encoded.replacingOccurrences(of: "+", with: "%2B")
+            request.url = parts.url
+        }
+        if let timeout { request.timeoutInterval = timeout }
+        return try await send(request)
+    }
+
     public func card(id: String) async throws -> RemoteCard {
         try await send(makeRequest("GET", "v1/cards/\(Self.escape(id))"))
     }
@@ -175,12 +194,36 @@ public struct RemoteClient: Sendable {
         return try await send(request)
     }
 
+    /// `human` marks a prompt the human typed and sent himself.
     public func sendPrompt(cardId: String, text: String, mode: RemotePromptRequest.Mode = .queue,
-                           images: [RemoteImage] = []) async throws {
+                           images: [RemoteImage] = [], human: Bool = false) async throws {
         var request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/prompt",
-                                  body: RemotePromptRequest(text: text, mode: mode, images: images.isEmpty ? nil : images))
+                                  body: RemotePromptRequest(text: text, mode: mode, images: images.isEmpty ? nil : images,
+                                                            human: human ? true : nil))
         if !images.isEmpty { request.timeoutInterval = 120 }
         try await sendEmpty(request)
+    }
+
+    // MARK: Side chat
+
+    /// Starts a side chat run (`/btw` or `/catchup`); poll `sideChatRun` for its answer.
+    public func startSideChat(cardId: String, _ body: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
+        try await send(makeRequest("POST", "v1/cards/\(Self.escape(cardId))/side-chat", body: body))
+    }
+
+    /// The run and its answer so far.
+    public func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun {
+        try await send(makeRequest("GET", "v1/cards/\(Self.escape(cardId))/side-chat/\(Self.escape(runId))"))
+    }
+
+    /// Stops a run and forgets it.
+    public func cancelSideChat(cardId: String, runId: String) async throws {
+        try await sendEmpty(makeRequest("DELETE", "v1/cards/\(Self.escape(cardId))/side-chat/\(Self.escape(runId))"))
+    }
+
+    /// What the card's chat composer offers after `/`.
+    public func slashCommands(cardId: String) async throws -> [RemoteSlashCommand] {
+        try await send(makeRequest("GET", "v1/cards/\(Self.escape(cardId))/slash-commands"))
     }
 
     /// Sends a queued prompt right away, interrupting the turn.
@@ -201,6 +244,59 @@ public struct RemoteClient: Sendable {
         try await send(makeRequest("POST", "v1/cards/\(Self.escape(cardId))/resume"))
     }
 
+    // MARK: Attention
+
+    /// Open decisions agents wait on, oldest first.
+    public func attention() async throws -> [AttentionRequest] {
+        let list: AttentionListResponse = try await send(makeRequest("GET", "v1/attention"))
+        return list.requests
+    }
+
+    /// Answers a decision: `resolution` is one of its options or free text.
+    public func resolveAttention(id: String, resolution: String, by: String? = nil, unsealed: VaultUnsealed? = nil) async throws {
+        try await sendEmpty(makeRequest("POST", "v1/attention/\(Self.escape(id))/resolve",
+                                        body: AttentionResolveRequest(resolution: resolution, by: by, unsealed: unsealed)))
+    }
+
+    /// The keys of the vault's owner-only secrets on this master.
+    public func vaultOwner() async throws -> VaultOwnerStatus {
+        try await send(makeRequest("GET", "v1/vault/owner"))
+    }
+
+    /// Asks the master to add this device's key to the owner keys. The
+    /// human approves it on a device that already holds one.
+    public func vaultEnrol(name: String, kind: VaultOwnerRecipient.Kind, publicKey: String) async throws {
+        try await sendEmpty(makeRequest("POST", "v1/vault/owner/enrol",
+                                        body: VaultEnrolRequest(name: name, kind: kind, publicKey: publicKey)))
+    }
+
+    /// Reports where the Mac user is, so a master without a screen knows
+    /// when to alert the phone.
+    public func reportPresence(_ presence: MacPresence) async throws {
+        try await sendEmpty(makeRequest("POST", "v1/attention/presence", body: presence))
+    }
+
+    // MARK: Vault
+
+    /// Names of the secrets in the vault (never values).
+    public func vaultSecretNames() async throws -> Set<String> {
+        let list: [RemoteVaultSecretName] = try await send(makeRequest("GET", "v1/vault/secrets"))
+        return Set(list.map(\.name))
+    }
+
+    /// Adds a secret. A new name is stored at once (`granted`); an existing
+    /// one asks the human (`pending`); `denied` arrives as a 403.
+    public func addVaultSecret(name: String, value: String, tier: String, rules: String) async throws -> RemoteVaultResponse {
+        let request = makeRequest("POST", "v1/vault/secrets",
+                                  body: RemoteVaultAddRequest(name: name, value: value, tier: tier, rules: rules))
+        do {
+            return try await send(request)
+        } catch RemoteClientError.forbidden(let body) {
+            if let r = try? JSONDecoder.remote.decode(RemoteVaultResponse.self, from: Data(body.utf8)) { return r }
+            throw RemoteClientError.forbidden(body)
+        }
+    }
+
     // MARK: Requests
 
     /// Builds the request for `path` (relative to the base URL, no leading slash).
@@ -210,6 +306,7 @@ public struct RemoteClient: Sendable {
         request.httpMethod = method
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if authorized { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+        if RemoteActingFor.owner { request.setValue("1", forHTTPHeaderField: RemoteActingFor.header) }
         request.timeoutInterval = 30
         return request
     }

@@ -207,8 +207,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
         if let bridge = machines[machineName]?.bridge {
             for name in sessionNames {
-                if let id = AgtopSessionName.agtopId(fromName: name) {
-                    try? await registry.agtop(for: machineName)?.stop(id: id)
+                if let id = RushSessionName.rushId(fromName: name) {
+                    try? await registry.rush(for: machineName)?.stop(id: id)
                 } else {
                     _ = try? await bridge.exec(["tmux", "kill-session", "-t", name], stdin: nil, cwd: nil, timeout: 20)
                 }
@@ -597,23 +597,28 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// Readies an ssh machine for sessions: its tmux server stops handing
     /// `NO_COLOR` to new panes (a server started from a shell that had it
     /// set, such as an agent's, passes it to every session after), and its
-    /// agtop, when it has one, is recorded so cards set to agtop run there.
+    /// rush (or agtop, its name before the rename), when it has one, is
+    /// recorded so cards set to rush run there.
     private func prepareSessions(machineName: String, bridge: BoxdBridge, remoteHome: String) async {
         _ = try? await bridge.exec(["sh", "-c", Self.tmuxColorScript], stdin: nil, cwd: nil, timeout: 20)
-        let found = try? await bridge.exec(["sh", "-c", "command -v agtop"], stdin: nil, cwd: nil, timeout: 20)
-        let path = found?.succeeded == true ? found?.stdout.trimmingCharacters(in: .whitespacesAndNewlines) ?? "" : ""
+        let found = try? await bridge.exec(
+            ["sh", "-c", "command -v rush || command -v agtop"], stdin: nil, cwd: nil, timeout: 20)
+        let path = found?.succeeded == true
+            ? found?.stdout.split(separator: "\n").first.map { $0.trimmingCharacters(in: .whitespaces) } ?? ""
+            : ""
         guard !path.isEmpty else {
-            registry.setAgtop(nil, on: machineName)
-            KanbanCodeLog.info(Self.subsystem, "\(machineName): no agtop, cards run on tmux there")
+            registry.setRush(nil, on: machineName)
+            KanbanCodeLog.info(Self.subsystem, "\(machineName): no rush, cards run on tmux there")
             return
         }
-        let agtop = AgtopCliAdapter(remote: bridge, executable: path, scratchDirectory: "\(remoteHome)/.kanban-code/tmp/agtop")
-        registry.setAgtop(agtop, on: machineName)
-        let remoteVersion = await agtop.version()
-        let localVersion = await AgtopCliAdapter().version()
-        KanbanCodeLog.info(Self.subsystem, "\(machineName): agtop at \(path) (\(remoteVersion ?? "?"), here \(localVersion ?? "none"))")
-        if let remoteVersion, let localVersion, remoteVersion != localVersion {
-            KanbanCodeLog.warn(Self.subsystem, "\(machineName) runs \(remoteVersion), this machine \(localVersion): Scripts/agtop-to-machine.sh <ssh target> updates it")
+        let rush = RushCliAdapter(remote: bridge, executable: path, scratchDirectory: "\(remoteHome)/.kanban-code/tmp/rush")
+        registry.setRush(rush, on: machineName)
+        let remoteVersion = await rush.version()
+        let localVersion = await RushCliAdapter().version()
+        KanbanCodeLog.info(Self.subsystem, "\(machineName): rush at \(path) (\(remoteVersion ?? "?"), here \(localVersion ?? "none"))")
+        if let remoteVersion, let localVersion,
+           RushCliAdapter.build(ofVersion: remoteVersion) != RushCliAdapter.build(ofVersion: localVersion) {
+            KanbanCodeLog.warn(Self.subsystem, "\(machineName) runs \(remoteVersion), this machine \(localVersion): Scripts/rush-to-machine.sh <ssh target> updates it")
         }
     }
 
@@ -716,8 +721,8 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     public func hasSession(machineName: String, sessionName: String) async -> Bool {
         guard let bridge = machines[machineName]?.bridge else { return false }
         let alive: Bool
-        if let id = AgtopSessionName.agtopId(fromName: sessionName) {
-            alive = (try? await registry.agtop(for: machineName)?.info(id: id))??.alive == true
+        if let id = RushSessionName.rushId(fromName: sessionName) {
+            alive = (try? await registry.rush(for: machineName)?.info(id: id))??.alive == true
         } else {
             let result = try? await bridge.exec(["tmux", "has-session", "-t", sessionName], stdin: nil, cwd: nil, timeout: 20)
             alive = result?.succeeded == true
@@ -854,6 +859,11 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         if bytes >= 1024 * 1024 { return "\(bytes / (1024 * 1024)) MB" }
         if bytes >= 1024 { return "\(bytes / 1024) KB" }
         return "\(bytes) bytes"
+    }
+
+    /// Runs a shell command on a machine (over ssh for an ssh machine).
+    public func exec(machineName: String, command: String, timeout: TimeInterval) async throws -> ShellCommand.Result {
+        try await boxd.exec(name: machineName, command: command, timeout: timeout)
     }
 
     // MARK: - RemoteMachineControl
@@ -1220,7 +1230,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         if lastClaudeAccountId == nil {
             lastClaudeAccountId = await loginStore.claudeAccount()?["accountUuid"] as? String
         }
-        _ = await syncLogins(machineName: machineName, bridge: bridge, remoteHome: runtime.remoteHome)
+        _ = await AssistantLoginSync(runner: bridge, store: loginStore, remoteHome: runtime.remoteHome, machineName: machineName).run()
 
         let transport = BridgeTmuxTransport(runner: bridge, remoteHome: runtime.remoteHome)
         registry.setMachine(machineName, state: .connected, tmux: TmuxAdapter(transport: transport))
@@ -1680,14 +1690,14 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
     /// machine refreshed comes back to the Mac and on to the other machines.
     public func syncAllLogins() async {
         var pushedClaudeTo: [String] = []
-        var pulled: [LoginPull] = []
+        var accountMoves: [LoginMove] = []
         for (name, runtime) in machines.sorted(by: { $0.key < $1.key }) {
             guard let bridge = runtime.bridge else { continue }
-            for change in await syncLogins(machineName: name, bridge: bridge, remoteHome: runtime.remoteHome) {
-                switch change.decision {
-                case .push where change.kind == .claude: pushedClaudeTo.append(name)
-                case .pull: pulled.append(LoginPull(kind: change.kind, machineName: name))
-                default: break
+            let sync = AssistantLoginSync(runner: bridge, store: loginStore, remoteHome: runtime.remoteHome, machineName: name)
+            for change in await sync.run() {
+                if change.decision == .push, change.kind == .claude { pushedClaudeTo.append(name) }
+                if change.accountChanged {
+                    accountMoves.append(LoginMove(kind: change.kind, machineName: name, decision: change.decision))
                 }
             }
         }
@@ -1696,7 +1706,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             previousAccountId: lastClaudeAccountId,
             account: account,
             pushedClaudeTo: pushedClaudeTo,
-            pulled: pulled,
+            accountMoves: accountMoves,
             time: Self.clockText(now()))
         lastClaudeAccountId = outcome.accountId
         for notice in outcome.notices {
@@ -1704,28 +1714,16 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
     }
 
-    private func syncLogins(machineName: String, bridge: BoxdBridge, remoteHome: String) async -> [AssistantLoginSync.Change] {
-        let sync = AssistantLoginSync(runner: bridge, store: loginStore, remoteHome: remoteHome)
-        let changes = await sync.run()
-        for change in changes {
-            switch change.decision {
-            case .push:
-                KanbanCodeLog.info(Self.subsystem, "\(machineName): \(change.kind.displayName) login sent to the machine")
-            case .pull:
-                KanbanCodeLog.info(Self.subsystem, "\(machineName): \(change.kind.displayName) login taken from the machine")
-            case .none:
-                break
-            }
-        }
-        return changes
-    }
-
-    public struct LoginPull: Equatable, Sendable {
+    /// A login that moved between this Mac and a machine and replaced one of
+    /// another account.
+    public struct LoginMove: Equatable, Sendable {
         public let kind: AssistantLoginKind
         public let machineName: String
-        public init(kind: AssistantLoginKind, machineName: String) {
+        public let decision: AssistantLogin.Decision
+        public init(kind: AssistantLoginKind, machineName: String, decision: AssistantLogin.Decision) {
             self.kind = kind
             self.machineName = machineName
+            self.decision = decision
         }
     }
 
@@ -1734,20 +1732,20 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         public let accountId: String?
     }
 
-    /// The notices of one tick. A token rotation is routine and stays quiet;
-    /// an account switch on the Mac and a login taken from a machine are
-    /// told, with the time. The first observation of an account is not a
-    /// switch.
+    /// The notices of one tick. A token refresh keeps the account and stays
+    /// quiet in both directions; only a change of account is told, with the
+    /// time. The first observation of an account is not a switch.
     public nonisolated static func loginNotices(
         previousAccountId: String?,
         account: [String: Any]?,
         pushedClaudeTo: [String],
-        pulled: [LoginPull],
+        accountMoves: [LoginMove],
         time: String
     ) -> LoginNoticeOutcome {
         var notices: [String] = []
         let accountId = account?["accountUuid"] as? String
-        if let previousAccountId, let accountId, accountId != previousAccountId {
+        let macSwitched = previousAccountId != nil && accountId != nil && accountId != previousAccountId
+        if macSwitched {
             let who = (account?["emailAddress"] as? String).map { " to \($0)" } ?? ""
             let sent: String
             switch pushedClaudeTo.count {
@@ -1757,8 +1755,17 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
             }
             notices.append("Claude login changed\(who) at \(time)\(sent)")
         }
-        for pull in pulled {
-            notices.append("\(pull.kind.displayName) login refreshed on \(pull.machineName) at \(time), this Mac updated")
+        for move in accountMoves {
+            switch move.decision {
+            case .pull:
+                notices.append("\(move.kind.displayName) login on \(move.machineName) is another account, this Mac switched to it at \(time)")
+            case .push:
+                // The Mac's own switch above already names the machines.
+                if move.kind == .claude, macSwitched { continue }
+                notices.append("\(move.kind.displayName) login on \(move.machineName) was another account, replaced by this Mac's at \(time)")
+            case .none:
+                break
+            }
         }
         return LoginNoticeOutcome(notices: notices, accountId: accountId ?? previousAccountId)
     }

@@ -90,7 +90,7 @@ struct LaunchConfirmationDialog: View {
             ? (UserDefaults.standard.object(forKey: "runRemotely_\(projectPath)") as? Bool ?? true)
             : RemoteLaunchOptions.initialRunRemotely(
                 lastRunRemote: remoteOptions?.lastRunRemote, cardMachine: cardMachine,
-                mode: mode, projectPath: projectPath)
+                ownerMachine: remoteOptions?.ownerMachine, mode: mode, projectPath: projectPath)
         self._runRemotely = State(initialValue: remoteDefault)
         self._machineChoice = State(initialValue: remoteOptions?.initialMachineChoice(projectPath: projectPath)
             ?? cardMachine.map { BoxdMachineChoice.existing($0) } ?? .newMachine)
@@ -344,7 +344,7 @@ struct LaunchConfirmationDialog: View {
     private func rememberRunRemotely() {
         // A card that already has a machine keeps the toggle on by itself, so
         // its value is not the project default.
-        guard remoteOptions?.cardMachine == nil else { return }
+        guard remoteOptions?.cardMachine == nil, remoteOptions?.ownerMachine == nil else { return }
         RemoteLaunchOptions.rememberRunRemotely(runRemotely, mode: remoteMode, projectPath: projectPath)
     }
 
@@ -374,7 +374,7 @@ struct LaunchConfirmationDialog: View {
         let branch = worktreeBranch.trimmingCharacters(in: .whitespacesAndNewlines)
         if runsOnBoxd {
             onMachineChoice(machineChoice)
-            if remoteOptions?.cardMachine == nil {
+            if remoteOptions?.cardMachine == nil, remoteOptions?.ownerMachine == nil {
                 RemoteLaunchOptions.rememberMachineChoice(machineChoice, projectPath: projectPath)
             }
         }

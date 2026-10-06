@@ -58,11 +58,11 @@ Feature: Remote control from a phone and from other agents
     When the phone sends a resync frame
     Then it gets the whole board again
 
-  Scenario: Streaming an agtop card's terminal
-    Given a card running on agtop
+  Scenario: Streaming a rush card's terminal
+    Given a card running on rush
     When the phone opens the card's terminal
-    Then the Mac runs "agtop open <id> --solo" in a pseudo-terminal sized to the phone
-    And what I type on the phone reaches that agtop
+    Then the Mac runs "rush open <id>" in a pseudo-terminal sized to the phone
+    And what I type on the phone reaches that rush host
     And closing the terminal on the phone leaves the session running
 
   Scenario: Streaming a tmux card's terminal

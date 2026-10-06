@@ -147,20 +147,28 @@ public struct QueuedPrompt: Codable, Sendable, Equatable, Identifiable {
     /// queued prompts keep this nil so stale compact nudges can be removed
     /// without touching unrelated queue items.
     public var selfCompactThresholdTokens: Int?
+    /// When the human wrote this prompt himself in a chat composer. Nil for
+    /// a prompt an agent, a channel or the app queued.
+    public var humanWrittenAt: Date?
 
     public init(
         id: String = KSUID.generate(prefix: "prompt"),
         body: String,
         sendAutomatically: Bool = true,
         imagePaths: [String]? = nil,
-        selfCompactThresholdTokens: Int? = nil
+        selfCompactThresholdTokens: Int? = nil,
+        humanWrittenAt: Date? = nil
     ) {
         self.id = id
         self.body = body
         self.sendAutomatically = sendAutomatically
         self.imagePaths = imagePaths
         self.selfCompactThresholdTokens = selfCompactThresholdTokens
+        self.humanWrittenAt = humanWrittenAt
     }
+
+    /// Whether the human wrote it himself.
+    public var isHuman: Bool { humanWrittenAt != nil }
 }
 
 // MARK: - Card Label
@@ -618,6 +626,13 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
 
         queuedPrompts = try c.decodeIfPresent([QueuedPrompt].self, forKey: .queuedPrompts)
         browserTabs = try c.decodeIfPresent([BrowserTabInfo].self, forKey: .browserTabs)
+
+        // A card whose session holds the prompt keeps a preview of it.
+        let trimmed = PromptPreview.trimmedBody(of: self)
+        if trimmed != promptBody {
+            promptBody = trimmed
+            (decoder.userInfo[PromptTrimReport.userInfoKey] as? PromptTrimReport)?.record()
+        }
     }
 
     public func encode(to encoder: Encoder) throws {

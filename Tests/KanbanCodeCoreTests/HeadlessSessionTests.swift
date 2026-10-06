@@ -67,14 +67,14 @@ struct HeadlessSessionTests {
         #expect(column(of: result[0], activity: .idleWaiting) == .allSessions)
     }
 
-    @Test("An agtop-hosted card keeps its sdk-cli session on the board")
-    func agtopCardStays() {
+    @Test("A rush-hosted card keeps its sdk-cli session on the board")
+    func rushCardStays() {
         let card = Link(
             projectPath: "/repo",
             column: .inProgress,
             source: .manual,
             sessionLink: SessionLink(sessionId: "abcdef12-0000-0000-0000-000000000000"),
-            tmuxLink: TmuxLink(sessionName: "agtop-abcdef12"),
+            tmuxLink: TmuxLink(sessionName: "rush-abcdef12"),
             launchedAt: .now
         )
         let session = headless("abcdef12-0000-0000-0000-000000000000")
@@ -83,19 +83,19 @@ struct HeadlessSessionTests {
         #expect(result[0].headless == nil)
         #expect(column(of: result[0], activity: .activelyWorking, liveTmux: true) == .inProgress)
 
-        // Still on the board after its agtop host is gone.
+        // Still on the board after its rush host is gone.
         var ended = result[0]
         ended.tmuxLink = nil
         #expect(column(of: ended, activity: .idleWaiting) == .waiting)
     }
 
-    @Test("An agtop card waiting for its session takes a headless one by project")
-    func agtopLaunchingCardTakesHeadlessSession() {
+    @Test("A rush card waiting for its session takes a headless one by project")
+    func rushLaunchingCardTakesHeadlessSession() {
         let card = Link(
             projectPath: "/repo",
             column: .inProgress,
             source: .manual,
-            tmuxLink: TmuxLink(sessionName: "agtop-abcdef12"),
+            tmuxLink: TmuxLink(sessionName: "rush-abcdef12"),
             launchedAt: .now.addingTimeInterval(-5)
         )
         let result = CardReconciler.reconcile(existing: [card], snapshot: .init(sessions: [headless("h1")]))

@@ -14,6 +14,26 @@ protocol RemoteByteStream: AnyObject, Sendable {
     func send(_ data: Data, completion: @escaping @Sendable (Error?) -> Void)
 
     func cancel()
+
+    /// The client's address, when the transport knows it.
+    var peer: RemotePeerAddress? { get }
+}
+
+/// Where a connection comes from.
+public struct RemotePeerAddress: Sendable, Equatable {
+    public var host: String
+    public var port: Int
+
+    public init(host: String, port: Int) {
+        self.host = host
+        self.port = port
+    }
+
+    /// 127.0.0.0/8 or ::1 (also as an IPv4-mapped address).
+    public var isLoopback: Bool {
+        let h = host.split(separator: "%").first.map(String.init) ?? host
+        return h.hasPrefix("127.") || h == "::1" || h.hasPrefix("::ffff:127.") || h == "localhost"
+    }
 }
 
 /// A bound TCP listener.

@@ -36,25 +36,36 @@ extension ContentView {
         return counts
     }
 
-    /// Whether this card's worktree can be cleaned up — false if another active card depends on it.
+    /// Whether this card's worktree can be cleaned up: false when another
+    /// active card depends on it, or when it goes away with its machine.
     func canCleanupWorktree(for card: KanbanCodeCard) -> Bool {
         canCleanupWorktree(
+            cardId: card.id,
             branch: card.link.worktreeLink?.branch,
             manuallyArchived: card.link.manuallyArchived
         )
     }
 
-    /// Whether this link's worktree can be cleaned up — false if another active card depends on it.
+    /// Whether this card's worktree can be cleaned up, given its branch and
+    /// whether it is archived.
     func canCleanupWorktree(
+        cardId: String,
         branch: String?,
         manuallyArchived: Bool,
         activeBranchCounts: [String: Int]? = nil
     ) -> Bool {
-        WorktreeCleanupEligibility.canCleanup(
+        guard store.state.worktreePlacement(cardId)?.offersCleanup ?? true else { return false }
+        return WorktreeCleanupEligibility.canCleanup(
             branch: branch,
             cardIsStillActive: !manuallyArchived,
             activeBranchCounts: activeBranchCounts ?? activeWorktreeBranchCounts
         )
+    }
+
+    /// The machine a card's worktree is on, when it is not this one.
+    func worktreeMachineName(cardId: String) -> String? {
+        guard let placement = store.state.worktreePlacement(cardId), placement != .local else { return nil }
+        return engine.machineName(of: placement)
     }
 
     func selectFolderForMove(cardId: String) {
@@ -91,34 +102,35 @@ extension ContentView {
         }
     }
 
+    /// Removes the card's worktree where the card lives: here, on the
+    /// master that owns it, or over ssh on the machine that runs it.
     func cleanupWorktree(cardId: String) async {
         guard let card = store.state.cards.first(where: { $0.id == cardId }),
               let worktreePath = card.link.worktreeLink?.path,
               !worktreePath.isEmpty else { return }
 
         store.dispatch(.setBusy(cardId: cardId, busy: true))
-        let adapter = GitWorktreeAdapter()
         do {
-            try await adapter.removeWorktree(path: worktreePath, repoRoot: card.link.projectPath, force: true)
+            try await engine.removeCardWorktree(cardId: cardId)
             store.dispatch(.setBusy(cardId: cardId, busy: false))
-            // If card has no session, delete it entirely — it was only a worktree
-            if card.link.sessionLink == nil {
-                store.dispatch(.deleteCard(cardId: cardId))
-            } else {
-                store.dispatch(.unlinkFromCard(cardId: cardId, linkType: .worktree))
-            }
-        } catch {
+        } catch let error as WorktreeRemovalError {
             store.dispatch(.setBusy(cardId: cardId, busy: false))
-            if let localPath = translateRemoteWorktreePath(worktreePath, projectPath: card.link.projectPath) {
+            // A mutagen card keeps its worktree on the remote host and a
+            // synced copy here.
+            if error.placement == .local,
+               let localPath = translateRemoteWorktreePath(worktreePath, projectPath: card.link.projectPath) {
                 pendingWorktreeCleanup = WorktreeCleanupInfo(
                     cardId: cardId,
                     remotePath: worktreePath,
                     localPath: localPath,
-                    errorMessage: error.localizedDescription
+                    errorMessage: error.reason
                 )
             } else {
-                store.dispatch(.setError("Worktree cleanup failed: \(error.localizedDescription)"))
+                store.dispatch(.setError(error.localizedDescription))
             }
+        } catch {
+            store.dispatch(.setBusy(cardId: cardId, busy: false))
+            store.dispatch(.setError("Worktree cleanup failed: \(error.localizedDescription)"))
         }
     }
 

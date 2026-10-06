@@ -72,6 +72,80 @@ final class FleetModel {
 
     var isMulti: Bool { masters.count > 1 }
 
+    /// A decision and the master to answer it on.
+    struct FleetAttention: Identifiable {
+        var id: String { request.id }
+        let request: AttentionRequest
+        let master: BoardModel
+        let cardName: String?
+    }
+
+    /// Answers on their way and the requests settled from this phone.
+    private(set) var answers = AttentionAnswerState()
+
+    /// Open decisions on every master, oldest first, each once. The master
+    /// that raised a request decides whether it is still open; one this
+    /// phone answered is gone at once (`AttentionFleet`).
+    var attention: [FleetAttention] {
+        let sources = masters.map {
+            AttentionFleet.Source(machineId: $0.machineId, isLive: $0.link == .live, requests: $0.attention)
+        }
+        let titles = Dictionary(cards.map { ($0.card.id, $0.card.title) }) { first, _ in first }
+        return AttentionFleet.visible(sources, hidden: answers.settled).map { entry in
+            FleetAttention(request: entry.request, master: masters[entry.source],
+                           cardName: entry.request.cardId.flatMap { titles[$0] })
+        }
+    }
+
+    /// Sends an answer. The row shows it is on its way at once and takes
+    /// no second tap; it leaves the list when the master took the answer
+    /// or says the request is settled, and shows the error otherwise.
+    /// `confirm` runs first for a request that wants Face ID.
+    @MainActor
+    func answer(_ item: FleetAttention, _ resolution: String, confirm: () async -> Bool = { true }) async {
+        let id = item.request.id
+        guard answers.begin(id, option: resolution) else { return }
+        answers.prune(listed: Set(masters.flatMap { $0.attention.map(\.id) }).union([id]))
+        // An approval that needs this phone's vault key unlocks with it
+        // (Face ID, no passcode); any other one that wants Face ID asks first.
+        let isVault = item.request.kind == .vaultApproval
+        var unsealed: VaultUnsealed?
+        if !AttentionCopy.isDenial(resolution), let challenge = item.request.unseal, !challenge.isEmpty {
+            guard PhoneVaultDevice.key.exists else {
+                answers.failed(id, error: PhoneVaultDevice.Problem(
+                    text: "This phone has no vault key yet. Enrol it under Machines > Vault key, or answer on the Mac."))
+                return
+            }
+            do {
+                unsealed = try await PhoneVaultDevice.key.answer(challenge, reason: "\(resolution): \(item.request.title)")
+            } catch {
+                let text = PhoneVaultDevice.describe(error)
+                PhoneVaultDevice.approvals.record(item.request, resolution: resolution, error: text)
+                if PhoneVaultDevice.isCancel(error) {
+                    answers.cancelled(id)
+                } else {
+                    answers.failed(id, error: PhoneVaultDevice.Problem(text: "Not unlocked: \(text)"))
+                }
+                return
+            }
+        } else if item.request.requiresBiometry, !(await confirm()) {
+            answers.cancelled(id)
+            return
+        }
+        do {
+            try await item.master.resolveAttention(item.request, resolution: resolution, unsealed: unsealed)
+            if isVault { PhoneVaultDevice.approvals.record(item.request, resolution: resolution) }
+            answers.succeeded(id)
+        } catch {
+            if isVault { PhoneVaultDevice.approvals.record(item.request, resolution: resolution, error: error.localizedDescription) }
+            answers.failed(id, error: error)
+        }
+    }
+
+    func clearAttentionNote() {
+        answers.clearNote()
+    }
+
     /// Cards name their machine when more than one machine runs them: several
     /// masters paired, or one master listing cards synced from its peers.
     var showsMachines: Bool {
@@ -112,8 +186,34 @@ final class FleetModel {
         return order.compactMap { byId[$0]?.entry }
     }
 
+    /// A card of the boards, else one a search found outside them.
     func entry(cardId: String) -> FleetCard? {
-        cards.first { $0.id == cardId }
+        cards.first { $0.id == cardId } ?? found[cardId]
+    }
+
+    /// Cards found by a search that the boards do not hold (archived, All
+    /// Sessions, older Done), so they can be opened.
+    private(set) var found: [String: FleetCard] = [:]
+
+    func remember(_ entries: [FleetCard]) {
+        for entry in entries { found[entry.id] = entry }
+    }
+
+    /// `card` as `master` listed it, shown through the master that owns it
+    /// when that one is paired.
+    func fleetCard(_ card: RemoteCard, listedBy master: BoardModel) -> FleetCard {
+        let owner = card.machineId.flatMap(self.master(machineId:)) ?? master
+        let name = card.machineId.flatMap { self.master(machineId: $0)?.machineName } ?? card.machineName ?? master.machineName
+        return FleetCard(card: card, master: owner, machineName: name)
+    }
+
+    /// Ids of the cards on a board right now: not archived, not in All Sessions.
+    var boardCardIds: Set<String> {
+        var out = Set<String>()
+        for model in masters {
+            for card in model.board?.cards ?? [] where CardSearch.isOnBoard(card) { out.insert(card.id) }
+        }
+        return out
     }
 
     /// Projects of every master, once per name: the same repository sits at

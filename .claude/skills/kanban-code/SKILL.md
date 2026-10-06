@@ -147,6 +147,7 @@ kanban channel send standup "PR #42 merged. unblocks anyone waiting on the auth 
 - `kanban sessions` — all live tmux sessions with card associations. Useful for sanity-checking who's online before broadcasting.
 - `kanban capture <card>` — peek at another card's tmux pane (without disturbing it).
 - `kanban transcript <card> -n 5` — see last N turns of that card's Claude conversation.
+- `kanban export [card] [--out file.md]`: the whole session as Markdown, the same text the app's "Copy conversation as Markdown" gives (user and assistant messages). No card means your own; also takes a `@handle` or a Claude session id. Prints to stdout unless `--out`.
 - `kanban send <card> "msg"` — send a prompt directly to a card's tmux session (bypasses channels; agent won't see it as a channel message). Prefer `kanban dm` instead for 1:1.
   - `--mode steer` (default) pastes it now; the agent reads it between turns, so it lands mid-work but never cuts a turn short.
   - `--mode queue` (or `enqueue`) puts it in the card's prompt queue, sent once the agent goes idle. Use it when the message is "next up", not "right now".
@@ -155,6 +156,14 @@ kanban channel send standup "PR #42 merged. unblocks anyone waiting on the auth 
 - `kanban relink <card> <session-id>` — point a card at a different transcript when it is stuck on a stale session. Never moves or deletes a `.jsonl`.
 - `kanban self-compact - <<'EOF' … EOF` — compact your own session and hand yourself a post-compact continuation message. Always pass that handoff; without it you wake up with only the digest.
 - Read `kanban --help` in full. Do not pipe it through `head` or `tail`; the command list continues past the first screen.
+
+## Secrets (kv)
+
+Secrets live in the Kanban Code vault; use `kv` instead of reading `.env` files (docs/vault.md in the Kanban Code repo).
+
+- `kv run NAME [NAME..] --reason "..." -- <cmd>` runs a command with the secrets in its env. `kv request NAME --reason "..."` asks once for the card's whole task. `kv aws <profile>` gives AWS credentials. `kv ls` lists names and tiers.
+- Some releases wait for Rogerio's approval. His phone shows "<your card> wants to use <secret>" and, under it, only your `--reason`. Write it as one short plain sentence a human understands: what you want to do and why. Good: `--reason "Deploy the langwatch staging app to check the fix for the login bug"`. Bad: `--reason "change aws:lw-dev: rules"` (too terse), `--reason "kubectl apply -f x.yaml"` (a command; the command is shown separately). kv refuses reasons like the bad ones with exit code 2.
+- Exit code 77 means denied. Do not retry the same request in a loop; ask with a better reason or tell the user.
 
 ## What NOT to do
 

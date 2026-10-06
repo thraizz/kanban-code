@@ -266,4 +266,100 @@ struct AssignColumnTests {
         let col = AssignColumn.assign(link: link, hasWorktree: true)
         #expect(col == .waiting, "Fork with worktree but no activity should still be Waiting")
     }
+
+    @Test("Fresh orphan worktree card → waiting")
+    func freshOrphanWorktreeWaits() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            source: .discovered,
+            worktreeLink: WorktreeLink(path: "/tmp/repo/.claude/worktrees/agent-1", branch: "perf/x")
+        )
+        let col = AssignColumn.assign(link: link, hasWorktree: true)
+        #expect(col == .waiting)
+    }
+
+    @Test("Orphan worktree card discovered over 24h ago → allSessions")
+    func oldOrphanWorktreeAgesOut() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            createdAt: Date.now.addingTimeInterval(-25 * 3600),
+            source: .discovered,
+            worktreeLink: WorktreeLink(path: "/tmp/repo/.claude/worktrees/agent-1", branch: "perf/x")
+        )
+        let col = AssignColumn.assign(link: link, hasWorktree: true)
+        #expect(col == .allSessions)
+    }
+
+    @Test("Old orphan worktree card with a live terminal stays waiting")
+    func oldOrphanWorktreeWithLiveSessionWaits() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            createdAt: Date.now.addingTimeInterval(-25 * 3600),
+            source: .discovered,
+            worktreeLink: WorktreeLink(path: "/tmp/repo/.claude/worktrees/agent-1", branch: "perf/x")
+        )
+        let col = AssignColumn.assign(link: link, hasWorktree: true, hasLiveSession: true)
+        #expect(col == .waiting)
+    }
+
+    @Test("Old worktree card with a session stays waiting")
+    func oldWorktreeCardWithSessionWaits() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            createdAt: Date.now.addingTimeInterval(-72 * 3600),
+            lastActivity: Date.now.addingTimeInterval(-48 * 3600),
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "s1"),
+            worktreeLink: WorktreeLink(path: "/tmp/wt", branch: "feat")
+        )
+        let col = AssignColumn.assign(link: link, hasWorktree: true)
+        #expect(col == .waiting)
+    }
+
+    @Test("Session quiet for over a day whose last hook asked for attention → allSessions")
+    func oldNeedsAttentionAgesOut() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            lastActivity: Date.now.addingTimeInterval(-72 * 3600),
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "s1")
+        )
+        for state in [ActivityState.needsAttention, .awaitingPermission] {
+            #expect(AssignColumn.assign(link: link, activityState: state) == .allSessions)
+        }
+    }
+
+    @Test("Recent session needing attention stays waiting")
+    func recentNeedsAttentionWaits() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            lastActivity: Date.now.addingTimeInterval(-2 * 3600),
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "s1")
+        )
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention) == .waiting)
+    }
+
+    @Test("Old session needing attention with a live terminal stays waiting")
+    func oldNeedsAttentionWithLiveSessionWaits() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            lastActivity: Date.now.addingTimeInterval(-72 * 3600),
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "s1")
+        )
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention, hasLiveSession: true) == .waiting)
+    }
+
+    @Test("Old session needing attention in a worktree stays waiting")
+    func oldNeedsAttentionWithWorktreeWaits() {
+        let link = Link(
+            projectPath: "/tmp/repo",
+            lastActivity: Date.now.addingTimeInterval(-72 * 3600),
+            source: .discovered,
+            sessionLink: SessionLink(sessionId: "s1"),
+            worktreeLink: WorktreeLink(path: "/tmp/wt", branch: "feat")
+        )
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention, hasWorktree: true) == .waiting)
+    }
 }

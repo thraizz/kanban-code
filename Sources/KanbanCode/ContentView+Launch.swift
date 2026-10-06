@@ -17,9 +17,11 @@ extension ContentView {
         Task {
             let settings = try? await settingsStore.read()
             let project = settings?.projects.first(where: { $0.path == (card.link.projectPath ?? effectivePath) })
-            var prompt = PromptBuilder.buildPrompt(card: card.link, project: project, settings: settings)
+            var link = card.link
+            link.promptBody = await PromptPreview.fullPrompt(for: link, transcriptPath: card.session?.jsonlPath)
+            var prompt = PromptBuilder.buildPrompt(card: link, project: project, settings: settings)
             if prompt.isEmpty {
-                prompt = card.link.promptBody ?? card.link.name ?? ""
+                prompt = link.promptBody ?? link.name ?? ""
             }
 
             let worktreeName: String?
@@ -69,6 +71,7 @@ extension ContentView {
             modelOverride: modelOverride,
             machineChoice: machineChoice,
             keepSelection: !focusCard,
+            humanPrompt: true,
             completion: completion
         )
         if focusCard { shouldFocusTerminal = true }

@@ -68,13 +68,21 @@ public enum AssignColumn {
             return .inReview
         }
 
+        // A session's last Stop or Notification keeps reading as needing
+        // attention for as long as it stays the last hook event. Once the card
+        // has been quiet for a day with no terminal of its own, it is finished
+        // work, not a question, and takes the recency rule below.
+        let isQuietForADay = !hasLiveSession && link.lastActivity.map {
+            Date.now.timeIntervalSince($0) >= 24 * 3600
+        } ?? false
+
         // Activity-based assignment
         if let state = activityState {
             switch state {
             case .activelyWorking:
                 return .inProgress // Already handled above, but keep for exhaustive switch
             case .needsAttention, .awaitingPermission:
-                return .waiting
+                if !isQuietForADay { return .waiting }
             case .idleWaiting:
                 // Claude is idle/waiting for user — that's Waiting, not In Progress.
                 // Only .activelyWorking should keep a card in In Progress.
@@ -105,7 +113,10 @@ public enum AssignColumn {
         // Live tmux session → at least waiting (never allSessions)
         // A card with an active tmux session is still in-flight, even if
         // we haven't received hook data yet.
-        if hasWorktree {
+        // Orphan worktree cards (discovered from `git worktree list`, nothing
+        // ever ran in them) age out like any other idle card, so leftover
+        // worktrees don't pin cards in Waiting for as long as they exist.
+        if hasWorktree && !isOrphanWorktree(link: link, hasLiveSession: hasLiveSession) {
             return .waiting
         }
 
@@ -113,7 +124,9 @@ public enum AssignColumn {
         // These sessions are recent but not confirmed active by hooks/polling.
         // In Progress is reserved for hook-confirmed actively working sessions.
         // User can triage from here: drag to All Sessions to archive, or resume.
-        if let lastActivity = link.lastActivity {
+        // Orphans have no activity of their own; their discovery time stands in.
+        let isOrphan = hasWorktree && isOrphanWorktree(link: link, hasLiveSession: hasLiveSession)
+        if let lastActivity = link.lastActivity ?? (isOrphan ? link.createdAt : nil) {
             let hoursSinceActivity = Date.now.timeIntervalSince(lastActivity) / 3600
             if hoursSinceActivity < 24 {
                 return .waiting
@@ -122,5 +135,15 @@ public enum AssignColumn {
 
         // Default: allSessions
         return .allSessions
+    }
+
+    /// A card the reconciler created for an unmatched worktree: only a
+    /// worktree link, no session, no terminal.
+    static func isOrphanWorktree(link: Link, hasLiveSession: Bool) -> Bool {
+        link.source == .discovered
+            && link.worktreeLink != nil
+            && link.sessionLink == nil
+            && link.tmuxLink == nil
+            && !hasLiveSession
     }
 }

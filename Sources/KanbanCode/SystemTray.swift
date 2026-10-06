@@ -16,7 +16,17 @@ final class SystemTray: NSObject, @unchecked Sendable {
     private var statusItem: NSStatusItem?
     private var menu: NSMenu?
     private weak var store: BoardStore?
-    private var activeSessionApp: NSRunningApplication?
+    /// PID of the helper we launched (or adopted). Tracked by pid so we never have to
+    /// enumerate NSWorkspace.runningApplications (a synchronous LaunchServices XPC call)
+    /// on the main thread.
+    private var activeSessionPID: pid_t?
+    /// True while an `openApplication` request for the helper is in flight.
+    private var activeSessionLaunching = false
+    /// Orphan discovery from earlier app instances runs once at startup.
+    private var orphanScanStarted = false
+    private var orphanScanDone = false
+    /// Contents of the currently installed menu; rebuild only when this changes.
+    private var lastMenuContent: MenuContent?
     /// Fallback for dev mode (bare binary, no .app bundle).
     private var activeSessionProcess: Process?
     /// Time when In Progress last had sessions (for linger timeout).
@@ -27,7 +37,7 @@ final class SystemTray: NSObject, @unchecked Sendable {
     /// Reference to the countdown menu item for live updates.
     private weak var countdownItem: NSMenuItem?
 
-    private static let activeSessionBundleID = "com.kanban-code.active-session"
+    private nonisolated static let activeSessionBundleID = "com.kanban-code.active-session"
 
     /// How long to keep tray visible after last active session.
     /// Reads from UserDefaults (synced with @AppStorage("sessionLingerTimeout") in settings).
@@ -67,6 +77,7 @@ final class SystemTray: NSObject, @unchecked Sendable {
 
         updateMenu()
         updateVisibility()
+        scanForOrphanedHelpersOnce()
     }
 
     func update() {
@@ -74,45 +85,82 @@ final class SystemTray: NSObject, @unchecked Sendable {
         updateVisibility()
     }
 
+    /// Lightweight description of everything the menu shows. Equal contents mean the
+    /// existing NSMenu is still correct and must not be rebuilt.
+    struct MenuContent: Equatable {
+        enum Kind: Equatable { case working, active, waiting }
+        struct Entry: Equatable {
+            var title: String
+            var kind: Kind
+        }
+        /// Whether the (live-updating) countdown line is shown. Its text is refreshed
+        /// when the menu opens, so the text itself is not part of the content.
+        var showsCountdown: Bool
+        var active: [Entry]
+        var waiting: [Entry]
+        static let maxEntriesPerSection = 5
+
+        static func make(active: [(title: String, isWorking: Bool)], waiting: [String]) -> MenuContent {
+            MenuContent(
+                showsCountdown: active.isEmpty,
+                active: active.prefix(maxEntriesPerSection).map {
+                    Entry(title: $0.title, kind: $0.isWorking ? .working : .active)
+                },
+                waiting: waiting.prefix(maxEntriesPerSection).map { Entry(title: $0, kind: .waiting) }
+            )
+        }
+    }
+
+    /// Pure decision: rebuild only when there is no menu yet or the content changed.
+    nonisolated static func needsMenuRebuild(previous: MenuContent?, current: MenuContent) -> Bool {
+        previous != current
+    }
+
+    private func currentMenuContent() -> MenuContent {
+        guard let store else { return MenuContent.make(active: [], waiting: []) }
+        return MenuContent.make(
+            active: store.state.cards(in: .inProgress).map { ($0.displayTitle, $0.isActivelyWorking) },
+            waiting: store.state.cards(in: .waiting).map { $0.displayTitle }
+        )
+    }
+
     private func updateMenu() {
+        let content = currentMenuContent()
+        guard menu == nil || Self.needsMenuRebuild(previous: lastMenuContent, current: content) else { return }
+        lastMenuContent = content
+
         let menu = NSMenu()
         menu.delegate = self
+        countdownItem = nil
 
-        if let store {
-            let activeCards = store.state.cards(in: .inProgress)
-            let attentionCards = store.state.cards(in: .waiting)
+        // Countdown at the top when lingering (no active sessions)
+        if content.showsCountdown {
+            let item = NSMenuItem(title: countdownText(), action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            menu.addItem(item)
+            countdownItem = item
+            if !content.waiting.isEmpty {
+                menu.addItem(NSMenuItem.separator())
+            }
+        }
 
-            // Countdown at the top when lingering (no active sessions)
-            if activeCards.isEmpty {
-                let item = NSMenuItem(title: countdownText(), action: nil, keyEquivalent: "")
-                item.isEnabled = false
+        if !content.active.isEmpty {
+            menu.addItem(NSMenuItem.sectionHeader(title: "In Progress"))
+            for entry in content.active {
+                let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
+                item.image = NSImage(
+                    systemSymbolName: entry.kind == .working ? "gear.circle.fill" : "play.circle.fill",
+                    accessibilityDescription: nil)
                 menu.addItem(item)
-                countdownItem = item
-                if !attentionCards.isEmpty {
-                    menu.addItem(NSMenuItem.separator())
-                }
             }
+        }
 
-            if !activeCards.isEmpty {
-                menu.addItem(NSMenuItem.sectionHeader(title: "In Progress"))
-                for card in activeCards.prefix(5) {
-                    let item = NSMenuItem(title: card.displayTitle, action: nil, keyEquivalent: "")
-                    if card.isActivelyWorking {
-                        item.image = NSImage(systemSymbolName: "gear.circle.fill", accessibilityDescription: nil)
-                    } else {
-                        item.image = NSImage(systemSymbolName: "play.circle.fill", accessibilityDescription: nil)
-                    }
-                    menu.addItem(item)
-                }
-            }
-
-            if !attentionCards.isEmpty {
-                menu.addItem(NSMenuItem.sectionHeader(title: "Waiting"))
-                for card in attentionCards.prefix(5) {
-                    let item = NSMenuItem(title: card.displayTitle, action: nil, keyEquivalent: "")
-                    item.image = NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: nil)
-                    menu.addItem(item)
-                }
+        if !content.waiting.isEmpty {
+            menu.addItem(NSMenuItem.sectionHeader(title: "Waiting"))
+            for entry in content.waiting {
+                let item = NSMenuItem(title: entry.title, action: nil, keyEquivalent: "")
+                item.image = NSImage(systemSymbolName: "exclamationmark.circle.fill", accessibilityDescription: nil)
+                menu.addItem(item)
             }
         }
 
@@ -151,7 +199,8 @@ final class SystemTray: NSObject, @unchecked Sendable {
     /// Show tray icon when there are In Progress sessions, or within linger timeout.
     /// Also manages the active-session helper app for Amphetamine integration.
     /// The tray icon shows any active session; the helper only runs for
-    /// sessions on this Mac, so cards on a boxd machine never keep it awake.
+    /// sessions on this Mac, so cards on a boxd machine never keep it awake,
+    /// and while a card here is in use from another device (`RemoteWakeHold`).
     private func updateVisibility() {
         guard let store else { return }
         let hasActive = store.state.cardCount(in: .inProgress) > 0
@@ -168,7 +217,8 @@ final class SystemTray: NSObject, @unchecked Sendable {
             statusItem?.isVisible = false
         }
 
-        if hasLocalActive {
+        // A card in use from the phone counts like a working session.
+        if hasLocalActive || RemoteWakeHold.shared.isHolding() {
             lastLocalActiveTime = Date()
             startActiveSessionIfNeeded()
         } else if let lastLocal = lastLocalActiveTime,
@@ -184,29 +234,27 @@ final class SystemTray: NSObject, @unchecked Sendable {
     /// Launches the active-session helper .app so tools like Amphetamine can detect it.
     /// Falls back to bare binary for development.
     private func startActiveSessionIfNeeded() {
-        // Already running via .app?
-        if let app = activeSessionApp, !app.isTerminated { return }
-        // Already running via bare binary?
+        // Wait for the one-time orphan scan so we don't launch a duplicate helper.
+        guard orphanScanDone else { return }
+        // Already running (tracked by pid, no LaunchServices call)?
+        if let pid = activeSessionPID, kill(pid, 0) == 0 { return }
+        activeSessionPID = nil
         if let proc = activeSessionProcess, proc.isRunning { return }
-        // Check if already running from a previous app launch
-        if let existing = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == Self.activeSessionBundleID }) {
-            activeSessionApp = existing
-            MemoryDiagnostics.shared.setRelatedProcessPIDs(label: "active-session", pids: [existing.processIdentifier])
-            Self.log("active-session already running: pid=\(existing.processIdentifier)")
-            return
-        }
+        if activeSessionLaunching { return }
 
         // Try .app bundle first (Amphetamine can detect this)
         if let appURL = Self.findActiveSessionApp() {
             let config = NSWorkspace.OpenConfiguration()
             config.activates = false
             config.addsToRecentItems = false
+            activeSessionLaunching = true
             NSWorkspace.shared.openApplication(at: appURL, configuration: config) { [weak self] app, error in
                 Task { @MainActor in
+                    self?.activeSessionLaunching = false
                     if let error {
                         Self.log("active-session app failed to start: \(error)")
                     } else if let app {
-                        self?.activeSessionApp = app
+                        self?.activeSessionPID = app.processIdentifier
                         MemoryDiagnostics.shared.setRelatedProcessPIDs(label: "active-session", pids: [app.processIdentifier])
                         Self.log("active-session started: pid=\(app.processIdentifier)")
                     }
@@ -239,36 +287,61 @@ final class SystemTray: NSObject, @unchecked Sendable {
     }
 
     /// Stop the active-session helper when no more active sessions.
-    /// Also discovers and kills orphaned processes from previous app instances.
+    /// Uses the stored pid only; orphans from earlier runs are handled once at startup.
     private func stopActiveSession() {
         var helperPIDs: [pid_t?] = []
 
-        if let app = activeSessionApp, !app.isTerminated {
-            helperPIDs.append(app.processIdentifier)
-        }
-        activeSessionApp = nil
+        helperPIDs.append(activeSessionPID)
+        activeSessionPID = nil
 
         if let proc = activeSessionProcess, proc.isRunning {
             helperPIDs.append(proc.processIdentifier)
         }
         activeSessionProcess = nil
 
-        // Collect orphaned helpers from previous app instances before signaling any
-        // process. LaunchServices can temporarily report a helper after SIGTERM, so
-        // using NSRunningApplication.terminate() here can send an AppleEvent through
-        // a stale application port and crash inside AE.framework.
-        for app in NSWorkspace.shared.runningApplications where app.bundleIdentifier == Self.activeSessionBundleID && !app.isTerminated {
-            helperPIDs.append(app.processIdentifier)
-        }
+        let pids = Self.uniqueActiveSessionPIDs(helperPIDs)
+        guard !pids.isEmpty else { return }
+        Self.terminate(pids)
+        MemoryDiagnostics.shared.setRelatedProcessPIDs(label: "active-session", pids: [])
+    }
 
-        for pid in Self.uniqueActiveSessionPIDs(helperPIDs) {
-            Self.log("stopping active-session: pid=\(pid)")
+    private static func terminate(_ pids: Set<pid_t>) {
+        // Signal by pid rather than NSRunningApplication.terminate(): LaunchServices can
+        // temporarily report a helper after SIGTERM, and sending an AppleEvent through a
+        // stale application port can crash inside AE.framework.
+        for pid in pids {
+            log("stopping active-session: pid=\(pid)")
             kill(pid, SIGTERM)
             DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
                 if kill(pid, 0) == 0 { kill(pid, SIGKILL) }
             }
         }
-        MemoryDiagnostics.shared.setRelatedProcessPIDs(label: "active-session", pids: [])
+    }
+
+    /// Finds helpers left over from earlier app instances, once, on a background task,
+    /// so the main thread never blocks on LaunchServices.
+    private func scanForOrphanedHelpersOnce() {
+        guard !orphanScanStarted else { return }
+        orphanScanStarted = true
+        Task.detached(priority: .utility) { [weak self] in
+            let pids = Self.discoverActiveSessionHelperPIDs()
+            await MainActor.run { self?.finishOrphanScan(pids) }
+        }
+    }
+
+    private nonisolated static func discoverActiveSessionHelperPIDs() -> [pid_t] {
+        NSWorkspace.shared.runningApplications
+            .filter { $0.bundleIdentifier == activeSessionBundleID && !$0.isTerminated }
+            .map { $0.processIdentifier }
+    }
+
+    private func finishOrphanScan(_ found: [pid_t]) {
+        orphanScanDone = true
+        let orphans = Self.uniqueActiveSessionPIDs(found.map { Optional($0) })
+            .subtracting(Self.uniqueActiveSessionPIDs([activeSessionPID, activeSessionProcess?.processIdentifier]))
+        if !orphans.isEmpty { Self.terminate(orphans) }
+        // Now that scanning is done, apply the current start/stop decision.
+        updateVisibility()
     }
 
     nonisolated static func uniqueActiveSessionPIDs(_ candidates: [pid_t?]) -> Set<pid_t> {
@@ -357,6 +430,7 @@ extension SystemTray: NSMenuDelegate {
         MainActor.assumeIsolated {
             countdownTimer?.invalidate()
             guard countdownItem != nil else { return }
+            countdownItem?.title = countdownText()
             countdownTimer = Timer.scheduledTimer(withTimeInterval: 1, repeats: true) { [weak self] _ in
                 MainActor.assumeIsolated {
                     self?.countdownItem?.title = self?.countdownText() ?? ""

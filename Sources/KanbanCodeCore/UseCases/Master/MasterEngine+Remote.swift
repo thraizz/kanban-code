@@ -23,25 +23,35 @@ extension MasterEngine {
         store.dispatch(.createManualTask(link))
         KanbanCodeLog.info("remote", "Created task card=\(link.id.prefix(12)) project=\(request.projectPath) launch=\(request.launch)")
         guard request.launch else { return link.id }
-        launchRemoteCard(link: link, worktree: request.worktree, machine: request.machine)
+        launchRemoteCard(link: link, worktree: request.worktree, machine: request.machine, human: request.human)
         return link.id
     }
 
     /// `machine` is "mac", the name of a machine, or nil for the defaults
     /// of the project.
-    func launchRemoteCard(link: Link, worktree: String?, machine: String? = nil) {
+    func launchRemoteCard(link: Link, worktree: String?, machine: String? = nil, human: Bool = false) {
         let projectPath = link.projectPath ?? NSHomeDirectory()
         let assistant = link.effectiveAssistant
         if let machine, !isLocalMachine(machine), let peer = peerMachine(named: machine) {
-            let prompt = link.promptBody ?? link.name ?? ""
-            launchOnPeer(cardId: link.id, prompt: prompt, worktree: worktree, peer: peer)
+            guard PromptPreview.isPreview(link) else {
+                launchOnPeer(cardId: link.id, prompt: link.promptBody ?? link.name ?? "", worktree: worktree, peer: peer)
+                return
+            }
+            Task {
+                let prompt = await PromptPreview.fullPrompt(for: link) ?? link.name ?? ""
+                launchOnPeer(cardId: link.id, prompt: prompt, worktree: worktree, peer: peer)
+            }
             return
         }
-        let choice = platform.remoteMachineChoice(machine, projectPath)
+        // The platform knows this master only as "mac".
+        let target = machine.map { isLocalMachine($0) ? "mac" : $0 }
+        let choice = platform.remoteMachineChoice(target, projectPath)
         let skipPermissions = platform.skipPermissions()
         Task {
             let settings = try? await settingsStore.read()
             let project = settings?.projects.first(where: { $0.path == projectPath })
+            var link = link
+            link.promptBody = await PromptPreview.fullPrompt(for: link)
             var prompt = PromptBuilder.buildPrompt(card: link, project: project, settings: settings)
             if prompt.isEmpty { prompt = link.promptBody ?? link.name ?? "" }
             let isGitRepo = FileManager.default.fileExists(atPath: (projectPath as NSString).appendingPathComponent(".git"))
@@ -58,7 +68,8 @@ extension MasterEngine {
                 serviceIdOverride: settings?.defaultAPIServiceIds[assistant.rawValue],
                 modelOverride: link.modelOverride,
                 machineChoice: choice.machine,
-                keepSelection: true
+                keepSelection: true,
+                humanPrompt: human
             )
         }
     }

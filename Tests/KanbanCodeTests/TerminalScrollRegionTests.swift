@@ -16,7 +16,7 @@ struct TerminalScrollRegionTests {
         return (0..<10).map { terminal.getLine(row: $0)?.translateToString(trimRight: true) ?? "" }
     }
 
-    /// agtop scrolls its transcript with a region and SD (`CSI Ps T`);
+    /// rush scrolls its transcript with a region and SD (`CSI Ps T`);
     /// every column of the region moves, not only the first.
     @Test("Scroll down moves whole lines inside the region")
     func scrollDownInRegion() {

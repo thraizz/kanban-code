@@ -84,6 +84,13 @@ public final class RemoteControlServer: Sendable {
     public let peerServer: (any PeerLinksServing)?
     /// Serves the agent sync routes (`/v1/sync/*`, `/v1/optmem/run`) when set.
     public let syncEngine: AgentSyncEngine?
+    /// Serves the vault routes (`/v1/vault/*`) when set.
+    public let vault: VaultService?
+    /// Serves the scrubber routes (`/v1/scrub/*`) when set.
+    public let scrubber: SecretScrubber?
+    /// Told the card of every request the human made to a card from
+    /// another device (`RemoteActivityPolicy`).
+    private let activity: (@Sendable (String) async -> Void)?
     private let bindAddresses: @Sendable () -> [String]
     private let options: Options
     private let requestedPort: Int
@@ -97,9 +104,15 @@ public final class RemoteControlServer: Sendable {
         bindAddresses: @escaping @Sendable () -> [String] = RemoteNetworkAddresses.bindable,
         options: Options = Options(),
         peerServer: (any PeerLinksServing)? = nil,
-        syncEngine: AgentSyncEngine? = nil
+        syncEngine: AgentSyncEngine? = nil,
+        vault: VaultService? = nil,
+        scrubber: SecretScrubber? = nil,
+        activity: (@Sendable (String) async -> Void)? = nil
     ) {
+        self.activity = activity
         self.host = host
+        self.vault = vault
+        self.scrubber = scrubber
         self.devices = devices
         self.peerServer = peerServer
         self.syncEngine = syncEngine
@@ -289,7 +302,7 @@ public final class RemoteControlServer: Sendable {
                 return
             }
 
-            switch await route(request) {
+            switch await route(request, peer: conn.stream.peer) {
             case .response(var response):
                 if response.body.count >= RemoteGzip.minimumBytes, RemoteGzip.accepts(request),
                    let gzipped = RemoteGzip.compress(response.body) {
@@ -333,7 +346,7 @@ public final class RemoteControlServer: Sendable {
         return nil
     }
 
-    private func route(_ request: RemoteHTTPRequest) async -> Outcome {
+    private func route(_ request: RemoteHTTPRequest, peer: RemotePeerAddress?) async -> Outcome {
         let seg = request.segments
         let method = request.method
 
@@ -347,11 +360,50 @@ public final class RemoteControlServer: Sendable {
         }
         guard seg.first == "v1" else { return .response(.error(404, "no route for \(request.rawPath)")) }
 
-        guard let token = token(from: request) else {
+        let bearer = token(from: request)
+        if bearer == nil, let vault, seg.count >= 2, seg[1] == "vault", peer?.isLoopback == true,
+           let response = await RemoteVaultRoutes.handle(
+               method: method, rest: Array(seg.dropFirst()), query: request.query, body: request.body,
+               device: nil, peer: peer, serverPort: port, vault: vault,
+               cardToken: request.header("x-kanban-card-token")) {
+            return .response(response)
+        }
+        if bearer == nil, let scrubber, peer?.isLoopback == true,
+           let response = await RemoteScrubRoutes.handle(
+               method: method, rest: Array(seg.dropFirst()), body: request.body, device: nil, scrubber: scrubber) {
+            return .response(response)
+        }
+        guard let token = bearer else {
             return .response(.error(401, "missing token: send Authorization: Bearer <token>"))
         }
         guard let device = devices.authenticate(token: token) else {
             return .response(.error(401, "unknown or revoked token"))
+        }
+        if let refusal = RemoteScopePolicy.refusal(scope: device.scope, method: method, rest: Array(seg.dropFirst())) {
+            KanbanCodeLog.warn("remote", "refused \(method) /\(seg.joined(separator: "/")) for \(device.name) (\(device.scope.rawValue) scope)")
+            return .response(.error(403, refusal))
+        }
+        let forOwner = RemoteActivityPolicy.actsForOwner(scope: device.scope, header: request.header(RemoteActingFor.header.lowercased()))
+        if forOwner, let activity, let card = RemoteActivityPolicy.card(rest: Array(seg.dropFirst())) {
+            await activity(card)
+        }
+        // What this request forwards to another master goes for the human too.
+        return await RemoteActingFor.$owner.withValue(forOwner) {
+            await self.routeAuthenticated(request, device: device, peer: peer)
+        }
+    }
+
+    private func routeAuthenticated(_ request: RemoteHTTPRequest, device: RemoteDevice, peer: RemotePeerAddress?) async -> Outcome {
+        let seg = request.segments
+        let method = request.method
+        if let scrubber, let response = await RemoteScrubRoutes.handle(
+            method: method, rest: Array(seg.dropFirst()), body: request.body, device: device, scrubber: scrubber) {
+            return .response(response)
+        }
+        if let vault, let response = await RemoteVaultRoutes.handle(
+            method: method, rest: Array(seg.dropFirst()), query: request.query, body: request.body,
+            device: device, peer: peer, serverPort: port, vault: vault) {
+            return .response(response)
         }
 
         do {
@@ -367,13 +419,16 @@ public final class RemoteControlServer: Sendable {
             }
             if rest.first == "cli" {
                 guard method == "POST" else { return .response(.error(405, "use POST")) }
-                guard device.scope == .full else {
+                guard device.scope.actsForOwner else {
                     return .response(.error(403, "the \(device.scope.rawValue) scope cannot run commands"))
                 }
                 guard let body = try? JSONDecoder.remote.decode(RemoteCLIRequest.self, from: request.body) else {
                     return .response(.error(400, "body must be {\"argv\": [...], \"env\", \"images\", ...}"))
                 }
                 return .response(.json(try await host.runCLI(body)))
+            }
+            if rest.first == "attention" {
+                return .response(try await routeAttention(method: method, rest: rest, body: request.body, device: device))
             }
             if rest.count >= 2, rest[0] == "channels", rest[1] == "files" {
                 let path = rest.dropFirst(2).joined(separator: "/")
@@ -386,7 +441,7 @@ public final class RemoteControlServer: Sendable {
                         status: 200, headers: [("Content-Type", "application/octet-stream")],
                         body: try await host.channelFile(path: path, offset: offset)))
                 case ("PUT", false):
-                    guard device.scope == .full else {
+                    guard device.scope.actsForOwner else {
                         return .response(.error(403, "the \(device.scope.rawValue) scope cannot write channels"))
                     }
                     let created = try await host.seedChannelFile(path: path, data: request.body)
@@ -396,11 +451,19 @@ public final class RemoteControlServer: Sendable {
                 }
             }
             let id = rest.count >= 2 && rest[0] == "cards" ? rest[1] : ""
-            let shape = rest.enumerated().map { item in
-                let wildcard = rest[0] == "cards" && (item.offset == 1 || (item.offset == 3 && rest[2] == "queue"))
-                return wildcard ? "*" : item.element
-            }.joined(separator: "/")
+            let shape = RemoteScopePolicy.shape(rest)
             switch (method, shape) {
+            case ("GET", "cards/search"):
+                let scope = request.query["scope"].flatMap { $0.isEmpty ? nil : $0 }
+                guard scope == nil || RemoteCardSearchScope(rawValue: scope!) != nil else {
+                    return .response(.error(400, "scope must be all, older or archived"))
+                }
+                return .response(.json(await host.searchCards(RemoteCardSearchRequest(
+                    query: request.formValue("q") ?? "",
+                    scope: scope.flatMap(RemoteCardSearchScope.init(rawValue:)) ?? .all,
+                    limit: Int(request.query["limit"] ?? "") ?? CardSearch.defaultLimit,
+                    local: Self.isOn(request.query["local"])))))
+
             case ("GET", "me"):
                 return .response(.json(device))
 
@@ -410,9 +473,13 @@ public final class RemoteControlServer: Sendable {
 
             case ("PATCH", "cards/*"):
                 guard let body = try? JSONDecoder.remote.decode(RemoteCardUpdate.self, from: request.body) else {
-                    return .response(.error(400, "body must be {\"name\", \"column\", \"archived\"}, each optional"))
+                    return .response(.error(400, "body must be {\"name\", \"column\", \"archived\", \"pinned\"}, each optional"))
                 }
                 return .response(.json(try await host.updateCard(cardId: id, body)))
+
+            case ("DELETE", "cards/*"):
+                try await host.deleteCard(cardId: id)
+                return .response(.noContent)
 
             case ("GET", "cards/*"):
                 guard let card = await host.board().cards.first(where: { $0.id == id }) else {
@@ -425,8 +492,11 @@ public final class RemoteControlServer: Sendable {
                 let before = request.query["before"].flatMap { $0.isEmpty ? nil : $0 }
                 return .response(.json(try await host.transcript(cardId: id, limit: limit, before: before)))
 
+            case ("GET", "machines"):
+                return .response(.json(RemoteMachineList(machines: await host.machines())))
+
             case ("POST", "tasks"):
-                guard let body = try? JSONDecoder.remote.decode(RemoteTaskRequest.self, from: request.body) else {
+                guard var body = try? JSONDecoder.remote.decode(RemoteTaskRequest.self, from: request.body) else {
                     return .response(.error(400, "body must be a RemoteTaskRequest: {\"project\", \"prompt\", ...}"))
                 }
                 guard !body.project.trimmingCharacters(in: .whitespaces).isEmpty else {
@@ -436,6 +506,8 @@ public final class RemoteControlServer: Sendable {
                     return .response(.error(400, "prompt is required"))
                 }
                 _ = try RemotePromptImages.decode(body.images)
+                // An agent's task is never the human's, whatever it claims.
+                if device.scope == .agent { body.human = nil }
                 return .response(.json(try await host.createTask(body), status: 201))
 
             case ("POST", "cards/*/prompt"):
@@ -449,8 +521,29 @@ public final class RemoteControlServer: Sendable {
                 // Each image goes where its [Image #N] marker is in the text.
                 let (text, images) = PromptImageLayout.arranged(text: body.text, images: decoded)
                 var prompt = body
-                prompt.text = text
+                prompt.text = device.scope == .agent ? CardPromptReader.markRemoteAgentMessage(text, device: device.name) : text
+                // An agent's prompt is never the human's, whatever it claims.
+                if device.scope == .agent { prompt.human = nil }
                 try await host.sendPrompt(cardId: id, prompt, images: images)
+                return .response(.noContent)
+
+            case ("POST", "cards/*/side-chat"):
+                guard let body = try? JSONDecoder.remote.decode(RemoteSideChatRequest.self, from: request.body) else {
+                    return .response(.error(400, "body must be {\"kind\": \"btw\"|\"catchup\", \"question\", \"history\"}"))
+                }
+                return .response(.json(try await host.startSideChat(cardId: id, body), status: 201))
+
+            case ("GET", "cards/*/side-chat/*"):
+                return .response(.json(try await host.sideChatRun(cardId: id, runId: rest[3])))
+
+            case ("GET", "cards/*/slash-commands"):
+                return .response(.json(try await host.slashCommands(cardId: id)))
+
+            case ("POST", "cards/*/pasted-image"):
+                return .response(.json(try await host.storePastedImage(cardId: id, image: request.body), status: 201))
+
+            case ("DELETE", "cards/*/side-chat/*"):
+                try await host.cancelSideChat(cardId: id, runId: rest[3])
                 return .response(.noContent)
 
             case ("POST", "cards/*/queue/*"):
@@ -483,6 +576,17 @@ public final class RemoteControlServer: Sendable {
                 }
                 return .response(.json(try await host.moveCard(cardId: id, to: body.to.trimmingCharacters(in: .whitespaces))))
 
+            case ("POST", "cards/*/worktree/remove"):
+                // It deletes files on the machine, uncommitted work included.
+                guard device.scope.actsForOwner else {
+                    return .response(.error(403, "the \(device.scope.rawValue) scope cannot remove worktrees"))
+                }
+                return .response(.json(try await host.removeWorktree(cardId: id)))
+
+            case ("POST", "cards/*/discover"):
+                try await host.discoverBranches(cardId: id)
+                return .response(.noContent)
+
             case ("GET", "cards/*/handover"):
                 return .response(.json(try await host.handoverInfo(cardId: id)))
 
@@ -500,7 +604,7 @@ public final class RemoteControlServer: Sendable {
                 return .events(device)
 
             case ("GET", "cards/*/terminal"):
-                guard device.scope == .full else {
+                guard device.scope == .full || device.scope == .terminal else {
                     return .response(.error(403, "the \(device.scope.rawValue) scope cannot open terminals"))
                 }
                 guard request.wantsWebSocket else { return .response(.error(426, "WebSocket upgrade required")) }
@@ -528,16 +632,51 @@ public final class RemoteControlServer: Sendable {
         }
     }
 
+    private func routeAttention(method: String, rest: [String], body: Data, device: RemoteDevice) async throws -> RemoteHTTPResponse {
+        switch (method, rest.count) {
+        case ("GET", 1):
+            return .json(AttentionListResponse(requests: await host.attention()))
+        case ("POST", 2) where rest[1] == "presence":
+            guard device.scope.actsForOwner else { return .error(403, "the \(device.scope.rawValue) scope cannot report presence") }
+            guard let presence = try? JSONDecoder.remote.decode(MacPresence.self, from: body) else {
+                return .error(400, "body must be a MacPresence")
+            }
+            await host.reportPresence(presence)
+            return .noContent
+        case ("POST", 3) where rest[2] == "resolve":
+            // An agent must never answer what it is waiting on.
+            guard device.scope.actsForOwner else { return .error(403, "the \(device.scope.rawValue) scope cannot resolve attention requests") }
+            guard let resolve = try? JSONDecoder.remote.decode(AttentionResolveRequest.self, from: body),
+                  !resolve.resolution.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return .error(400, "body must be {\"resolution\": \"...\"}")
+            }
+            try await host.resolveAttention(id: rest[1], resolution: resolve.resolution, by: resolve.by ?? device.name,
+                                            unsealed: resolve.unsealed)
+            return .noContent
+        case (_, 1), (_, 2), (_, 3):
+            return .error(405, "method \(method) not allowed on /v1/\(rest.joined(separator: "/"))")
+        default:
+            return .error(404, "no route for \(method) /v1/\(rest.joined(separator: "/"))")
+        }
+    }
+
     /// `?all=1` asks for every card instead of the working set.
     static func wantsAll(_ request: RemoteHTTPRequest) -> Bool {
-        guard let value = request.query["all"]?.lowercased() else { return false }
+        isOn(request.query["all"])
+    }
+
+    /// A query flag: present with no value, or `1`, `true`, `yes`.
+    static func isOn(_ value: String?) -> Bool {
+        guard let value = value?.lowercased() else { return false }
         return value == "" || value == "1" || value == "true" || value == "yes"
     }
 
     private static let knownShapes: Set<String> = [
-        "me", "board", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
+        "me", "board", "machines", "cards/search", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
         "cards/*/interrupt", "cards/*/resume", "events", "cards/*/terminal",
         "cards/*/move", "cards/*/handover", "cards/*/transcript/raw",
+        "cards/*/worktree/remove", "cards/*/discover", "cards/*/side-chat", "cards/*/side-chat/*",
+        "cards/*/slash-commands", "cards/*/pasted-image",
     ]
 
     static func response(for error: Error) -> RemoteHTTPResponse {
@@ -602,13 +741,16 @@ public final class RemoteControlServer: Sendable {
                 let board = await host.board()
                 return all ? board : RemoteWorkingSet.filter(board)
             }
-            if let text = self.encodedEvent(tracker.fullBoard(await current())) {
+            var lastAttention = await host.attention()
+            var first = tracker.fullBoard(await current())
+            first.attention = lastAttention
+            if let text = self.encodedEvent(first) {
                 try? await ws.sendText(text)
             }
             var lastPush = Date()
             for await next in triggers {
                 if Task.isCancelled { return }
-                let event: RemoteEvent?
+                var event: RemoteEvent?
                 switch next {
                 case .resync:
                     event = tracker.fullBoard(await current())
@@ -618,6 +760,12 @@ public final class RemoteControlServer: Sendable {
                     if Task.isCancelled { return }
                     // The app signals many changes that leave the wire board as it was.
                     event = tracker.delta(await current())
+                }
+                let attention = await host.attention()
+                if attention != lastAttention || next == .resync {
+                    lastAttention = attention
+                    if event == nil { event = RemoteEvent(type: .cards, upserted: [], removed: []) }
+                    event?.attention = attention
                 }
                 guard let event, let text = self.encodedEvent(event) else { continue }
                 lastPush = Date()

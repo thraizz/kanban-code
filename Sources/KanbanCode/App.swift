@@ -1,4 +1,5 @@
 import SwiftUI
+import LocalAuthentication
 import AppKit
 import UserNotifications
 import KanbanCodeCore
@@ -8,6 +9,7 @@ struct KanbanCodeApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
 
     init() {
+        InheritedSessionEnvironment.scrub()
         MainThreadWatchdog.shared.start()
         MemoryDiagnostics.shared.start()
         ChatBootstrap.run()
@@ -125,6 +127,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         defaults.set(false, forKey: "NSAutomaticCapitalizationEnabled")
         defaults.set(false, forKey: "NSAutomaticPeriodSubstitutionEnabled")
 
+        InputLatencyProbe.shared.start()
+
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         if let window = NSApp.windows.first {
@@ -178,12 +182,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         # Installed by Kanban Code — TypeScript CLI wrapper.
         exec node "\(cliPath)" "$@"
         """
+        let kvScript = """
+        #!/bin/sh
+        # Installed by Kanban Code: the vault CLI.
+        exec node "\(resourceURL.appendingPathComponent("cli/dist/kv.js").path)" "$@"
+        """
         do {
             try FileManager.default.createDirectory(at: binDir, withIntermediateDirectories: true)
             try script.write(to: scriptPath, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes(
                 [.posixPermissions: 0o755], ofItemAtPath: scriptPath.path
             )
+            let kvPath = binDir.appendingPathComponent("kv")
+            try kvScript.write(to: kvPath, atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: kvPath.path)
         } catch {
             print("[Kanban Code] Failed to install CLI: \(error)")
         }
@@ -199,33 +211,43 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
 
     /// Check for a pending project open request from the CLI.
     private func checkPendingOpenProject() {
+        Task.detached(priority: .utility) {
+            guard let path = Self.consumeMarkerFile(named: "open-project") else { return }
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .kanbanCodeOpenProject, object: nil,
+                    userInfo: ["path": path]
+                )
+            }
+        }
+    }
+
+    /// Consume a one-line marker file (read + delete). Runs off the main thread:
+    /// this fires on every app activation, so it must not do file I/O on main.
+    private nonisolated static func consumeMarkerFile(named name: String) -> String? {
         let file = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".kanban-code/open-project")
-        guard let path = try? String(contentsOf: file, encoding: .utf8)
+            .appendingPathComponent(".kanban-code/\(name)")
+        guard let raw = try? String(contentsOf: file, encoding: .utf8)
             .trimmingCharacters(in: .whitespacesAndNewlines),
-              !path.isEmpty else { return }
+              !raw.isEmpty else { return nil }
         try? FileManager.default.removeItem(at: file)
-        NotificationCenter.default.post(
-            name: .kanbanCodeOpenProject, object: nil,
-            userInfo: ["path": path]
-        )
+        return raw
     }
 
     /// Check for a pending channel-focus request: select the channel the
     /// gateway wrote to ~/.kanban-code/focus-channel when a room spawned, so
     /// the board snaps to the room's channel without a relaunching deep link.
     private func checkPendingFocusChannel() {
-        let file = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".kanban-code/focus-channel")
-        guard let raw = try? String(contentsOf: file, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-              !raw.isEmpty else { return }
-        try? FileManager.default.removeItem(at: file)
-        let name = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
-        NotificationCenter.default.post(
-            name: .kanbanCodeSelectChannel, object: nil,
-            userInfo: ["channelName": name]
-        )
+        Task.detached(priority: .utility) {
+            guard let raw = Self.consumeMarkerFile(named: "focus-channel") else { return }
+            let name = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
+            await MainActor.run {
+                NotificationCenter.default.post(
+                    name: .kanbanCodeSelectChannel, object: nil,
+                    userInfo: ["channelName": name]
+                )
+            }
+        }
     }
 
     /// Prevent Cmd+W from closing the single window — close terminal tab instead.
@@ -654,7 +676,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let info = response.notification.request.content.userInfo
-        if let cardId = info["cardId"] as? String {
+        if let attentionId = info[MacAttentionNotificationClient.requestIdKey] as? String,
+           response.actionIdentifier.hasPrefix(MacAttentionNotificationClient.optionPrefix),
+           let index = Int(response.actionIdentifier.dropFirst(MacAttentionNotificationClient.optionPrefix.count)) {
+            // An option picked on the banner answers without opening the app.
+            let request = MainActor.assumeIsolated { AppComposition.shared.store.state.attentionRequests[attentionId] }
+            if let request, request.options.indices.contains(index) {
+                let resolution = request.options[index]
+                Task { _ = await MacVaultDevice.answer(request, option: resolution) }
+            }
+            completionHandler()
+            return
+        }
+        if let attentionId = info[MacAttentionNotificationClient.requestIdKey] as? String {
+            // Opens the card, then the request's details over it.
+            if let cardId = info["cardId"] as? String {
+                NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
+            }
+            NotificationCenter.default.post(name: .kanbanCodeShowAttention, object: nil, userInfo: ["id": attentionId])
+        } else if let cardId = info["cardId"] as? String {
             NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
         } else if let kind = info["chatKind"] as? String {
             switch kind {
@@ -680,6 +720,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             NSApp.activate(ignoringOtherApps: true)
         }
         completionHandler()
+    }
+}
+
+extension AppDelegate {
+    /// Touch ID (or the password) before an approval that asks for it.
+    static func confirmWithBiometry(reason: String) async -> Bool {
+        let context = LAContext()
+        var error: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else { return false }
+        return (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) ?? false
     }
 }
 
@@ -735,7 +785,15 @@ extension Notification.Name {
     static let browserFocusAddressBar = Notification.Name("browserFocusAddressBar")
     static let browserReload = Notification.Name("browserReload")
     static let renameSelectedCard = Notification.Name("renameSelectedCard")
+    /// Asks the detail view of `userInfo["cardId"]` to open one of its own
+    /// sheets or modes, named by `userInfo["request"]` (a `CardDetailRequest`).
+    static let cardDetailRequest = Notification.Name("cardDetailRequest")
     static let kanbanReopenClosedTab = Notification.Name("kanbanReopenClosedTab")
+}
+
+/// What the card detail view opens on a `.cardDetailRequest`.
+enum CardDetailRequest: String {
+    case promptHistory, vault, checkpoint
 }
 
 /// Lock-protected box so a bounded synchronous process read can hand its output

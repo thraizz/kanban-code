@@ -1,4 +1,4 @@
-.PHONY: build test run app app-debug run-app run-release clean cli install-cli web ios-project ios ios-run ios-test ios-device ios-autoinstall ios-autoinstall-remove
+.PHONY: build test run app app-debug run-app run-release clean cli install-cli web ios-project ios ios-run ios-test ios-device ios-autoinstall ios-autoinstall-remove rush-plugins
 
 BUNDLE_NAME = KanbanCode.app
 BUNDLE_DIR = build/$(BUNDLE_NAME)
@@ -37,6 +37,9 @@ app: build cli install-cli web
 	@/bin/echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>CFBundleExecutable</key><string>kanban-code-active-session</string><key>CFBundleIdentifier</key><string>com.kanban-code.active-session</string><key>CFBundleName</key><string>kanban-code-active-session</string><key>CFBundlePackageType</key><string>APPL</string><key>CFBundleVersion</key><string>$(VERSION)</string><key>LSUIElement</key><true/></dict></plist>' > $(BUNDLE_DIR)/Contents/Helpers/kanban-code-active-session.app/Contents/Info.plist
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(BUNDLE_DIR)/Contents/Helpers/kanban-code-active-session.app
 	@/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister -f $(BUNDLE_DIR)/Contents/Helpers/kanban-code-active-session.app 2>/dev/null || true
+	@# Markdown export helper, run by `kanban export`
+	@cp $(BUILD_DIR)/kanban-code-export $(BUNDLE_DIR)/Contents/Helpers/kanban-code-export
+	@codesign --force --sign "$(CODESIGN_IDENTITY)" $(BUNDLE_DIR)/Contents/Helpers/kanban-code-export
 	@cp Sources/KanbanCode/Resources/AppIcon.icns $(BUNDLE_DIR)/Contents/Resources/AppIcon.icns
 	@echo '<?xml version="1.0" encoding="UTF-8"?>' > $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' >> $(BUNDLE_DIR)/Contents/Info.plist
@@ -49,6 +52,8 @@ app: build cli install-cli web
 	@echo '<key>CFBundlePackageType</key><string>APPL</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<key>LSMinimumSystemVersion</key><string>14.0</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<key>NSHighResolutionCapable</key><true/>' >> $(BUNDLE_DIR)/Contents/Info.plist
+	@# Notifications default to Persistent: an approval waits on screen.
+	@echo '<key>NSUserNotificationAlertStyle</key><string>alert</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@# Peer masters answer plain http on the tailnet (WireGuard encrypts it).
 	@echo '<key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<key>LSUIElement</key><false/>' >> $(BUNDLE_DIR)/Contents/Info.plist
@@ -110,7 +115,13 @@ install-cli: cli
 	@mkdir -p $(HOME)/.local/bin
 	@printf '#!/bin/sh\nexec node "$(CURDIR)/cli/dist/kanban.js" "$$@"\n' > $(HOME)/.local/bin/kanban
 	@chmod 755 $(HOME)/.local/bin/kanban
+	@printf '#!/bin/sh\nexec node "$(CURDIR)/cli/dist/kv.js" "$$@"\n' > $(HOME)/.local/bin/kv
+	@chmod 755 $(HOME)/.local/bin/kv
 	@echo "Installed kanban CLI to ~/.local/bin/kanban"
+
+# Kanban Code's rush plugins, installed where rush loads them (Scripts/rush-plugins-install.sh).
+rush-plugins:
+	@Scripts/rush-plugins-install.sh
 
 clean:
 	swift package clean

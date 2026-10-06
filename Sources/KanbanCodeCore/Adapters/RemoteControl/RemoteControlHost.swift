@@ -6,9 +6,16 @@ import KanbanCodeRemoteKit
 public protocol RemoteControlHost: AnyObject, Sendable {
     func board() async -> RemoteBoard
 
+    /// Cards matching the request among every card this master knows and,
+    /// unless the request is `local`, the ones its peers know.
+    func searchCards(_ request: RemoteCardSearchRequest) async -> RemoteCardSearchResult
+
     /// Newest `limit` messages of the card's conversation, older than
     /// `before` when given.
     func transcript(cardId: String, limit: Int, before: String?) async throws -> RemoteTranscript
+
+    /// The machines a task can run on, this master first.
+    func machines() async -> [RemoteMachineEntry]
 
     /// Creates a card and, unless `launch` is false, starts its session.
     func createTask(_ request: RemoteTaskRequest) async throws -> RemoteCard
@@ -28,12 +35,12 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     func resume(cardId: String) async throws -> RemoteCard
 
     /// The command a remote terminal runs for one of the card's terminals,
-    /// as argv: `agtop open <id> --solo` for agtop, `tmux attach -t <name>`
+    /// as argv: `rush open <id>` for rush (`agtop open <id> --solo` for agtop), `tmux attach -t <name>`
     /// for tmux.
     func terminalCommand(cardId: String, sessionName: String) async throws -> [String]
 
     /// Scrolls a tmux terminal's history for a remote viewer (up when
-    /// `lines` is positive). agtop terminals scroll through mouse reporting
+    /// `lines` is positive). rush terminals scroll through mouse reporting
     /// instead and ignore this.
     func scrollTerminal(sessionName: String, lines: Int) async
 
@@ -51,9 +58,19 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// apply here whichever master owns the card, and sync to the others.
     func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard
 
+    /// Deletes an archived card; a card still on the board is refused (409).
+    func deleteCard(cardId: String) async throws
+
     /// Continues the card elsewhere: another master (ownership moves there),
     /// a machine this master drives, or back here.
     func moveCard(cardId: String, to target: String) async throws -> RemoteCard
+
+    /// Removes the card's worktree on the machine that holds it and drops
+    /// the worktree from the card (the card itself when it has no session).
+    func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval
+
+    /// Re-scans the card for pushed branches and pull requests.
+    func discoverBranches(cardId: String) async throws
 
     /// Replaces the text of a queued prompt.
     func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws
@@ -66,9 +83,40 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     func channelFile(path: String, offset: Int) async throws -> Data
     /// Creates a file of `channels/` that does not exist yet; false when it does.
     func seedChannelFile(path: String, data: Data) async throws -> Bool
+
+    /// Open attention requests, oldest first.
+    func attention() async -> [AttentionRequest]
+
+    /// Answers an attention request in its session (or for the vault) and
+    /// clears it on every device. `by` names the device acting.
+    /// `unsealed` is what the device opened with its own vault key.
+    func resolveAttention(id: String, resolution: String, by: String, unsealed: VaultUnsealed?) async throws
+
+    /// Presence the Mac reported, for the escalation of the requests here.
+    func reportPresence(_ presence: MacPresence) async
+
+    /// Starts a side chat run for the card (`/btw`, `/catchup`): it reads
+    /// the session and writes nothing into it.
+    func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun
+    /// The run and its answer so far.
+    func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun
+    func cancelSideChat(cardId: String, runId: String) async throws
+
+    /// What the card's chat composer offers after `/`.
+    func slashCommands(cardId: String) async throws -> [RemoteSlashCommand]
+
+    /// Keeps an image pasted into the card's terminal as a file on the
+    /// master that owns the card, and returns where it is there.
+    func storePastedImage(cardId: String, image: Data) async throws -> RemotePastedImage
 }
 
 extension RemoteControlHost {
+    public func machines() async -> [RemoteMachineEntry] { [] }
+
+    public func searchCards(_ request: RemoteCardSearchRequest) async -> RemoteCardSearchResult {
+        RemoteCardSearch.search(await board().cards, request)
+    }
+
     public func rawTranscript(cardId: String, offset: Int, limit: Int) async throws -> RemoteRawTranscript {
         throw RemoteHostError.notFound("this host does not serve raw transcripts")
     }
@@ -83,6 +131,18 @@ extension RemoteControlHost {
 
     public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
         throw RemoteHostError.notFound("this host does not edit cards")
+    }
+
+    public func deleteCard(cardId: String) async throws {
+        throw RemoteHostError.notFound("this host does not delete cards")
+    }
+
+    public func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval {
+        throw RemoteHostError.notFound("this host does not remove worktrees")
+    }
+
+    public func discoverBranches(cardId: String) async throws {
+        throw RemoteHostError.notFound("this host does not discover branches")
     }
 
     public func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws {
@@ -103,6 +163,36 @@ extension RemoteControlHost {
 
     public func seedChannelFile(path: String, data: Data) async throws -> Bool {
         throw RemoteHostError.notFound("this host does not serve channels")
+    }
+
+    public func attention() async -> [AttentionRequest] { [] }
+
+    public func resolveAttention(id: String, resolution: String, by: String) async throws {
+        try await resolveAttention(id: id, resolution: resolution, by: by, unsealed: nil)
+    }
+
+    public func resolveAttention(id: String, resolution: String, by: String, unsealed: VaultUnsealed?) async throws {
+        throw RemoteHostError.notFound("this host has no attention requests")
+    }
+
+    public func reportPresence(_ presence: MacPresence) async {}
+
+    public func startSideChat(cardId: String, _ request: RemoteSideChatRequest) async throws -> RemoteSideChatRun {
+        throw RemoteHostError.notFound("this host has no side chat")
+    }
+
+    public func sideChatRun(cardId: String, runId: String) async throws -> RemoteSideChatRun {
+        throw RemoteHostError.notFound("this host has no side chat")
+    }
+
+    public func cancelSideChat(cardId: String, runId: String) async throws {
+        throw RemoteHostError.notFound("this host has no side chat")
+    }
+
+    public func slashCommands(cardId: String) async throws -> [RemoteSlashCommand] { [] }
+
+    public func storePastedImage(cardId: String, image: Data) async throws -> RemotePastedImage {
+        throw RemoteHostError.notFound("this host does not keep pasted images")
     }
 }
 

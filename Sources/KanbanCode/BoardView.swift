@@ -34,6 +34,7 @@ struct BoardView: View {
     var enabledAssistants: [CodingAssistant] = []
     var onMigrateAssistant: (String, CodingAssistant) -> Void = { _, _ in }
     var onRefreshBacklog: () -> Void = {}
+    var onDeleteAllCards: (KanbanCodeColumn) -> Void = { _ in }
 
     var canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool = { _, _ in true }
     var onDropCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
@@ -47,31 +48,22 @@ struct BoardView: View {
     }
 
     private var activeSubagentsByParent: [String: [KanbanCodeCard]] {
-        Dictionary(grouping: store.state.filteredCards.filter {
-            $0.link.parentCardId != nil && !$0.link.manuallyArchived
-        }) { $0.link.parentCardId! }
-        .mapValues { cards in
-            cards.sorted {
-                let left = $0.link.lastActivity ?? $0.link.updatedAt
-                let right = $1.link.lastActivity ?? $1.link.updatedAt
-                return left == right ? $0.id < $1.id : left > right
-            }
-        }
+        store.state.subagentCardsByParent
     }
 
     private var activeSubagentCardsById: [String: KanbanCodeCard] {
-        Dictionary(uniqueKeysWithValues: activeSubagentsByParent.values.flatMap { $0 }.map { ($0.id, $0) })
+        store.state.subagentCardsById
     }
 
     private var activeSubagentLinks: [String: Link] {
-        Dictionary(uniqueKeysWithValues: activeSubagentCardsById.values.map { ($0.id, $0.link) })
+        activeSubagentCardsById.mapValues(\.link)
     }
 
     @ViewBuilder
     private var channelsPseudoColumn: some View {
         let channels = store.state.channels
         let pinnedCards = store.state.pinnedCards
-        let descendantCounts = SubagentHierarchy.descendantCounts(in: store.state.links)
+        let descendantCounts = store.state.descendantCounts
         if !channels.isEmpty || !pinnedCards.isEmpty {
             // The rail scrolls on its own. Bare, its height grows with the
             // pinned count, and a rail taller than the window vertically
@@ -188,7 +180,7 @@ struct BoardView: View {
     }
 
     private var boardContent: some View {
-        let descendantCounts = SubagentHierarchy.descendantCounts(in: store.state.links)
+        let descendantCounts = store.state.descendantCounts
         return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(alignment: .top, spacing: 6) {
@@ -241,6 +233,7 @@ struct BoardView: View {
                             enabledAssistants: enabledAssistants,
                             onMigrateAssistant: onMigrateAssistant,
                             onRefreshBacklog: column == .backlog ? onRefreshBacklog : nil,
+                            onDeleteAllCards: column == .allSessions ? { onDeleteAllCards(column) } : nil,
                             onCardClicked: onCardClicked,
                             onColumnBackgroundClick: onColumnBackgroundClick
                         )

@@ -2,7 +2,7 @@ import Foundation
 import KanbanCodeRemoteKit
 
 /// The agent sync routes of the Remote Control server (Settings > Sync),
-/// for full-scope devices only: they read and run things in the home folder.
+/// for full-scope devices and peer masters only: they read and run things in the home folder.
 ///
 ///   GET  /v1/sync/state                  config, mirror manifests, git origins
 ///   GET  /v1/sync/file?entry=&path=      one file, home folder marked
@@ -18,7 +18,7 @@ enum RemoteSyncRoutes {
         engine: AgentSyncEngine
     ) async -> RemoteHTTPResponse? {
         guard rest.first == "sync" || rest == ["optmem", "run"] else { return nil }
-        guard device.scope == .full else {
+        guard device.scope.actsForOwner else {
             return .error(403, "the \(device.scope.rawValue) scope cannot sync the agent setup")
         }
         switch rest {

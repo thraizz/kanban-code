@@ -1,5 +1,6 @@
 import SwiftUI
 import KanbanCodeCore
+import KanbanCodeRemoteKit
 import MarkdownUI
 
 // MARK: - Chat View
@@ -56,6 +57,28 @@ struct ChatView: View {
 
     @State private var pendingMessageTime: Date = .distantPast
     @State private var userTurnCountAtSend: Int = 0
+    /// A message of the chat a catch-up link asked to show.
+    @State private var jumpRequest: ChatJumpRequest?
+    @State private var sideChatCollapsed = false
+
+    /// The card's side chat (`/btw`, `/catchup`): Claude Code sessions only.
+    private var sideChat: SideChatController? {
+        assistant == .claude && !cardId.isEmpty ? SideChatCenter.controller(for: cardId) : nil
+    }
+
+    /// What the composer offers after `/`, from the board state.
+    private var slashCommands: [RemoteSlashCommand] {
+        guard !cardId.isEmpty else { return [] }
+        return AppComposition.shared.engine.slashCommandsShown(cardId: cardId, assistant: assistant)
+    }
+
+    /// Sends a prompt to the session, with the waiting bubble until it lands.
+    private func sendToSession(_ text: String, _ images: [String]) {
+        pendingMessage = text
+        pendingMessageTime = .now
+        userTurnCountAtSend = turns.filter { $0.role == "user" }.count
+        onSendPrompt(text, images)
+    }
 
     private func clearPendingIfMatched() {
         guard pendingMessage != nil else { return }
@@ -110,8 +133,14 @@ struct ChatView: View {
                     onFork: onFork,
                     onCheckpoint: onCheckpoint,
                     githubBaseURL: githubBaseURL,
+                    jumpRequest: jumpRequest,
+                    topInset: sideChat?.state.isOpen == true ? SideChatPanel.foldedHeight : 0,
                     onSendAnswer: { answer in
-                        onSendPrompt(answer, [])
+                        let cardId = cardId
+                        Task { @MainActor in
+                            if let answerCard = AppServices.answerCard, await answerCard(cardId, answer) { return }
+                            onSendPrompt(answer, [])
+                        }
                     }
                 )
 
@@ -151,6 +180,27 @@ struct ChatView: View {
                     .padding(.bottom, 2)
                 }
             }
+            // Only the panel animates, inside its overlay: the chat's top
+            // inset changes in one step, so its layout never follows an
+            // animated height.
+            .overlay(alignment: .top) {
+                ZStack(alignment: .top) {
+                    if let sideChat, sideChat.state.isOpen {
+                        SideChatPanel(
+                            controller: sideChat,
+                            collapsed: $sideChatCollapsed,
+                            onJump: { offset in
+                                // The panel folds so the message shows under it.
+                                withAnimation(.easeInOut(duration: 0.15)) { sideChatCollapsed = true }
+                                jumpRequest = ChatJumpRequest(offset: offset)
+                            },
+                            onSendToMain: { prompt in sendToSession(prompt, []) }
+                        )
+                        .transition(.move(edge: .top).combined(with: .opacity))
+                    }
+                }
+                .animation(.easeInOut(duration: 0.18), value: sideChat?.state.isOpen)
+            }
 
             if tmuxSessionName != nil {
             ChatInputBar(
@@ -160,16 +210,31 @@ struct ChatView: View {
                 contextUsage: contextUsage,
                 userMessageHistory: turns.filter { $0.role == "user" }.reversed().compactMap {
                     let text = $0.contentBlocks.compactMap { b in if case .text = b.kind { return b.text } else { return nil } }.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
-                    return text.isEmpty ? nil : text
+                    // A compaction summary is not a message to recall.
+                    return text.isEmpty || HarnessNote.classify(text) == .compactionSummary ? nil : text
                 },
                 onSend: { text, images in
-                    pendingMessage = text
-                    pendingMessageTime = .now
-                    userTurnCountAtSend = turns.filter { $0.role == "user" }.count
-                    onSendPrompt(text, images)
+                    // /btw and /catchup open the side chat; nothing goes to the session.
+                    if let sideChat, let command = SideChatCommand.parse(text) {
+                        sideChatCollapsed = false
+                        sideChat.run(command)
+                        return
+                    }
+                    sendToSession(text, images)
+                },
+                onCatchUp: sideChat.map { sideChat in
+                    {
+                        sideChatCollapsed = false
+                        sideChat.run(.catchup)
+                    }
                 },
                 onQueuePrompt: onQueuePrompt,
                 onEscape: onEscape,
+                slashCommands: slashCommands,
+                onSlashMenuOpen: {
+                    guard !cardId.isEmpty else { return }
+                    AppComposition.shared.engine.refreshSlashCommands(cardId: cardId)
+                },
                 text: $draftText,
                 pastedImages: $draftImages
             )
@@ -243,7 +308,16 @@ private struct ChatMessageList: View {
     var onFork: (() -> Void)?
     var onCheckpoint: ((ConversationTurn) -> Void)?
     var githubBaseURL: String?
+    /// A message to scroll to and highlight, by transcript offset.
+    var jumpRequest: ChatJumpRequest?
+    /// Room left at the top of the list for what sits over it.
+    var topInset: CGFloat = 0
     var onSendAnswer: ((String) -> Void)?
+
+    /// The row a catch-up link landed on, tinted for a moment.
+    @State private var highlightedLineNumber: Int?
+    /// A jump whose message is being read off disk.
+    @State private var pendingJumpOffset: Int?
 
     @State private var isAtBottom = true
     @State private var isNearTop = false
@@ -294,7 +368,7 @@ private struct ChatMessageList: View {
         guard turns.count > Self.mountedTurnLimit else { return turns }
         // A search has to keep the turn it stopped on mounted, so during one the
         // window follows the match instead of the end of the list.
-        if let lineNumber = currentMatchLineNumber,
+        if let lineNumber = currentMatchLineNumber ?? highlightedLineNumber,
             let position = turns.firstIndex(where: { $0.lineNumber == lineNumber })
         {
             let start = min(
@@ -361,6 +435,9 @@ private struct ChatMessageList: View {
 
     private var scrollableMessageList: some View {
         scrollViewWithTracking
+            .safeAreaInset(edge: .top, spacing: 0) {
+                if topInset > 0 { Color.clear.frame(height: topInset) }
+            }
             .task(id: tmuxSessionName) {
                 await pollBusyState()
             }
@@ -406,6 +483,10 @@ private struct ChatMessageList: View {
                 pendingMatchScroll = false
                 scrollToCurrentMatch(delay: true)
             }
+            finishPendingJump()
+        }
+        .onChange(of: jumpRequest) { _, request in
+            if let request { jump(toOffset: request.offset) }
         }
         .onChange(of: TurnsEdges(first: turns.first?.lineNumber, last: turns.last?.lineNumber)) {
             old, new in
@@ -537,6 +618,8 @@ private struct ChatMessageList: View {
 
         guard !transition.switched else {
             // A different transcript: start over, following the bottom.
+            pendingJumpOffset = nil
+            highlightedLineNumber = nil
             lastSeenLineNumber = new.last
             isAtBottom = true
             hasNewMessages = false
@@ -547,6 +630,13 @@ private struct ChatMessageList: View {
             pendingMatchScroll = false
             visibleRows = ChatVisibleRows()
             scrollPosition = ScrollPosition(edge: .bottom)
+            return
+        }
+
+        // A chunk loaded for a catch-up link, the same way.
+        if pendingJumpOffset != nil {
+            finishPendingJump()
+            lastSeenLineNumber = new.last
             return
         }
 
@@ -595,6 +685,43 @@ private struct ChatMessageList: View {
         }
     }
 
+    /// Show the message at a transcript offset: scroll it to the top and
+    /// tint it. A message not loaded yet is read off disk first.
+    private func jump(toOffset offset: Int) {
+        let hidden = collapsedRanges.contains { offset >= $0.startOffset && offset < $0.endOffset }
+        if !hidden, let turn = loadedTurn(containing: offset) {
+            scrollToJumpTarget(turn.lineNumber)
+        } else {
+            pendingJumpOffset = offset
+            firstVisibleLineNumber = nil
+            onLoadAroundTurn?(offset)
+        }
+    }
+
+    private func finishPendingJump() {
+        guard let offset = pendingJumpOffset else { return }
+        let hidden = collapsedRanges.contains { offset >= $0.startOffset && offset < $0.endOffset }
+        guard !hidden, let turn = loadedTurn(containing: offset) else { return }
+        pendingJumpOffset = nil
+        scrollToJumpTarget(turn.lineNumber)
+    }
+
+    private func scrollToJumpTarget(_ lineNumber: Int) {
+        shouldAutoScroll = false
+        highlightedLineNumber = lineNumber
+        Task { @MainActor in
+            // One turn later, so a row that just arrived is laid out.
+            try? await Task.sleep(for: .milliseconds(80))
+            withAnimation(.easeInOut(duration: 0.2)) {
+                scrollPosition.scrollTo(id: lineNumber, anchor: .top)
+            }
+            try? await Task.sleep(for: .seconds(3))
+            if highlightedLineNumber == lineNumber {
+                withAnimation(.easeOut(duration: 0.6)) { highlightedLineNumber = nil }
+            }
+        }
+    }
+
     private func pollBusyState() async {
         guard let session = tmuxSessionName else {
             isBusyFromPane = false
@@ -604,8 +731,8 @@ private struct ChatMessageList: View {
         while !Task.isCancelled {
             let newBusy: Bool
             do {
-                if let agtopId = AgtopSessionName.agtopId(fromName: session) {
-                    newBusy = try await tmux.agtop(forSession: session).info(id: agtopId)?.isBusy ?? false
+                if let rushId = RushSessionName.rushId(fromName: session) {
+                    newBusy = try await tmux.rush(forSession: session).info(id: rushId)?.isBusy ?? false
                 } else {
                     let output = try await tmux.capturePane(sessionName: session)
                     newBusy = PaneOutputParser.isWorking(output, assistant: assistant)
@@ -618,7 +745,7 @@ private struct ChatMessageList: View {
                 isBusyFromPane = newBusy
             }
             if let sid = sessionId {
-                let newUsage = ContextUsageReader.read(sessionId: sid)
+                let newUsage = await ContextUsageReader.readAsync(sessionId: sid)
                 if newUsage != contextUsage { contextUsage = newUsage }
             }
             let recentlyBusy = Date.now.timeIntervalSince(lastBusyDetected) < 10
@@ -901,6 +1028,14 @@ private struct ChatMessageList: View {
         .equatable()
         .id(turn.lineNumber)
         .padding(.vertical, 4)
+        .background {
+            if highlightedLineNumber == turn.lineNumber {
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.accentColor.opacity(0.16))
+                    .padding(.horizontal, -8)
+                    .transition(.opacity)
+            }
+        }
         .onScrollVisibilityChange(threshold: 0.01) { visible in
             visibleRows.set(turn.lineNumber, visible: visible)
         }

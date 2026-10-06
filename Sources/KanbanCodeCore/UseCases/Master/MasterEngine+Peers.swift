@@ -97,7 +97,8 @@ extension MasterEngine {
                                    data: data.base64EncodedString())
             }
             forwardToOwner(cardId, "send the prompt") { client in
-                try await client.sendPrompt(cardId: cardId, text: prompt.body, mode: .queue, images: images)
+                try await client.sendPrompt(cardId: cardId, text: prompt.body, mode: .queue, images: images,
+                                            human: prompt.isHuman)
             }
             return true
         case .sendQueuedPrompt(let cardId, let promptId):
@@ -128,10 +129,15 @@ extension MasterEngine {
     }
 
     /// Runs `call` on the card's owner, reporting a failure on the board.
-    func forwardToOwner(_ cardId: String, _ what: String, _ call: @escaping @Sendable (RemoteClient) async throws -> Void) {
+    /// A start (`isStart`) reports on the card itself: its status bar shows
+    /// the owner's answer, the way a start here shows its own.
+    func forwardToOwner(_ cardId: String, _ what: String, isStart: Bool = false,
+                        _ call: @escaping @Sendable (RemoteClient) async throws -> Void) {
+        if isStart { store.dispatch(.cardStartReported(cardId: cardId, report: nil)) }
         Task {
+            let owner = peerName(store.state.links[cardId]?.ownerMachine ?? "")
             guard let client = await ownerClient(forCard: cardId) else {
-                store.dispatch(.setError("Could not \(what): \(peerName(store.state.links[cardId]?.ownerMachine ?? "")) is not a configured peer"))
+                report("Could not \(what): \(owner) is not a configured peer")
                 return
             }
             do {
@@ -141,7 +147,14 @@ extension MasterEngine {
                     store.dispatch(.peerCardRead(cardId: cardId, state: PeerTranscriptMirror.state(of: card)))
                 }
             } catch {
-                store.dispatch(.setError("Could not \(what) on \(peerName(store.state.links[cardId]?.ownerMachine ?? "")): \(error.localizedDescription)"))
+                report("Could not \(what) on \(owner): \(error.localizedDescription)")
+            }
+        }
+        func report(_ message: String) {
+            if isStart {
+                store.dispatch(.cardStartReported(cardId: cardId, report: .failed(message)))
+            } else {
+                store.dispatch(.setError(message))
             }
         }
     }
@@ -157,6 +170,27 @@ extension MasterEngine {
         Task { try? await tmux.sendEscape(sessionName: session) }
     }
 
+    /// Keeps an image on the master that owns the card and returns its path
+    /// there, for a paste into the card's terminal here to type.
+    public func uploadPastedImage(cardId: String, data: Data) async throws -> String {
+        guard let client = await ownerClient(forCard: cardId) else {
+            throw MasterPeerError.unknownPeer(peerName(store.state.links[cardId]?.ownerMachine ?? "the owner"))
+        }
+        return try await client.uploadPastedImage(cardId: cardId, data: data).path
+    }
+
+    /// Sends an image dropped on a card another master owns to its session
+    /// there, as a message of its own. False when this master owns the card.
+    @discardableResult
+    public func sendDroppedImage(cardId: String, png: Data) -> Bool {
+        guard isForeign(cardId) else { return false }
+        let image = RemoteImage(mediaType: "image/png", data: png.base64EncodedString())
+        forwardToOwner(cardId, "send the image") { client in
+            try await client.sendPrompt(cardId: cardId, text: "", images: [image])
+        }
+        return true
+    }
+
     /// Asks the peers to pull now.
     public func notifyPeers() {
         guard let peerSync else { return }
@@ -164,6 +198,32 @@ extension MasterEngine {
     }
 
     // MARK: Moves
+
+    /// Where a resume picked in the resume dialog sends a card another
+    /// master owns: nil when the pick is that owner, which resumes the card
+    /// where it is; "mac" or the picked machine otherwise, where the card
+    /// moves and continues.
+    public func movePick(forForeignCard cardId: String, runRemotely: Bool, machineChoice: BoxdMachineChoice?) -> String? {
+        guard isForeign(cardId), let owner = store.state.links[cardId]?.ownerMachine else { return nil }
+        guard runRemotely else { return "mac" }
+        guard let name = machineChoice?.machineName, peerMachine(named: name)?.id != owner else { return nil }
+        return name
+    }
+
+    /// Moves a card to `target` and reports a refusal on the card, the way
+    /// a failed start is.
+    public func moveCardReporting(_ cardId: String, to target: String) {
+        store.dispatch(.cardStartReported(cardId: cardId, report: nil))
+        Task {
+            do {
+                try await moveCard(cardId, to: target)
+            } catch {
+                let place = isLocalMachine(target) ? "this Mac" : target
+                store.dispatch(.cardStartReported(
+                    cardId: cardId, report: .failed("Could not move the card to \(place): \(error.localizedDescription)")))
+            }
+        }
+    }
 
     /// Continues a card somewhere else. `target` is a peer master (by id or
     /// name: the card's ownership moves there), "mac"/"local" or this
@@ -238,6 +298,18 @@ extension MasterEngine {
         }
         notifyPeers()
     }
+
+    /// Why the card cannot start here yet: it is moving here from a peer
+    /// and its transcript is still on the way. The adoption starts it once
+    /// the copy is done. Nil when the card can start.
+    public func stillMovingHere(_ cardId: String) -> String? {
+        guard let link = store.state.links[cardId], link.migrating == true, store.state.isOwnedLocally(link) else { return nil }
+        let line = store.state.handoverLine(cardId: cardId) ?? "Moving here"
+        return "\(line). It resumes by itself once it is here."
+    }
+
+    /// The name of the peer master with this machine id, as Settings shows it.
+    public func peerDisplayName(_ machineId: String) -> String { peerName(machineId) }
 
     func peerName(_ machineId: String) -> String {
         store.state.peerStatuses.values.first { $0.machine?.id == machineId }?.machine?.name ?? machineId
@@ -318,6 +390,10 @@ extension MasterEngine {
         guard offset < size else { return RemoteRawTranscript(data: Data(), offset: offset, size: size) }
         try handle.seek(toOffset: UInt64(offset))
         let data = try handle.read(upToCount: min(limit, size - offset)) ?? Data()
+        if releasedCards[cardId] != nil {
+            // The new owner is copying the transcript of the card it adopts.
+            store.dispatch(.handoverProgress(cardId: cardId, progress: HandoverProgress(copiedBytes: offset + data.count, totalBytes: size)))
+        }
         return RemoteRawTranscript(data: data, offset: offset, size: size)
     }
 
@@ -328,6 +404,8 @@ extension MasterEngine {
     public func runOwnershipLoop() async {
         var lastNotified = store.state.syncSeq
         var lastAttempt: [String: Date] = [:]
+        var scannedVersion = -1
+        var lastScan = Date.distantPast
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(500))
             let seq = store.state.syncSeq
@@ -338,9 +416,16 @@ extension MasterEngine {
             let local = store.state.localMachineId
             guard !local.isEmpty else { continue }
             // A released card stops being served once its new owner took it.
+            // The cards only need a look when they changed, or when a
+            // failed adoption is due for another try.
+            let version = store.state.cardInputsVersion
+            guard version != scannedVersion || Date().timeIntervalSince(lastScan) >= 30 else { continue }
+            scannedVersion = version
+            lastScan = Date()
             for (id, _) in releasedCards where store.state.links[id]?.migrating != true {
                 releasedCards[id] = nil
                 pendingPeerLaunches[id] = nil
+                store.dispatch(.handoverProgress(cardId: id, progress: nil))
             }
             for link in store.state.links.values where link.ownerMachine == local && link.migrating == true {
                 let id = link.id
@@ -354,6 +439,7 @@ extension MasterEngine {
                         try await adopt(cardId: id)
                         lastAttempt[id] = nil
                     } catch {
+                        store.dispatch(.handoverProgress(cardId: id, progress: nil))
                         KanbanCodeLog.warn("handover", "Adopting card=\(id.prefix(12)) failed: \(error.localizedDescription)")
                         store.dispatch(.setError("Could not take over \(link.name ?? id): \(error.localizedDescription)"))
                     }
@@ -401,11 +487,20 @@ extension MasterEngine {
                 throw MasterPeerError.failed("\(peerName(from)) has no transcript for this card yet")
             }
             let path = transcriptPath(cwd: cwd, sessionId: sessionId)
-            var raw = Data()
+            var raw = await Self.mirroredPrefix(
+                at: PeerTranscriptMirror.mirrorPath(
+                    directory: (platform.kanbanHome as NSString).appendingPathComponent("peers"),
+                    machineId: from, sessionId: sessionId),
+                size: info.transcriptSize, cardId: cardId, client: client) ?? Data()
+            if !raw.isEmpty {
+                KanbanCodeLog.info("handover", "Transcript \(sessionId.prefix(8)): \(raw.count) of \(info.transcriptSize) bytes taken from the mirror here")
+            }
+            store.dispatch(.handoverProgress(cardId: cardId, progress: HandoverProgress(copiedBytes: raw.count, totalBytes: info.transcriptSize)))
             while raw.count < info.transcriptSize {
                 let slice = try await client.rawTranscript(cardId: cardId, offset: raw.count)
                 if slice.data.isEmpty { break }
                 raw.append(slice.data)
+                store.dispatch(.handoverProgress(cardId: cardId, progress: HandoverProgress(copiedBytes: raw.count, totalBytes: info.transcriptSize)))
             }
             var mappings: [PathMapping] = []
             if let old = info.cwd, old != cwd { mappings.append(PathMapping(from: old, to: cwd)) }
@@ -581,6 +676,19 @@ extension MasterEngine {
         if result?.succeeded != true {
             KanbanCodeLog.warn("handover", "Uncommitted changes did not apply in \(dir): \(result?.stderr.prefix(300) ?? "no git")")
         }
+    }
+
+    /// The bytes of the local mirror of a peer's transcript, when they are
+    /// the start of the transcript that peer serves now: the adoption then
+    /// copies only the rest. The mirror's last bytes are compared with the
+    /// peer's at the same offset.
+    static func mirroredPrefix(at path: String, size: Int, cardId: String, client: RemoteClient) async -> Data? {
+        guard let mirror = FileManager.default.contents(atPath: path), !mirror.isEmpty, mirror.count <= size else { return nil }
+        let tail = min(mirror.count, 64 << 10)
+        let offset = mirror.count - tail
+        guard let slice = try? await client.rawTranscript(cardId: cardId, offset: offset, limit: tail),
+              slice.data == mirror.suffix(tail) else { return nil }
+        return mirror
     }
 
     /// Writes a transcript line by line with its paths rewritten.

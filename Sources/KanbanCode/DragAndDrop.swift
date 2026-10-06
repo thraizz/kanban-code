@@ -57,6 +57,7 @@ struct DroppableColumnView: View {
     var enabledAssistants: [CodingAssistant] = []
     var onMigrateAssistant: (String, CodingAssistant) -> Void = { _, _ in }
     var onRefreshBacklog: (() -> Void)?
+    var onDeleteAllCards: (() -> Void)?
     var onCardClicked: (String) -> Void = { _ in }
     var onColumnBackgroundClick: (KanbanCodeColumn) -> Void = { _ in }
 
@@ -206,6 +207,21 @@ struct DroppableColumnView: View {
                     .buttonStyle(.borderless)
                     .help("Refresh GitHub issues")
                     .disabled(isRefreshingBacklog)
+                }
+
+                if let onDeleteAllCards, !cards.isEmpty {
+                    Menu {
+                        Button("Delete All \(cards.count) Cards…", role: .destructive) {
+                            onDeleteAllCards()
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.app(.caption))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Column actions")
                 }
 
                 Text("\(cards.count)")

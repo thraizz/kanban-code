@@ -133,7 +133,7 @@ struct RoutingTmuxAdapterTests {
         let router = RoutingTmuxAdapter(
             local: TmuxAdapter(transport: localTransport),
             registry: registry,
-            agtop: AgtopCliAdapter(executable: "/nonexistent/agtop")
+            rush: RushCliAdapter(executable: "/nonexistent/rush")
         )
         return (router, localTransport, registry)
     }

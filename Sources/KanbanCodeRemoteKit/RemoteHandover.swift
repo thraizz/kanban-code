@@ -15,17 +15,23 @@ public struct RemoteMoveRequest: Codable, Sendable, Equatable {
 }
 
 /// PATCH /v1/cards/{id}: edits of the card any master may make. Each field
-/// is optional; the ones given apply in the order name, column, archive.
+/// is optional; the ones given apply in the order name, column, archived,
+/// pinned.
 public struct RemoteCardUpdate: Codable, Sendable, Equatable {
     public var name: String?
     public var column: RemoteColumn?
-    /// true archives the card.
+    /// true archives the card, false brings an archived card back to the
+    /// board (servers listing `RemoteAPI.Feature.cardActions`).
     public var archived: Bool?
+    /// Pins or unpins the card (servers listing `RemoteAPI.Feature.cardActions`).
+    /// Pinning an archived card brings it back, as on the Mac.
+    public var pinned: Bool?
 
-    public init(name: String? = nil, column: RemoteColumn? = nil, archived: Bool? = nil) {
+    public init(name: String? = nil, column: RemoteColumn? = nil, archived: Bool? = nil, pinned: Bool? = nil) {
         self.name = name
         self.column = column
         self.archived = archived
+        self.pinned = pinned
     }
 }
 
@@ -90,7 +96,66 @@ public struct RemoteRawTranscript: Sendable, Equatable {
     public static let sizeHeader = "X-Transcript-Size"
 }
 
+/// Answer of `POST /v1/cards/{id}/worktree/remove`.
+public struct RemoteWorktreeRemoval: Codable, Sendable, Equatable {
+    /// The machine the worktree was removed on.
+    public var machine: String
+    /// True when the card had no session and went with its worktree.
+    public var cardDeleted: Bool
+
+    public init(machine: String, cardDeleted: Bool) {
+        self.machine = machine
+        self.cardDeleted = cardDeleted
+    }
+}
+
+/// Answer of `POST /v1/cards/{id}/pasted-image`.
+public struct RemotePastedImage: Codable, Sendable, Equatable {
+    /// The file on the master that owns the card.
+    public var path: String
+
+    public init(path: String) {
+        self.path = path
+    }
+}
+
 extension RemoteClient {
+    /// POST /v1/cards/{id}/pasted-image: the master that owns the card keeps
+    /// the image as a file and answers with its path there, for a paste into
+    /// the card's terminal to type.
+    public func uploadPastedImage(cardId: String, data: Data) async throws -> RemotePastedImage {
+        var request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/pasted-image")
+        request.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
+        request.httpBody = data
+        request.timeoutInterval = 120
+        let (body, status) = try await rawData(for: request)
+        guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: body) }
+        do {
+            return try JSONDecoder.remote.decode(RemotePastedImage.self, from: body)
+        } catch {
+            throw RemoteClientError.decoding(String(describing: error))
+        }
+    }
+
+    /// POST /v1/cards/{id}/worktree/remove: the master that owns the card
+    /// removes its worktree where it lives.
+    public func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval {
+        var request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/worktree/remove")
+        request.timeoutInterval = 150
+        let (data, status) = try await rawData(for: request)
+        guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
+        return try JSONDecoder.remote.decode(RemoteWorktreeRemoval.self, from: data)
+    }
+
+    /// POST /v1/cards/{id}/discover: the owner re-scans the card for pushed
+    /// branches and pull requests.
+    public func discoverBranches(cardId: String) async throws {
+        var request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/discover")
+        request.timeoutInterval = 120
+        let (data, status) = try await rawData(for: request)
+        guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
+    }
+
     /// POST /v1/cards/{id}/move
     public func move(cardId: String, to target: String) async throws -> RemoteCard {
         let request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/move", body: RemoteMoveRequest(to: target))
@@ -105,6 +170,14 @@ extension RemoteClient {
         let (data, status) = try await rawData(for: request)
         guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
         return try JSONDecoder.remote.decode(RemoteCard.self, from: data)
+    }
+
+    /// DELETE /v1/cards/{id}: deletes an archived card, its subagents and
+    /// its conversation file.
+    public func deleteCard(cardId: String) async throws {
+        let request = makeRequest("DELETE", "v1/cards/\(Self.escape(cardId))")
+        let (data, status) = try await rawData(for: request)
+        guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
     }
 
     /// GET /v1/cards/{id}/handover

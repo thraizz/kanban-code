@@ -292,6 +292,11 @@ public class LocalProcess {
 
     deinit {
 #if os(macOS)
+        // A process monitor cancelled before the exit event leaves the child
+        // unreaped; wait for it here instead.
+        if childMonitor != nil, shellPid != 0 {
+            LocalProcess.reapInBackground(pid: shellPid, escalate: false)
+        }
         childMonitor?.cancel()
         childMonitor = nil
 #endif
@@ -497,9 +502,32 @@ public class LocalProcess {
 
         if shellPid != 0 {
             kill(shellPid, SIGTERM)
+            // childStopped() cancels the exit monitor, so processTerminated()
+            // never runs its waitpid: reap here, or every terminated child
+            // stays a zombie for the life of the app.
+            LocalProcess.reapInBackground(pid: shellPid)
+            shellPid = 0
         }
 
         childStopped()
+    }
+
+    /// Waits for `pid` off the caller's thread. With `escalate`, a child that
+    /// outlives SIGTERM by 5 seconds gets SIGKILL. The pid cannot be reused
+    /// before it is reaped, so the signal reaches only our own child.
+    static func reapInBackground(pid: pid_t, escalate: Bool = true) {
+        DispatchQueue.global(qos: .utility).async {
+            var status: Int32 = 0
+            for attempt in 0..<100 {
+                let result = waitpid(pid, &status, WNOHANG)
+                if result == pid || (result < 0 && errno != EINTR) { return }
+                if escalate && attempt == 50 { kill(pid, SIGKILL) }
+                usleep(100_000)
+            }
+            // Killed, it is gone soon; a live one is left alone rather than
+            // holding a thread forever.
+            if escalate { waitpid(pid, &status, 0) }
+        }
     }
     
     var loggingDir: String? = nil

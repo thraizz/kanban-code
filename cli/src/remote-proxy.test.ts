@@ -95,6 +95,13 @@ describe("proxy refusals", () => {
     assert.ok(proxyRefusalReason(["list", "--project=/repo"]));
   });
 
+  test("refuses an export written to a file, allows it on stdout", () => {
+    assert.ok(proxyRefusalReason(["export", "--out", "x.md"]));
+    assert.ok(proxyRefusalReason(["export", "-o", "x.md"]));
+    assert.ok(proxyRefusalReason(["export", "--out=x.md"]));
+    assert.equal(proxyRefusalReason(["export"]), undefined);
+  });
+
   test("allows the rest", () => {
     assert.equal(proxyRefusalReason(["channel", "send", "team", "hi"]), undefined);
     assert.equal(proxyRefusalReason(["channel", "list"]), undefined);

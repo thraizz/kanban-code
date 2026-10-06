@@ -38,6 +38,8 @@
 	</dict>
 	<key>NSCameraUsageDescription</key>
 	<string>Scan the pairing QR code shown by Kanban Code on your Mac, and take photos to send to a session.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>Confirm it is you before approving a request from an agent.</string>
 	<key>NSLocalNetworkUsageDescription</key>
 	<string>Connect to Kanban Code on your Mac.</string>
 	<key>UIApplicationSupportsIndirectInputEvents</key>

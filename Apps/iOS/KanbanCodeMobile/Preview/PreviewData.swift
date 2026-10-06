@@ -8,7 +8,7 @@ enum PreviewData {
         return RemoteBoard(cards: [
             RemoteCard(id: "c1", title: "Fix the flaky scheduler test", column: .waiting,
                        projectPath: "/Users/me/Projects/langwatch", projectName: "langwatch",
-                       branch: "fix/flaky-scheduler", assistant: "claude", runtime: .agtop,
+                       branch: "fix/flaky-scheduler", assistant: "claude", runtime: .rush,
                        isLive: true, terminals: [RemoteTerminal(sessionName: "card-c1", label: "Claude", isPrimary: true),
                                                 RemoteTerminal(sessionName: "card-c1-sh1", label: "Shell 1", isPrimary: false)],
                        prs: [RemotePR(number: 8312, status: "open")], lastActivity: now.addingTimeInterval(-120), updatedAt: now),

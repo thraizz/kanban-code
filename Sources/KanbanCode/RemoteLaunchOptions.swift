@@ -10,6 +10,10 @@ struct RemoteLaunchOptions {
     var boxd: BoxdSettings?
     /// Machine the card already has.
     var cardMachine: String?
+    /// The peer master that owns the card (or takes it over), by the name
+    /// the machine choices give it. A resume runs there unless another
+    /// place is picked, which moves the card.
+    var ownerMachine: String?
     var cardMachineState: RemoteMachineState?
     /// Where the last session of the card ran, when it ran at all. A card
     /// that was moved to the Mac must not offer its machine again by
@@ -67,8 +71,9 @@ struct RemoteLaunchOptions {
     /// State of the "run remotely" box when a dialog opens. The last run of
     /// the card wins, then the machine of the card, then the project.
     static func initialRunRemotely(
-        lastRunRemote: Bool?, cardMachine: String?, mode: RemoteMode, projectPath: String
+        lastRunRemote: Bool?, cardMachine: String?, ownerMachine: String? = nil, mode: RemoteMode, projectPath: String
     ) -> Bool {
+        if ownerMachine != nil { return true }
         if let lastRunRemote { return lastRunRemote }
         if cardMachine != nil { return true }
         return defaultRunRemotely(mode: mode, projectPath: projectPath)
@@ -92,6 +97,7 @@ struct RemoteLaunchOptions {
     /// ssh machine in the ssh mode (or without the boxd CLI), else a new
     /// boxd machine.
     func initialMachineChoice(projectPath: String) -> BoxdMachineChoice {
+        if let ownerMachine { return .existing(ownerMachine) }
         if let cardMachine { return .existing(cardMachine) }
         let remembered = Self.defaultMachineChoice(projectPath: projectPath)
         let offered = RunTargetOption.options(for: self).map(\.target)

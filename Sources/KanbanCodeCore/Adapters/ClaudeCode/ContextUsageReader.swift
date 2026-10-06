@@ -59,6 +59,7 @@ public enum ContextUsageReader {
 
     /// Read context usage for a session. Returns nil if no data available.
     public static func read(sessionId: String, basePath: String? = nil) -> ContextUsage? {
+        MainThreadGuard.warnIfMain("ContextUsageReader.read")
         let dir = basePath ?? self.basePath
         let path = (dir as NSString).appendingPathComponent("\(sessionId).json")
 
@@ -82,5 +83,12 @@ public enum ContextUsageReader {
             totalCostUsd: obj["totalCostUsd"] as? Double,
             model: obj["model"] as? String
         )
+    }
+
+    /// Off-main variant for UI callers: performs the file read on a background executor.
+    public static func readAsync(sessionId: String, basePath: String? = nil) async -> ContextUsage? {
+        await Task.detached(priority: .utility) {
+            read(sessionId: sessionId, basePath: basePath)
+        }.value
     }
 }

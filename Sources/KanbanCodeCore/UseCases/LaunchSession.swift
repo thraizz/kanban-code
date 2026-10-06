@@ -61,7 +61,8 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         // This handles disconnected cards where the old tmux session lingers.
         try? await tmux.killSession(name: sessionName)
 
-        try await tmux.createSession(name: sessionName, path: projectPath, command: fullCmd)
+        try await tmux.createSession(name: sessionName, path: projectPath, command: fullCmd,
+                                     environment: Self.sessionEnvironment(extraEnv))
         return sessionName
     }
 
@@ -111,8 +112,15 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         }
         fullCmd += " && \(cmd)"
 
-        try await tmux.createSession(name: sessionName, path: projectPath, command: fullCmd)
+        try await tmux.createSession(name: sessionName, path: projectPath, command: fullCmd,
+                                     environment: Self.sessionEnvironment(extraEnv))
         return sessionName
+    }
+
+    /// The part of `extraEnv` the tmux session carries itself (the card's
+    /// id and session token), so it never shows in the pane.
+    static func sessionEnvironment(_ extraEnv: [String: String]) -> [String: String] {
+        extraEnv.filter { InheritedSessionEnvironment.sessionOwned.contains($0.key) }
     }
 
     // MARK: - Private
@@ -126,7 +134,7 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         }
 
         // Sort for deterministic output
-        for key in extraEnv.keys.sorted() {
+        for key in extraEnv.keys.sorted() where !InheritedSessionEnvironment.sessionOwned.contains(key) {
             if let value = extraEnv[key] {
                 if value.contains("$") {
                     // Use double quotes so shell variables like $PATH get expanded

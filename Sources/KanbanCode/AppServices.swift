@@ -1,11 +1,18 @@
 import Foundation
 import KanbanCodeCore
+import KanbanCodeRemoteKit
 
 /// Process-wide handles to the adapters the app builds once in
 /// `ContentView.init`. Views that are far from the composition root (the
 /// embedded terminal, the app delegate, chat views) reach tmux and the boxd
 /// supervisor through here instead of building their own adapters.
 enum AppServices {
+    /// Answers an attention request from this Mac, with what its vault key
+    /// unlocked for the approval; the problem as text when it was not taken.
+    nonisolated(unsafe) static var resolveAttention: (@Sendable (String, String, VaultUnsealed?) async -> String?)?
+    /// Answers the question or plan a card waits on from the chat; false
+    /// when it waits on none.
+    nonisolated(unsafe) static var answerCard: (@Sendable (String, String) async -> Bool)?
     /// Boxd machines of the org and whether the boxd CLI answers, as the
     /// launch dialogs last read them; launches from the remote API use them.
     @MainActor static var boxdMachineNames: [String] = []
@@ -21,16 +28,16 @@ enum AppServices {
     nonisolated(unsafe) static var destroyMachine: (@MainActor (String) -> Void)?
 
     /// The command a remote viewer runs for a session, the same way the
-    /// card's own terminal decides it: an attach on its machine, agtop's own
-    /// UI for agtop, a tmux attach otherwise.
+    /// card's own terminal decides it: an attach on its machine, rush's own
+    /// UI for rush, a tmux attach otherwise.
     @MainActor
     static func terminalCommand(forSession sessionName: String) -> [String] {
         let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         if let machine = machine(forSession: sessionName),
-           let agtopId = AgtopSessionName.agtopId(fromName: sessionName),
+           let rushId = RushSessionName.rushId(fromName: sessionName),
            let target = sshTargets[machine] {
-            let script = TerminalCache.remoteAgtopScript(
-                target: target, id: agtopId, readyMarker: remoteReadyMarkerPath(for: sessionName))
+            let script = TerminalCache.remoteRushScript(
+                target: target, id: rushId, readyMarker: remoteReadyMarkerPath(for: sessionName))
             return [shell, "-l", "-c", script]
         }
         if let machine = machine(forSession: sessionName) {
@@ -43,8 +50,8 @@ enum AppServices {
             )
             return [shell, "-l", "-c", script]
         }
-        if let agtopId = AgtopSessionName.agtopId(fromName: sessionName) {
-            return [AgtopCliAdapter.findExecutable() ?? "agtop", "open", agtopId, "--solo"]
+        if let rushId = RushSessionName.rushId(fromName: sessionName) {
+            return RushCliAdapter.openCommand(id: rushId)
         }
         return [shell, "-l", "-c", TerminalCache.attachScript(tmux: TerminalCache.tmuxPath, session: sessionName)]
     }
@@ -79,6 +86,13 @@ enum AppServices {
         return nil
     }
 
+    /// Where the assistant of the terminal `sessionName` runs, for an image
+    /// pasted into it.
+    @MainActor
+    static func terminalImageRoute(forSession sessionName: String) -> TerminalImageRoute {
+        TerminalImageRoute.route(peerCard: peerCard(forSession: sessionName), machine: machine(forSession: sessionName))
+    }
+
     /// Whether the terminal `sessionName` must wait before it starts: its
     /// card names an owner, and this Mac does not know yet whether that is
     /// itself or which peer it is (the identity and peer statuses load after
@@ -95,8 +109,9 @@ enum AppServices {
     }
 
     /// The shell script a terminal of a card another master owns runs: the
-    /// kanban CLI bridges it to the owner's terminal socket, with the token
-    /// this Mac holds for that peer, and reconnects when the link drops.
+    /// kanban CLI bridges it to the owner's terminal socket, with the
+    /// terminal token this Mac holds for that peer, and reconnects when the
+    /// link drops.
     @MainActor
     static func peerAttachScript(machineId: String, cardId: String, session: String) -> String? {
         let settings = FileManager.default.contents(atPath: NSHomeDirectory() + "/.kanban-code/settings.json")
@@ -108,7 +123,7 @@ enum AppServices {
         let cli = cliBundlePath.map { "\($0)/dist/kanban.js" }
             ?? (NSHomeDirectory() + "/Projects/kanban/cli/dist/kanban.js")
         let node = findNode() ?? "node"
-        let attach = "KANBAN_REMOTE_URL=\(quote(peer.url)) KANBAN_REMOTE_TOKEN=\(quote(peer.token)) "
+        let attach = "KANBAN_REMOTE_URL=\(quote(peer.url)) KANBAN_REMOTE_TOKEN=\(quote(peer.terminalToken ?? peer.token)) "
             + "\(quote(node)) \(quote(cli)) remote attach \(quote(cardId)) --session \(quote(session))"
         return "while :; do \(attach) && break; sleep 2; done; echo 'Session ended.'"
     }

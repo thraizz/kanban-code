@@ -27,10 +27,12 @@ public struct RemoteLaunchRequest: Sendable, Equatable {
     public var imagePaths: [String]
     /// "mac", a machine name, or nil for the project default.
     public var machine: String?
+    /// The human typed the prompt himself.
+    public var human: Bool
 
     public init(projectPath: String, prompt: String, title: String? = nil, worktree: String? = nil,
                 assistant: CodingAssistant = .claude, model: String? = nil, launch: Bool = true,
-                imagePaths: [String] = [], machine: String? = nil) {
+                imagePaths: [String] = [], machine: String? = nil, human: Bool = false) {
         self.projectPath = projectPath
         self.prompt = prompt
         self.title = title
@@ -40,13 +42,14 @@ public struct RemoteLaunchRequest: Sendable, Equatable {
         self.launch = launch
         self.imagePaths = imagePaths
         self.machine = machine
+        self.human = human
     }
 }
 
 /// What the master engine asks of the platform it runs on. The Mac app
 /// fills it with its clipboard, its remote terminals and the defaults of its
 /// launch dialogs; a headless master keeps the defaults: sessions run here,
-/// on tmux or agtop, with no clipboard.
+/// on tmux or rush, with no clipboard.
 public struct MasterPlatform: Sendable {
     /// Puts a PNG on the clipboard, for assistants that take images by paste.
     public var setClipboardImage: (@Sendable (Data) -> Void)?
@@ -70,12 +73,15 @@ public struct MasterPlatform: Sendable {
     /// The "Skip permissions" choice for launches the remote API starts.
     public var skipPermissions: @MainActor @Sendable () -> Bool = { true }
     /// The command a remote terminal viewer runs for a session, when the
-    /// platform has its own; nil for `agtop open <id> --solo` or
+    /// platform has its own; nil for `rush open <id>` or
     /// `tmux attach`.
     public var terminalCommand: @MainActor @Sendable (String) -> [String]? = { _ in nil }
     /// The command that shows a terminal of a card another master owns
     /// (owner machine id, card id, session name); nil when there is none.
     public var peerTerminalCommand: @MainActor @Sendable (String, String, String) -> [String]? = { _, _, _ in nil }
+    /// Re-scans a card this master owns for pushed branches and pull
+    /// requests, and puts what it found on the card.
+    public var discoverBranches: @MainActor @Sendable (String) async -> Void = { _ in }
 
     /// Where repositories are cloned when a card from a peer needs one this
     /// master does not have yet.

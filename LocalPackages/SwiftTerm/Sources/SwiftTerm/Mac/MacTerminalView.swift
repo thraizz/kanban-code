@@ -153,6 +153,8 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     // of attributes for an NSAttributedString
     var attributes: [AttributeRenderKey: [NSAttributedString.Key:Any]] = [:]
     var urlAttributes: [AttributeRenderKey: [NSAttributedString.Key:Any]] = [:]
+    /// Per-row cache of built attributed strings / CTLines, see RowRenderCache.swift
+    let rowRenderCache = RowRenderCache()
     
     
     // Cache for the colors in the 0..255 range
@@ -306,6 +308,45 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
     }
     
     var becomeMainObserver, resignMainObserver: NSObjectProtocol?
+    var occlusionObserver: NSObjectProtocol?
+
+    /// Set when output arrived (or a draw was requested) while the view could not be seen.
+    var needsRedrawWhenVisible = false
+
+    /// True when the view is in a window, not hidden, and the window is at least partly on screen.
+    var isDrawable: Bool {
+        guard let window else { return false }
+        return !isHiddenOrHasHiddenAncestor && window.occlusionState.contains(.visible)
+    }
+
+    private func redrawIfBecameVisible() {
+        guard needsRedrawWhenVisible, isDrawable else { return }
+        needsRedrawWhenVisible = false
+        terminal.updateFullScreen()
+        needsDisplay = true
+    }
+
+    open override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver(occlusionObserver)
+            self.occlusionObserver = nil
+        }
+        if let window {
+            occlusionObserver = NotificationCenter.default.addObserver(
+                forName: NSWindow.didChangeOcclusionStateNotification, object: window, queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.redrawIfBecameVisible() }
+                }
+            // Attached to a window: whatever arrived while detached has not been drawn.
+            needsRedrawWhenVisible = true
+            redrawIfBecameVisible()
+        }
+    }
+
+    open override func viewDidUnhide() {
+        super.viewDidUnhide()
+        redrawIfBecameVisible()
+    }
     
     deinit {
         if let becomeMainObserver {
@@ -313,6 +354,9 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         if let resignMainObserver {
             NotificationCenter.default.removeObserver (resignMainObserver)
+        }
+        if let occlusionObserver {
+            NotificationCenter.default.removeObserver (occlusionObserver)
         }
         progressReportTimer?.invalidate()
     }
@@ -471,6 +515,7 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         set {
             _selectedTextBackgroundColor = newValue
+            rowRenderCache.invalidateAll()
         }
     }
 
@@ -658,7 +703,19 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         guard let currentContext = getCurrentGraphicsContext() else {
             return
         }
+        // Hidden / occluded / minimized terminals keep their buffer current but do not
+        // draw; a full redraw is requested when they become visible again.
+        if window != nil && !isDrawable {
+            needsRedrawWhenVisible = true
+            TerminalDrawStats.shared.recordSkippedHidden()
+            return
+        }
+        let signposter = TerminalDrawStats.signposter
+        let signpostState = signposter.beginInterval("draw")
+        let start = DispatchTime.now().uptimeNanoseconds
         drawTerminalContents (dirtyRect: dirtyRect, context: currentContext, bufferOffset: terminal.displayBuffer.yDisp)
+        TerminalDrawStats.shared.record(nanos: DispatchTime.now().uptimeNanoseconds - start)
+        signposter.endInterval("draw", signpostState)
     }
     
     public override func cursorUpdate(with event: NSEvent)
@@ -2237,14 +2294,21 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
         updateHoverLink(at: hit.grid)
         
-        if terminal.mouseMode.sendMotionEvent() {
+        if allowMouseReporting && terminal.mouseMode.sendMotionEvent() {
             let flags = encodeMouseEvent(with: event, overwriteRelease: true)
             terminal.sendMotion(buttonFlags: flags, x: hit.grid.col, y: hit.grid.row, pixelX: hit.pixels.col, pixelY: hit.pixels.row)
         }
     }
     
+    /// Wheel movement not sent yet, in lines, while the program has the mouse.
+    private var pendingWheelLines: CGFloat = 0
+
     public override func scrollWheel(with event: NSEvent) {
         if event.deltaY == 0 {
+            return
+        }
+        if allowMouseReporting && terminal.mouseMode != .off {
+            sendWheel(with: event)
             return
         }
         let velocity = calcScrollingVelocity(delta: Int (abs (event.deltaY)))
@@ -2255,6 +2319,32 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         }
     }
     
+    /// A program that asked for the mouse gets the wheel as buttons 4 (up)
+    /// and 5 (down), one report per line turned, as xterm sends it. A
+    /// trackpad turns fractions of a line per event, so they add up until a
+    /// whole line is reached; turning the other way starts over.
+    func sendWheel(with event: NSEvent) {
+        if (pendingWheelLines > 0) != (event.deltaY > 0) {
+            pendingWheelLines = 0
+        }
+        pendingWheelLines += event.deltaY
+        let lines = min(Int(abs(pendingWheelLines)), 10)
+        guard lines > 0 else {
+            return
+        }
+        pendingWheelLines = pendingWheelLines.truncatingRemainder(dividingBy: 1)
+        let flags = event.modifierFlags
+        let buttonFlags = terminal.encodeButton(
+            button: event.deltaY > 0 ? 4 : 5, release: false,
+            shift: flags.contains(.shift), meta: flags.contains(.option), control: flags.contains(.control))
+        let displayBuffer = terminal.displayBuffer
+        let hit = calculateMouseHit(with: event)
+        let screenRow = max(0, min(displayBuffer.rows - 1, hit.grid.row - displayBuffer.yDisp))
+        for _ in 0..<lines {
+            terminal.sendEvent(buttonFlags: buttonFlags, x: hit.grid.col, y: screenRow, pixelX: hit.pixels.col, pixelY: hit.pixels.row)
+        }
+    }
+
     private func calcScrollingVelocity (delta: Int) -> Int
     {
         if delta > 9 {

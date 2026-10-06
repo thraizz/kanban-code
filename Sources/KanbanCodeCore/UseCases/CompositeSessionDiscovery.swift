@@ -30,6 +30,12 @@ public final class CompositeSessionDiscovery: SessionDiscovery, @unchecked Senda
         return allSessions.sorted { $0.modifiedTime > $1.modifiedTime }
     }
 
+    public func setHeadlessExclusion(_ exclusion: PathExclusion) {
+        for assistant in registry.available {
+            registry.discovery(for: assistant)?.setHeadlessExclusion(exclusion)
+        }
+    }
+
     public func discoverNewOrModified(since date: Date) async throws -> [Session] {
         var allSessions: [Session] = []
 

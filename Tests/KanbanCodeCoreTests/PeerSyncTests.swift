@@ -454,6 +454,16 @@ struct PeerSyncReducerTests {
         #expect(page.links[0].isTombstone)
     }
 
+    @Test("deleting cards in bulk leaves a tombstone for each")
+    func bulkDeleteLeavesTombstones() {
+        let s = state(machine: "M", [card(owner: nil, rev: stamp(3, "M")), card("card_b", owner: nil, rev: stamp(3, "M"))])
+        let effects = Reducer.reduce(state: s, action: .deleteCards(cardIds: ["card_a", "card_b"]))
+        #expect(s.links.isEmpty)
+        #expect(s.tombstones["card_a"]?.isTombstone == true)
+        #expect(s.tombstones["card_b"]?.isTombstone == true)
+        #expect(effects.contains { if case .persistTombstones(let ts) = $0 { Set(ts.map(\.id)) == ["card_a", "card_b"] } else { false } })
+    }
+
     @Test("a tombstone from a peer deletes a card this machine runs and stops its terminal")
     func peerTombstoneDeletesOwned() {
         let s = state(machine: "M", [card(owner: nil, rev: stamp(2, "M"), tmux: "t", session: "s1")])

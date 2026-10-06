@@ -35,6 +35,7 @@ struct ListBoardView: View {
     var enabledAssistants: [CodingAssistant] = []
     var onMigrateAssistant: (String, CodingAssistant) -> Void = { _, _ in }
     var onRefreshBacklog: () -> Void = {}
+    var onDeleteAllCards: (KanbanCodeColumn) -> Void = { _ in }
     var onDropCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
     var onMergeCards: (String, String) -> Void = { _, _ in }
     var canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool = { _, _ in true }
@@ -51,24 +52,15 @@ struct ListBoardView: View {
     }
 
     private var activeSubagentCardsByParent: [String: [KanbanCodeCard]] {
-        Dictionary(grouping: store.state.filteredCards.filter {
-            $0.link.parentCardId != nil && !$0.link.manuallyArchived
-        }) { $0.link.parentCardId! }
-        .mapValues { cards in
-            cards.sorted {
-                let left = $0.link.lastActivity ?? $0.link.updatedAt
-                let right = $1.link.lastActivity ?? $1.link.updatedAt
-                return left == right ? $0.id < $1.id : left > right
-            }
-        }
+        store.state.subagentCardsByParent
     }
 
     private var activeSubagentCardsById: [String: KanbanCodeCard] {
-        Dictionary(uniqueKeysWithValues: activeSubagentCardsByParent.values.flatMap { $0 }.map { ($0.id, $0) })
+        store.state.subagentCardsById
     }
 
     private var activeSubagentLinks: [String: Link] {
-        Dictionary(uniqueKeysWithValues: activeSubagentCardsById.values.map { ($0.id, $0.link) })
+        activeSubagentCardsById.mapValues(\.link)
     }
 
     private var collapsedColumns: Set<KanbanCodeColumn> {
@@ -121,7 +113,7 @@ struct ListBoardView: View {
     @ViewBuilder
     private var pinnedCardsSection: some View {
         let cards = store.state.pinnedCards
-        let descendantCounts = SubagentHierarchy.descendantCounts(in: store.state.links)
+        let descendantCounts = store.state.descendantCounts
         if !cards.isEmpty {
             VStack(alignment: .leading, spacing: 4) {
                 HStack(spacing: 6) {
@@ -278,7 +270,7 @@ struct ListBoardView: View {
             isRefreshingBacklog: store.state.isRefreshingBacklog,
             availableProjects: availableProjects,
             dragState: dragState,
-            descendantCounts: SubagentHierarchy.descendantCounts(in: store.state.links),
+            descendantCounts: store.state.descendantCounts,
             subagentsByParent: activeSubagentCardsByParent,
             onShowSubagents: onShowSubagents,
             onSelectCard: handleCardSelection,
@@ -300,6 +292,7 @@ struct ListBoardView: View {
             enabledAssistants: enabledAssistants,
             onMigrateAssistant: onMigrateAssistant,
             onRefreshBacklog: onRefreshBacklog,
+            onDeleteAllCards: onDeleteAllCards,
             onMoveCard: onDropCard,
             onMergeCards: onMergeCards,
             canDropCard: canDropCard,
@@ -403,6 +396,7 @@ private struct ListBoardSectionView: View {
     let enabledAssistants: [CodingAssistant]
     let onMigrateAssistant: (String, CodingAssistant) -> Void
     let onRefreshBacklog: () -> Void
+    let onDeleteAllCards: (KanbanCodeColumn) -> Void
     let onMoveCard: (String, KanbanCodeColumn) -> Void
     let onMergeCards: (String, String) -> Void
     let canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool
@@ -452,6 +446,8 @@ private struct ListBoardSectionView: View {
                 isCollapsed: isCollapsed,
                 isRefreshingBacklog: isRefreshingBacklog,
                 onRefreshBacklog: section.column == .backlog ? onRefreshBacklog : nil,
+                onDeleteAllCards: section.column == .allSessions && !section.cards.isEmpty
+                    ? { onDeleteAllCards(section.column) } : nil,
                 onToggleCollapse: onToggleCollapse
             )
             .overlay(alignment: .topTrailing) {
@@ -667,6 +663,7 @@ private struct ListSectionHeader: View {
     let isCollapsed: Bool
     let isRefreshingBacklog: Bool
     let onRefreshBacklog: (() -> Void)?
+    let onDeleteAllCards: (() -> Void)?
     let onToggleCollapse: () -> Void
 
     var body: some View {
@@ -697,6 +694,21 @@ private struct ListSectionHeader: View {
                     .buttonStyle(.borderless)
                     .help("Refresh GitHub issues")
                     .disabled(isRefreshingBacklog)
+                }
+
+                if let onDeleteAllCards, count > 0 {
+                    Menu {
+                        Button("Delete All \(count) Cards…", role: .destructive) {
+                            onDeleteAllCards()
+                        }
+                    } label: {
+                        Image(systemName: "ellipsis.circle")
+                            .font(.app(.caption))
+                    }
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Column actions")
                 }
 
                 Text("\(count)")
@@ -894,8 +906,7 @@ private struct ListCardRowView: View {
             }
 
             if card.showSpinner {
-                ProgressView()
-                    .controlSize(.small)
+                CardActivitySpinner()
             } else if card.column == .backlog {
                 Button(action: onStart) {
                     Image(systemName: "play.fill")

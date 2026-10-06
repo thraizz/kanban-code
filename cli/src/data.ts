@@ -115,48 +115,66 @@ export function remoteTmuxSessionNames(): string[] {
   return names;
 }
 
-// ── agtop routing ────────────────────────────────────────────────────
+// ── rush routing ────────────────────────────────────────────────────
 
-/// A card whose Claude session runs on an agtop host names it
-/// `agtop-<8 hex>`, the id of the host. Its extra shells (`<name>-shN`) stay
-/// on tmux.
-export function agtopIdFromSessionName(sessionName: string): string | undefined {
-  const match = /^agtop-([0-9a-f]{8})$/.exec(sessionName);
+/// A card whose Claude session runs on a rush host names it
+/// `rush-<8 hex>`, the id of the host, or `agtop-<8 hex>` for a host started
+/// before rush was renamed from agtop. Its extra shells (`<name>-shN`) stay
+/// on tmux. Same rules as `RushSessionName` in KanbanCodeCore.
+export function rushIdFromSessionName(sessionName: string): string | undefined {
+  const match = /^(?:rush|agtop)-([0-9a-f]{8})$/.exec(sessionName);
   return match?.[1];
 }
 
-let agtopPath: string | undefined;
+/// The host meta key that holds the session name Kanban gave the host.
+const SESSION_META_KEY = "kanban_session";
 
-/// Test seam: pin the agtop binary. Pass undefined to look it up again.
-export function setAgtopPath(path?: string): void {
-  agtopPath = path;
+/// The session name of a host: the one in its meta when that names this
+/// host, the old `agtop-<id>` otherwise.
+export function rushSessionName(host: { id: string; meta?: Record<string, string> | null }): string {
+  const named = host.meta?.[SESSION_META_KEY];
+  if (named && rushIdFromSessionName(named) === host.id) return named;
+  return `agtop-${host.id}`;
 }
 
-export function findAgtop(): string {
-  if (agtopPath) return agtopPath;
-  const goBin = join(homedir(), "go", "bin", "agtop");
-  if (existsSync(goBin)) return (agtopPath = goBin);
-  try {
-    return (agtopPath = execSync("command -v agtop", { encoding: "utf-8", shell: "/bin/sh" }).trim() || "agtop");
-  } catch {
-    return (agtopPath = "agtop");
+let rushPath: string | undefined;
+
+/// Test seam: pin the rush binary. Pass undefined to look it up again.
+export function setRushPath(path?: string): void {
+  rushPath = path;
+}
+
+/// rush, or agtop, the name rush had before it was renamed, where only the
+/// older build is installed. The session commands used here are the same.
+export function findRush(): string {
+  if (rushPath) return rushPath;
+  for (const name of ["rush", "agtop"]) {
+    const goBin = join(homedir(), "go", "bin", name);
+    if (existsSync(goBin)) return (rushPath = goBin);
+    try {
+      const found = execSync(`command -v ${name}`, { encoding: "utf-8", shell: "/bin/sh" }).trim();
+      if (found) return (rushPath = found);
+    } catch {
+      // not on the PATH: try the next name
+    }
   }
+  return (rushPath = "rush");
 }
 
-/// The shell script that plays a tmux command chain on an agtop host. The
+/// The shell script that plays a tmux command chain on a rush host. The
 /// host has no composer to type into: pasted text and keys are gathered
-/// until an Enter, then sent as one message, which agtop queues while a turn
+/// until an Enter, then sent as one message, which rush queues while a turn
 /// runs. Escape and C-c interrupt the turn. Pane reads and copy-mode are
 /// tmux only, so they do nothing here.
-export function agtopScript(id: string, steps: TmuxStep[]): string {
-  const agtop = shellToken(findAgtop());
+export function rushScript(id: string, steps: TmuxStep[]): string {
+  const rush = shellToken(findRush());
   const idToken = shellToken(id);
   const buffers = new Map<string, string>();
   let composer = "";
   const out: string[] = [];
   const flush = () => {
     if (composer.length === 0) return;
-    out.push(`printf '%s' ${shellEscape(composer)} | ${agtop} session send ${idToken}`);
+    out.push(`printf '%s' ${shellEscape(composer)} | ${rush} session send ${idToken}`);
     composer = "";
   };
   for (const step of steps) {
@@ -184,17 +202,17 @@ export function agtopScript(id: string, steps: TmuxStep[]): string {
           if (key === "Enter") flush();
           else if (key === "Escape" || key === "C-c") {
             composer = "";
-            out.push(`${agtop} session interrupt ${idToken}`);
+            out.push(`${rush} session interrupt ${idToken}`);
           } else if (key === "C-u") composer = "";
           else composer += key;
         }
         break;
       }
       case "has-session":
-        out.push(`${agtop} session info ${idToken} --json | grep -q '"alive": *true'`);
+        out.push(`${rush} session info ${idToken} --json | grep -q '"alive": *true'`);
         break;
       case "kill-session":
-        out.push(`${agtop} session stop ${idToken}`);
+        out.push(`${rush} session stop ${idToken}`);
         break;
       default:
         break;
@@ -203,20 +221,21 @@ export function agtopScript(id: string, steps: TmuxStep[]): string {
   return out.length > 0 ? out.join(" && ") : "true";
 }
 
-interface AgtopHost {
+interface RushHost {
   id: string;
   cwd?: string;
   alive?: boolean;
+  meta?: Record<string, string> | null;
 }
 
-/// Live agtop hosts as tmux sessions, so liveness checks see them.
-export function listAgtopSessions(): TmuxSession[] {
+/// Live rush hosts as tmux sessions, so liveness checks see them.
+export function listRushSessions(): TmuxSession[] {
   try {
-    const out = execSync(`${shellToken(findAgtop())} session list --json 2>/dev/null`, { encoding: "utf-8" });
-    const hosts = JSON.parse(out.trim() || "[]") as AgtopHost[] | null;
+    const out = execSync(`${shellToken(findRush())} session list --json 2>/dev/null`, { encoding: "utf-8" });
+    const hosts = JSON.parse(out.trim() || "[]") as RushHost[] | null;
     return (hosts ?? [])
       .filter((host) => host.alive)
-      .map((host) => ({ name: `agtop-${host.id}`, path: host.cwd ?? "", attached: false }));
+      .map((host) => ({ name: rushSessionName(host), path: host.cwd ?? "", attached: false }));
   } catch {
     return [];
   }
@@ -256,9 +275,9 @@ export function buildTmuxCommand(
   steps: TmuxStep[],
   options: TmuxRunOptions = {}
 ): string {
-  const agtopId = agtopIdFromSessionName(sessionName);
-  if (agtopId) {
-    const script = agtopScript(agtopId, steps);
+  const rushId = rushIdFromSessionName(sessionName);
+  if (rushId) {
+    const script = rushScript(rushId, steps);
     return options.quiet ? `${script} 2>/dev/null` : script;
   }
   const machine = remoteMachineForSession(sessionName);
@@ -314,9 +333,9 @@ export function listTmuxSessions(): TmuxSession[] {
         return { name, path: path || "", attached: attached === "1" };
       });
   } catch {
-    // No tmux server: agtop hosts still count.
+    // No tmux server: rush hosts still count.
   }
-  return [...sessions, ...listAgtopSessions()];
+  return [...sessions, ...listRushSessions()];
 }
 
 /// Capture tmux pane output.

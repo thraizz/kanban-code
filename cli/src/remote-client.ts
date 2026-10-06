@@ -78,7 +78,8 @@ export interface RemoteCard {
   branch?: string | null;
   worktreePath?: string | null;
   assistant: string;
-  runtime: "tmux" | "agtop" | "machine" | "none";
+  /** "agtop" is a rush host, under the name rush had before it was renamed. */
+  runtime: "tmux" | "agtop" | "rush" | "machine" | "none";
   isLive: boolean;
   isBusy: boolean;
   sessionId?: string | null;
@@ -90,6 +91,20 @@ export interface RemoteCard {
   archived: boolean;
   lastActivity?: string | null;
   updatedAt: string;
+  /** The master that owns the card and runs its session. */
+  machineId?: string | null;
+  machineName?: string | null;
+}
+
+/** One machine a task can run on (GET /v1/machines). */
+export interface RemoteMachineEntry {
+  /** Machine id of a master; missing for a plain ssh machine. */
+  id?: string | null;
+  name: string;
+  /** `this` is the master serving the API: tasks run there unless told otherwise. */
+  kind: "this" | "master" | "ssh";
+  online?: boolean | null;
+  alwaysOn?: boolean | null;
 }
 
 export interface RemoteQueuedPrompt {
@@ -154,6 +169,8 @@ export interface RemoteMessage {
   role: "user" | "assistant" | "tool" | "system";
   text: string;
   at?: string | null;
+  /** The long text behind a system note: the summary of a compaction. */
+  detail?: string | null;
 }
 
 export interface RemoteTranscript {
@@ -171,6 +188,8 @@ export interface RemoteTaskRequest {
   model?: string;
   launch?: boolean;
   images?: RemoteImage[];
+  /** A machine name from GET /v1/machines; omitted, the project default. */
+  machine?: string;
 }
 
 export interface RemotePromptRequest {
@@ -282,6 +301,16 @@ export class RemoteClient {
     return this.request("GET", opts.all ? "/v1/board?all=1" : "/v1/board");
   }
 
+  /**
+   * Cards matching every word of `query` among all the cards the master and
+   * its peers know, archived and All Sessions included. Board cards first,
+   * then the most recently active.
+   */
+  searchCards(query: string, opts: { limit?: number } = {}): Promise<RemoteCardSearchResult> {
+    const limit = opts.limit ? `&limit=${opts.limit}` : "";
+    return this.request("GET", `/v1/cards/search?q=${encodeURIComponent(query)}${limit}`);
+  }
+
   card(id: string): Promise<RemoteCard> {
     return this.request("GET", `/v1/cards/${encodeURIComponent(id)}`);
   }
@@ -292,6 +321,16 @@ export class RemoteClient {
     if (opts.before) q.set("before", opts.before);
     const suffix = q.size ? `?${q.toString()}` : "";
     return this.request("GET", `/v1/cards/${encodeURIComponent(id)}/transcript${suffix}`);
+  }
+
+  /** Undefined when the server predates machine choice. */
+  async machines(): Promise<RemoteMachineEntry[] | undefined> {
+    try {
+      return (await this.request<{ machines: RemoteMachineEntry[] }>("GET", "/v1/machines")).machines;
+    } catch (error) {
+      if (error instanceof RemoteHttpError && error.status === 404) return undefined;
+      throw error;
+    }
   }
 
   createTask(body: RemoteTaskRequest): Promise<RemoteCard> {
@@ -357,9 +396,9 @@ function unreachableMessage(baseUrl: string, error: unknown): string {
       ? "timed out"
       : err?.cause?.code ?? err?.cause?.message ?? err?.message ?? String(error);
   return (
-    `Cannot reach the Kanban Code Mac at ${baseUrl} (${reason}).\n` +
-    "Check that the Mac is awake, Kanban Code runs with Settings > Remote Control on, and this machine is on the " +
-    "same Tailscale tailnet (`tailscale status` should list the Mac)."
+    `Cannot reach Kanban Code at ${baseUrl} (${reason}).\n` +
+    "Check that the master answers: on a Mac, Kanban Code open with Settings > Remote Control on; on a box, " +
+    "`systemctl status kanban-code-server`. A remote master must be on the same Tailscale tailnet (`tailscale status`)."
   );
 }
 
@@ -380,6 +419,40 @@ function httpErrorMessage(status: number, serverMessage: string, method: string,
     default:
       return `${method} ${path} failed with ${status}${detail}.`;
   }
+}
+
+// ── Machines ─────────────────────────────────────────────────────────
+
+const THIS_MACHINE_ALIASES = new Set(["this", "here", "local"]);
+
+/**
+ * The machine `ref` names: `this`, `here` or `local` for the master the CLI
+ * talks to, a name or machine id (any case), or `mac` for the one master
+ * that is not an always-on server.
+ */
+export function resolveMachine(machines: RemoteMachineEntry[], ref: string): RemoteMachineEntry {
+  const wanted = ref.trim().toLowerCase();
+  const self = machines.find((m) => m.kind === "this");
+  if (THIS_MACHINE_ALIASES.has(wanted) && self) return self;
+  const named = machines.find((m) => m.name.toLowerCase() === wanted || m.id?.toLowerCase() === wanted);
+  if (named) return named;
+  if (wanted === "mac") {
+    const macs = machines.filter((m) => m.kind !== "ssh" && m.alwaysOn !== true);
+    if (macs.length === 1) return macs[0];
+  }
+  const known = machines.map((m) => m.name).join(", ") || "none";
+  throw new RemoteCliError(`No machine '${ref}'. Machines: ${known} (see kanban remote machines).`);
+}
+
+export function formatMachines(machines: RemoteMachineEntry[]): string {
+  if (machines.length === 0) return "No machines.";
+  return machines
+    .map((m) => {
+      const kind = m.kind === "this" ? "this master (default)" : m.kind === "master" ? "master" : "ssh machine";
+      const state = m.online === true ? "online" : m.online === false ? "offline" : "-";
+      return `${pad(m.name, 28)} ${pad(kind, 22)} ${state}`;
+    })
+    .join("\n");
 }
 
 // ── Card lookup ──────────────────────────────────────────────────────
@@ -421,6 +494,14 @@ export function parseColumn(raw: string): RemoteColumn {
     .map(([wire, display]) => `${wire} (${display})`)
     .join(", ");
   throw new RemoteCliError(`Unknown column '${raw}'. Known: ${known}.`);
+}
+
+export interface RemoteCardSearchResult {
+  cards: RemoteCard[];
+  /** More cards matched than the limit let through. */
+  truncated?: boolean;
+  /** Peer masters that did not answer in time. */
+  unreachable?: string[];
 }
 
 export function filterCards(
@@ -474,8 +555,9 @@ export function formatCardDetail(card: RemoteCard): string {
     `  column:     ${COLUMN_NAMES[card.column] ?? card.column}`,
     `  state:      ${cardState(card)}${card.queuedPromptCount ? ` (${card.queuedPromptCount} queued prompts)` : ""}`,
     `  project:    ${card.projectName ?? "-"}${card.projectPath ? ` (${card.projectPath})` : ""}`,
-    `  assistant:  ${card.assistant} on ${card.runtime}`,
+    `  assistant:  ${card.assistant} on ${card.runtime === "agtop" ? "rush" : card.runtime}`,
   ];
+  if (card.machineName) lines.push(`  machine:    ${card.machineName}`);
   if (card.branch) lines.push(`  branch:     ${card.branch}`);
   if (card.worktreePath) lines.push(`  worktree:   ${card.worktreePath}`);
   if (card.sessionId) lines.push(`  session:    ${card.sessionId}`);
@@ -695,7 +777,7 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
         if (opts.json) return printJson({ url: config.url, source, health, device: me });
         println(
           `${me.name} (${me.id}), scope ${me.scope}\n` +
-            `Mac: ${health.hostName} at ${config.url}, Kanban Code ${health.version}, API v${health.apiVersion}\n` +
+            `Master: ${health.hostName} at ${config.url}, Kanban Code ${health.version}, API v${health.apiVersion}\n` +
             `From: ${source}`
         );
       })
@@ -709,9 +791,20 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
     .option("--column <column>", "backlog, in_progress, waiting (requires_attention), in_review, done")
     .option("--project <project>", "project name or path")
     .option("--all", "include archived, All Sessions and older Done cards")
+    .option("--search <text>", "cards matching every word, among all cards of every master (archived and All Sessions too)")
+    .option("--limit <n>", "with --search: how many cards at most (default 50, up to 200)", (v) => parseInt(v, 10))
     .option("--json", "output as JSON")
     .action(
-      run(async (opts: { column?: string; project?: string; all?: boolean; json?: boolean }) => {
+      run(async (opts: { column?: string; project?: string; all?: boolean; search?: string; limit?: number; json?: boolean }) => {
+        if (opts.search !== undefined) {
+          const result = await client().searchCards(opts.search, { limit: opts.limit });
+          const cards = filterCards(result.cards, { ...opts, all: true });
+          if (opts.json) return printJson(cards);
+          println(cards.length === 0 ? "No cards match." : formatCardsTable(cards));
+          if (result.truncated) io.err("More cards match; narrow the search or raise --limit.\n");
+          if (result.unreachable?.length) io.err(`No answer from: ${result.unreachable.join(", ")}.\n`);
+          return;
+        }
         const board = await client().board({ all: opts.all });
         const cards = filterCards(board.cards, opts);
         if (opts.json) return printJson(cards);
@@ -733,6 +826,20 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
     );
 
   remote
+    .command("machines")
+    .description("List the machines a task can run on; tasks run on this master unless task --machine names another")
+    .option("--json", "output as JSON")
+    .action(
+      run(async (opts: { json?: boolean }) => {
+        const c = client();
+        const machines = await c.machines();
+        if (!machines) throw new RemoteCliError(`${c.baseUrl} predates machine choice; update Kanban Code there.`);
+        if (opts.json) return printJson(machines);
+        println(formatMachines(machines));
+      })
+    );
+
+  remote
     .command("show <card>")
     .description("Show one card (id, unique id prefix or exact title)")
     .option("--json", "output as JSON")
@@ -748,13 +855,20 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
 
   remote
     .command("task <prompt...>")
-    .description("Create a card in a project on the Mac and launch it with the prompt ('-' reads the prompt from stdin)")
-    .requiredOption("--project <project>", "project name or path on the Mac (see kanban remote projects)")
+    .description(
+      "Create a card in a project and launch it with the prompt ('-' reads the prompt from stdin). " +
+        "It runs on the master this CLI is logged into unless --machine names another (see kanban remote machines)"
+    )
+    .requiredOption("--project <project>", "project name or path on the logged-in master (see kanban remote projects)")
     .option("--worktree [name]", "run in a new git worktree, with this name or a random one")
     .option("--name <name>", "card title")
     .option("--assistant <assistant>", "claude, codex or gemini (default: the project's)")
     .option("--model <model>", "model for the assistant")
-    .option("--no-launch", "only create the card in the backlog")
+    .option(
+      "--machine <machine>",
+      "machine that runs the card, a name from kanban remote machines, or mac (default: the master this CLI is logged into)"
+    )
+    .option("--no-launch", "only create the card in the backlog, on the master this CLI is logged into")
     .option("--image <path>", "attach an image (PNG, JPEG, GIF or WebP; repeat for more)", collectImage, [] as string[])
     .option("--json", "output as JSON")
     .action(
@@ -763,6 +877,7 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
           parts: string[],
           opts: {
             project: string;
+            machine?: string;
             worktree?: string | boolean;
             name?: string;
             assistant?: string;
@@ -780,10 +895,26 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
           if (opts.assistant) body.assistant = opts.assistant;
           if (opts.model) body.model = opts.model;
           if (opts.launch === false) body.launch = false;
-          const card = await client().createTask(body);
+          const c = client();
+          const machines = await c.machines();
+          if (!machines && opts.machine) {
+            throw new RemoteCliError(`${c.baseUrl} predates --machine; update Kanban Code there.`);
+          }
+          const target = machines
+            ? opts.machine
+              ? resolveMachine(machines, opts.machine)
+              : machines.find((m) => m.kind === "this")
+            : undefined;
+          if (target && target.kind !== "this" && opts.launch === false) {
+            throw new RemoteCliError("A --no-launch card stays on the master this CLI is logged into; drop --machine or launch it.");
+          }
+          if (target) body.machine = target.name;
+          const created = await c.createTask(body);
+          const card = target ? { ...created, machineId: target.id ?? created.machineId, machineName: target.name } : created;
           if (opts.json) return printJson(card);
+          const where = card.machineName ? ` on ${card.machineName}` : "";
           println(
-            `Created ${card.id} "${card.title}" in ${card.projectName ?? opts.project} (${COLUMN_NAMES[card.column] ?? card.column}).\n` +
+            `Created ${card.id} "${card.title}" in ${card.projectName ?? opts.project}${where} (${COLUMN_NAMES[card.column] ?? card.column}).\n` +
               (opts.launch === false
                 ? `Launch it later with: kanban remote resume ${card.id}`
                 : `Follow it with: kanban remote transcript ${card.id} --follow`)
