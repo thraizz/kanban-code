@@ -300,6 +300,11 @@ public final class MasterEngine {
                 let existingCodexFiles = assistant == .codex
                     ? Set(CodexSessionDiscovery.sessionFiles())
                     : []
+                // Pi writes its file on the first prompt, in a directory
+                // named after its own reading of the working directory.
+                let existingPiFiles = assistant == .pi
+                    ? Set(PiSessionFile.sessionFiles())
+                    : []
                 // OpenCode writes no file: its new session is a new row, and
                 // only appears once the first prompt is in.
                 let openCodeLaunchStart = Date.now
@@ -314,8 +319,9 @@ public final class MasterEngine {
                     dirsToSnapshot = slugDirs.map { slug in
                         (tmpDir as NSString).appendingPathComponent(slug).appending("/chats")
                     }
-                } else if assistant == .codex || assistant == .opencode {
-                    // Codex stores sessions recursively under ~/.codex/sessions;
+                } else if assistant == .codex || assistant == .opencode || assistant == .pi {
+                    // Codex stores sessions recursively under ~/.codex/sessions,
+                    // Pi one directory per project under ~/.pi/agent/sessions;
                     // OpenCode stores them in its database.
                     dirsToSnapshot = []
                 } else if worktreeName != nil {
@@ -413,7 +419,7 @@ public final class MasterEngine {
                 // A remote session shows up after the bridge streams its first
                 // lines, so it gets the longest window.
                 let maxAttempts = boxdPreparation != nil ? 30
-                    : (worktreeName != nil || assistant == .gemini || assistant == .codex || assistant == .opencode) ? 12 : 6
+                    : (worktreeName != nil || assistant == .gemini || assistant == .codex || assistant == .opencode || assistant == .pi) ? 12 : 6
                 var sessionLink: SessionLink?
                 for attempt in 0..<maxAttempts {
                     try? await Task.sleep(for: .milliseconds(500))
@@ -425,6 +431,17 @@ public final class MasterEngine {
                                 sessionId: sessionId,
                                 sessionPath: OpenCodeDatabase.virtualSessionPath(sessionId: sessionId)
                             )
+                            break
+                        }
+                        continue
+                    }
+
+                    if assistant == .pi {
+                        let newFiles = Set(PiSessionFile.sessionFiles()).subtracting(existingPiFiles)
+                        if let sessionPath = Self.newestPiFile(from: newFiles, cwd: launchPath),
+                           let sessionId = PiSessionFile.headerSessionId(path: sessionPath) {
+                            KanbanCodeLog.info("launch", "Detected Pi session file after \(attempt+1) attempts: \(sessionId.suffix(8))")
+                            sessionLink = SessionLink(sessionId: sessionId, sessionPath: sessionPath)
                             break
                         }
                         continue
@@ -561,6 +578,16 @@ public final class MasterEngine {
         }
         .max { $0.1 < $1.1 }?
         .0
+    }
+
+    /// The newest of `paths` whose session ran in `cwd`. Another Pi started
+    /// meanwhile, in another project, writes its own file.
+    nonisolated static func newestPiFile(from paths: Set<String>, cwd: String) -> String? {
+        let resolvedCwd = (cwd as NSString).resolvingSymlinksInPath
+        return newestFile(from: paths.filter { path in
+            guard let headerCwd = PiSessionFile.header(path: path)?["cwd"] as? String else { return false }
+            return (headerCwd as NSString).resolvingSymlinksInPath == resolvedCwd
+        })
     }
 
     /// Extract worktreeLink from a newly-created session file by reading its first line for gitBranch and cwd.
@@ -1083,7 +1110,8 @@ public final class MasterEngine {
     /// Stops the tmux sessions of `sessionId` so its rush host is the only
     /// process writing the transcript.
     public func killTmuxSessions(of sessionId: String) async {
-        let sid8 = CodingAssistant.shortSessionId(sessionId)
+        // agtop hosts Claude sessions only.
+        let sid8 = CodingAssistant.claude.shortSessionId(sessionId)
         guard let sessions = try? await tmux.listSessions() else { return }
         for session in sessions where session.name.contains(sid8) && !RushSessionName.isRush(session.name) {
             try? await tmux.killSession(name: session.name)

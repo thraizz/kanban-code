@@ -22,8 +22,9 @@ public enum HookManager {
             ["AfterAgent", "Notification", "SessionStart", "SessionEnd", "BeforeAgent"]
         case .codex:
             []
-        case .opencode:
-            // Written by the OpenCode plugin, not registered in a settings file.
+        case .opencode, .pi:
+            // Written by the OpenCode plugin or the Pi extension, not
+            // registered in a settings file.
             ["Stop", "Notification", "SessionStart", "SessionEnd", "UserPromptSubmit"]
         }
     }
@@ -43,10 +44,12 @@ public enum HookManager {
     // MARK: - Check
 
     /// Check if hooks are already installed for the given assistant.
-    /// For OpenCode, `settingsPath` is the plugin file (see `OpenCodePlugin`).
+    /// For OpenCode, `settingsPath` is the plugin file (see `OpenCodePlugin`),
+    /// for Pi the extension file (see `PiExtension`).
     public static func isInstalled(for assistant: CodingAssistant, settingsPath: String? = nil) -> Bool {
         guard assistant.supportsHooks else { return false }
         if assistant == .opencode { return OpenCodePlugin.isInstalled(at: settingsPath) }
+        if assistant == .pi { return PiExtension.isInstalled(at: settingsPath) }
 
         let path = settingsPath ?? defaultSettingsPath(for: assistant)
         guard let data = try? Data(contentsOf: URL(fileURLWithPath: path)),
@@ -81,6 +84,9 @@ public enum HookManager {
     {
         if assistant == .opencode {
             return OpenCodePlugin.refresh(at: settingsPath)
+        }
+        if assistant == .pi {
+            return PiExtension.refresh(at: settingsPath)
         }
         guard assistant.supportsHooks, !isInstalled(for: assistant, settingsPath: settingsPath),
             registeredHooks(for: assistant, settingsPath: settingsPath) > 0
@@ -140,6 +146,10 @@ public enum HookManager {
         }
         if assistant == .opencode {
             try OpenCodePlugin.install(at: settingsPath)
+            return
+        }
+        if assistant == .pi {
+            try PiExtension.install(at: settingsPath)
             return
         }
 
@@ -220,6 +230,10 @@ public enum HookManager {
         guard assistant.supportsHooks else { return }
         if assistant == .opencode {
             try OpenCodePlugin.uninstall(at: settingsPath)
+            return
+        }
+        if assistant == .pi {
+            try PiExtension.uninstall(at: settingsPath)
             return
         }
 
@@ -409,6 +423,7 @@ public enum HookManager {
     /// Settings file path per assistant.
     public static func defaultSettingsPath(for assistant: CodingAssistant) -> String {
         if assistant == .opencode { return OpenCodePlugin.defaultPath() }
+        if assistant == .pi { return PiExtension.defaultPath() }
         return (NSHomeDirectory() as NSString).appendingPathComponent("\(assistant.configDirName)/settings.json")
     }
 

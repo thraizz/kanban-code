@@ -10,7 +10,7 @@ public enum ConversationMarkdownExporter {
         sessionPath: String,
         sessionStore: SessionStore
     ) async throws -> String {
-        var output = ""
+var output = ""
         try await streamMarkdown(
             title: title,
             assistant: assistant,
@@ -41,7 +41,7 @@ public enum ConversationMarkdownExporter {
             for turn in try await CodexSessionParser.readTurns(from: sessionPath) {
                 if let section = section(for: turn, assistant: assistant) { write(section) }
             }
-        case .gemini, .opencode:
+        case .gemini, .opencode, .pi:
             for turn in try await sessionStore.readTranscript(sessionPath: sessionPath) {
                 if let section = section(for: turn, assistant: assistant) { write(section) }
             }

@@ -43,6 +43,9 @@ final class AppComposition {
         let opencodeDiscovery = OpenCodeSessionDiscovery()
         let opencodeDetector = OpenCodeActivityDetector()
         let opencodeStore = OpenCodeSessionStore()
+        let piDiscovery = PiSessionDiscovery()
+        let piDetector = PiActivityDetector()
+        let piStore = PiSessionStore()
 
         let enabledAssistants = ContentView.loadEnabledAssistants()
         let registry = CodingAssistantRegistry()
@@ -57,6 +60,9 @@ final class AppComposition {
         }
         if enabledAssistants.contains(.opencode) {
             registry.register(.opencode, discovery: opencodeDiscovery, detector: opencodeDetector, store: opencodeStore)
+        }
+        if enabledAssistants.contains(.pi) {
+            registry.register(.pi, discovery: piDiscovery, detector: piDetector, store: piStore)
         }
 
         let discovery = CompositeSessionDiscovery(registry: registry)

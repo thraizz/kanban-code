@@ -154,6 +154,9 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             case .opencode:
                 let all = try await OpenCodeSessionStore().readTranscript(sessionPath: path)
                 return (Array(all.suffix(maxTurns)), all.count > maxTurns)
+            case .pi:
+                let all = try PiSessionFile.turns(from: path)
+                return (Array(all.suffix(maxTurns)), all.count > maxTurns)
             default:
                 let all = try await GeminiSessionStore().readTranscript(sessionPath: path)
                 return (Array(all.suffix(maxTurns)), all.count > maxTurns)
