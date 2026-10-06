@@ -605,6 +605,19 @@ struct PeerSyncReducerTests {
         #expect(s.tombstones.keys.sorted() == ["card_2"])
         #expect(s.syncClock == 11)
     }
+
+    @Test("loadSyncState keeps the sessions of deleted cards deleted, except one a live card holds")
+    func loadSyncStateDeletedSessions() {
+        let s = AppState()
+        s.localMachineId = "M"
+        s.links["card_1"] = card("card_1", session: "ses_live")
+        let later = now.addingTimeInterval(1e8)
+        let deleted = LinkSync.tombstone(of: card("card_2", session: "ses_gone"), deletedAt: later, rev: stamp(5, "M"))
+        let reused = LinkSync.tombstone(of: card("card_3", session: "ses_live"), deletedAt: later, rev: stamp(6, "M"))
+        let expired = LinkSync.tombstone(of: card("card_4", session: "ses_old"), deletedAt: Date(timeIntervalSince1970: 0), rev: stamp(7, "M"))
+        s.loadSyncState(tombstones: [deleted, reused, expired], now: now)
+        #expect(s.deletedSessionIds == ["ses_gone"])
+    }
 }
 
 // MARK: - PeerSync loop and routes

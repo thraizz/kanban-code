@@ -371,6 +371,16 @@ extension AppState {
             kept[t.id] = t
         }
         tombstones = kept
+        // The sessions of deleted cards stay deleted across a restart: an
+        // opencode session lives on in opencode's database after its card is
+        // deleted, and discovery would make a new card for it. A session a
+        // live card holds is that card's.
+        let liveSessions = Set(links.values.compactMap { $0.sessionLink?.sessionId })
+        for t in kept.values {
+            if let sessionId = t.sessionLink?.sessionId, !liveSessions.contains(sessionId) {
+                deletedSessionIds.insert(sessionId)
+            }
+        }
         var clock = syncClock
         for link in links.values {
             clock = max(clock, link.rev?.counter ?? 0, link.ownerRev?.counter ?? 0)
