@@ -58,12 +58,25 @@ public actor OpenCodeActivityDetector: ActivityDetector {
         for sessionId in owned.keys {
             let lastWrite = activity[sessionId]
             if let hookState = hookStates[sessionId] {
-                // A long tool run sends no events: stay "working" while the
-                // session is still being written, downgrade once both the
-                // plugin and the database have gone quiet.
-                if hookState == .activelyWorking,
-                   let lastTime = lastEventTime[sessionId],
-                   Date.now.timeIntervalSince(max(lastTime, lastWrite ?? .distantPast)) > attentionThreshold {
+                let lastEvent = lastEventTime[sessionId] ?? .distantPast
+
+                // Writes that land after the last hook event mean the session
+                // resumed work without a hook. OpenCode stays "busy" while it
+                // waits on an interactive question tool, so answering it runs
+                // the agent again with no UserPromptSubmit — the timeout below
+                // would otherwise leave the card stuck in Waiting. A fresh
+                // database write is proof of work, so pull it back to working.
+                if hookState != .ended,
+                   let lastWrite,
+                   lastWrite.timeIntervalSince(lastEvent) > 1,
+                   Date.now.timeIntervalSince(lastWrite) < activeThreshold {
+                    hookStates[sessionId] = .activelyWorking
+                    states[sessionId] = .activelyWorking
+                } else if hookState == .activelyWorking,
+                   Date.now.timeIntervalSince(max(lastEvent, lastWrite ?? .distantPast)) > attentionThreshold {
+                    // A long tool run sends no events: stay "working" while the
+                    // session is still being written, downgrade once both the
+                    // plugin and the database have gone quiet.
                     hookStates[sessionId] = .needsAttention
                     states[sessionId] = .needsAttention
                 } else {

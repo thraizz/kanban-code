@@ -82,4 +82,31 @@ struct OpenCodeActivityDetectorTests {
         let states = await detector.pollActivity(sessionPaths: ["ses_a": path("ses_a")])
         #expect(states["ses_a"] == .needsAttention)
     }
+
+    @Test("A resume after an interactive question pulls the session back to working")
+    func resumeAfterQuestionPromotes() async throws {
+        let fixture = try OpenCodeFixture()
+        // The agent resumed after the user answered a question, so the database
+        // is being written — but OpenCode sends no hook for that, leaving the
+        // session stuck in needsAttention until a write proves it is working.
+        try fixture.addSession(id: "ses_a", updated: OpenCodeFixture.millis(ago: 1))
+        let detector = OpenCodeActivityDetector(database: fixture.database, activeThreshold: 60, attentionThreshold: 120)
+        await detector.handleHookEvent(event("ses_a", "UserPromptSubmit", at: .now.addingTimeInterval(-600)))
+        await detector.handleHookEvent(event("ses_a", "Stop", at: .now.addingTimeInterval(-600)))
+        #expect(await detector.activityState(for: "ses_a") == .needsAttention)
+
+        let states = await detector.pollActivity(sessionPaths: ["ses_a": path("ses_a")])
+        #expect(states["ses_a"] == .activelyWorking, "a write after the last hook means work resumed")
+    }
+
+    @Test("A Stop with no later write stays waiting")
+    func stopWithoutResumeStaysWaiting() async throws {
+        let fixture = try OpenCodeFixture()
+        try fixture.addSession(id: "ses_a", updated: OpenCodeFixture.millis(ago: 600))
+        let detector = OpenCodeActivityDetector(database: fixture.database, activeThreshold: 60, attentionThreshold: 120)
+        await detector.handleHookEvent(event("ses_a", "Stop", at: .now.addingTimeInterval(-600)))
+
+        let states = await detector.pollActivity(sessionPaths: ["ses_a": path("ses_a")])
+        #expect(states["ses_a"] == .needsAttention, "a Stop with no newer write must not look like work")
+    }
 }
