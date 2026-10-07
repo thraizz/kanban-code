@@ -113,15 +113,16 @@ struct RushTests {
     @Test("A card set to rush runs on rush only when rush can run it")
     func choose() {
         func choice(_ assistant: CodingAssistant = .claude, runtime: SessionRuntime = .rush, remote: Bool = false,
-                    override: String? = nil, installed: Bool = true) -> RushLaunchPlanner.Choice {
+                    override: String? = nil, hasVariant: Bool = false, installed: Bool = true) -> RushLaunchPlanner.Choice {
             RushLaunchPlanner.choose(assistant: assistant, runtime: runtime, remote: remote,
-                                      commandOverride: override, rushInstalled: installed)
+                                      commandOverride: override, hasModelVariantOverride: hasVariant, rushInstalled: installed)
         }
         #expect(choice() == .rush)
         #expect(choice(runtime: .tmux) == .tmux)
         #expect(choice(.codex) == .fallback(.notClaude))
         #expect(choice(remote: true) == .fallback(.remote))
         #expect(choice(override: "claude --foo") == .fallback(.commandOverride))
+        #expect(choice(hasVariant: true) == .fallback(.modelVariantOverride))
         #expect(choice(override: "  ") == .rush)
         #expect(choice(installed: false) == .fallback(.notInstalled))
     }

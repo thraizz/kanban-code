@@ -21,6 +21,7 @@ struct LaunchConfig: Identifiable {
     let assistant: CodingAssistant
     let apiServiceId: String?
     let modelOverride: String?
+    let modelVariantOverride: String?
 
     init(
         cardId: String,
@@ -36,7 +37,8 @@ struct LaunchConfig: Identifiable {
         promptImagePaths: [String] = [],
         assistant: CodingAssistant = .claude,
         apiServiceId: String? = nil,
-        modelOverride: String? = nil
+        modelOverride: String? = nil,
+        modelVariantOverride: String? = nil
     ) {
         self.cardId = cardId
         self.projectPath = projectPath
@@ -52,6 +54,7 @@ struct LaunchConfig: Identifiable {
         self.assistant = assistant
         self.apiServiceId = apiServiceId
         self.modelOverride = modelOverride
+        self.modelVariantOverride = modelVariantOverride
     }
 }
 
@@ -499,6 +502,7 @@ struct ContentView: View {
                     assistant: current.effectiveAssistant,
                     serviceIdOverride: current.apiServiceId,
                     modelOverride: current.modelOverride,
+                    modelVariantOverride: current.modelVariantOverride,
                     machineChoice: .existing(machineName)
                 )
             }
@@ -864,11 +868,11 @@ struct ContentView: View {
                     globalRemoteSettings: store.state.globalRemoteSettings,
                     remoteOptions: remoteLaunchOptions(cardId: nil),
                     enabledAssistants: assistantRegistry.available,
-                    onCreate: { prompt, projectPath, title, startImmediately, images in
-                        createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images)
+                    onCreate: { prompt, projectPath, title, startImmediately, images, assistant, apiServiceId, modelOverride, modelVariantOverride in
+                        createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images, assistant: assistant, apiServiceId: apiServiceId, modelOverride: modelOverride, modelVariantOverride: modelVariantOverride)
                     },
-                    onCreateAndLaunch: { prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant, apiServiceId in
-                        createManualTaskAndLaunch(prompt: prompt, projectPath: projectPath, title: title, createWorktree: createWorktree, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant, apiServiceId: apiServiceId)
+                    onCreateAndLaunch: { prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant, apiServiceId, modelOverride, modelVariantOverride in
+                        createManualTaskAndLaunch(prompt: prompt, projectPath: projectPath, title: title, createWorktree: createWorktree, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: assistant, apiServiceId: apiServiceId, modelOverride: modelOverride, modelVariantOverride: modelVariantOverride)
                     },
                     onMachineChoice: { pendingMachineChoice = $0 }
                 )
@@ -913,6 +917,7 @@ struct ContentView: View {
                     assistant: config.assistant,
                     initialServiceId: config.apiServiceId,
                     modelOverride: config.modelOverride,
+                    modelVariantOverride: config.modelVariantOverride,
                     isPresented: Binding(
                         get: { launchConfig != nil },
                         set: { if !$0 { launchConfig = nil } }
@@ -924,7 +929,7 @@ struct ContentView: View {
                             forForeignCard: config.cardId, runRemotely: runRemotely, machineChoice: machineChoice) {
                             engine.moveCardReporting(config.cardId, to: target)
                         } else if config.isResume {
-                            executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, machineChoice: machineChoice)
+                            executeResume(cardId: config.cardId, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, modelVariantOverride: config.modelVariantOverride, machineChoice: machineChoice)
                         } else {
                             let wtName: String? = createWorktree ? (worktreeBranch ?? config.worktreeName ?? "") : nil
                             executeLaunch(cardId: config.cardId, prompt: editedPrompt, projectPath: config.projectPath, worktreeName: wtName, runRemotely: runRemotely, skipPermissions: skipPermissions, commandOverride: commandOverride, images: images, assistant: config.assistant, serviceIdOverride: selectedServiceId, modelOverride: config.modelOverride, machineChoice: machineChoice)
@@ -2507,7 +2512,8 @@ struct ContentView: View {
             cmd += card.link.effectiveAssistant.resumeCommand(
                 sessionId: sessionId,
                 skipPermissions: false,
-                modelOverride: card.link.modelOverride
+                modelOverride: card.link.modelOverride,
+                modelVariantOverride: card.link.modelVariantOverride
             )
         }
         NSPasteboard.general.clearContents()
@@ -2901,7 +2907,7 @@ struct ContentView: View {
         presentNewTask()
     }
 
-    private func createManualTask(prompt: String, projectPath: String?, title: String? = nil, startImmediately: Bool = false, images: [ImageAttachment] = []) {
+    private func createManualTask(prompt: String, projectPath: String?, title: String? = nil, startImmediately: Bool = false, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, apiServiceId: String? = nil, modelOverride: String? = nil, modelVariantOverride: String? = nil) {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let name: String
         if let title, !title.isEmpty {
@@ -2914,14 +2920,18 @@ struct ContentView: View {
             var mutable = img
             return try? mutable.saveToPersistent()
         }
-        let link = Link(
+        var link = Link(
             name: name,
             projectPath: projectPath,
             column: startImmediately ? .inProgress : .backlog,
             source: .manual,
             promptBody: trimmed,
-            promptImagePaths: imagePaths
+            promptImagePaths: imagePaths,
+            modelOverride: modelOverride,
+            modelVariantOverride: modelVariantOverride,
+            assistant: assistant
         )
+        link.apiServiceId = apiServiceId
 
         store.dispatch(.createManualTask(link))
         KanbanCodeLog.info("manual-task", "Created manual task card=\(link.id.prefix(12)) name='\(name)' project=\(projectPath ?? "nil") startImmediately=\(startImmediately)")
@@ -2931,7 +2941,7 @@ struct ContentView: View {
         }
     }
 
-    private func createManualTaskAndLaunch(prompt: String, projectPath: String?, title: String? = nil, createWorktree: Bool, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, apiServiceId: String? = nil) {
+    private func createManualTaskAndLaunch(prompt: String, projectPath: String?, title: String? = nil, createWorktree: Bool, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String? = nil, images: [ImageAttachment] = [], assistant: CodingAssistant = .claude, apiServiceId: String? = nil, modelOverride: String? = nil, modelVariantOverride: String? = nil) {
         let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
         let name: String
         if let title, !title.isEmpty {
@@ -2951,6 +2961,8 @@ struct ContentView: View {
             source: .manual,
             promptBody: trimmed,
             promptImagePaths: imagePaths,
+            modelOverride: modelOverride,
+            modelVariantOverride: modelVariantOverride,
             assistant: assistant
         )
         link.apiServiceId = apiServiceId

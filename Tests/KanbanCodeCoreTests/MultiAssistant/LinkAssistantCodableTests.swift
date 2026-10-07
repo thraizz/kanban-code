@@ -199,6 +199,7 @@ struct LinkAssistantCodableTests {
             id: "card_child",
             parentCardId: "card_parent",
             modelOverride: "opus",
+            modelVariantOverride: "high",
             selfCompactContextThresholdTokens: 250_000,
             assistant: .claude
         )
@@ -206,6 +207,7 @@ struct LinkAssistantCodableTests {
         let decoded = try JSONDecoder().decode(Link.self, from: data)
         #expect(decoded.parentCardId == "card_parent")
         #expect(decoded.modelOverride == "opus")
+        #expect(decoded.modelVariantOverride == "high")
         #expect(decoded.selfCompactContextThresholdTokens == 250_000)
     }
 
@@ -224,6 +226,7 @@ struct LinkAssistantCodableTests {
         let decoded = try JSONDecoder().decode(Link.self, from: Data(json.utf8))
         #expect(decoded.parentCardId == nil)
         #expect(decoded.modelOverride == nil)
+        #expect(decoded.modelVariantOverride == nil)
         #expect(decoded.selfCompactContextThresholdTokens == nil)
     }
 

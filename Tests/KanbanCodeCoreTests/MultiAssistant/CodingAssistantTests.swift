@@ -180,6 +180,39 @@ struct CodingAssistantTests {
         #expect(cmd == "claude --dangerously-skip-permissions")
     }
 
+    @Test("Claude launch command supports a model and effort override")
+    func claudeLaunchModelAndEffort() {
+        let cmd = CodingAssistant.claude.launchCommand(
+            skipPermissions: true,
+            worktreeName: nil,
+            modelOverride: "opus",
+            modelVariantOverride: "high"
+        )
+        #expect(cmd == "claude --model opus --dangerously-skip-permissions --effort high")
+    }
+
+    @Test("OpenCode model variants use the interactive run command")
+    func openCodeLaunchModelAndVariant() {
+        let cmd = CodingAssistant.opencode.launchCommand(
+            skipPermissions: false,
+            worktreeName: nil,
+            modelOverride: "opencode/claude-sonnet-4-5",
+            modelVariantOverride: "max"
+        )
+        #expect(cmd == "opencode run --interactive --model opencode/claude-sonnet-4-5 --variant max")
+    }
+
+    @Test("OpenCode variant is retained when resuming a session")
+    func openCodeResumeModelAndVariant() {
+        let cmd = CodingAssistant.opencode.resumeCommand(
+            sessionId: "ses_123",
+            skipPermissions: false,
+            modelOverride: "opencode/claude-sonnet-4-5",
+            modelVariantOverride: "high"
+        )
+        #expect(cmd == "opencode run --interactive --model opencode/claude-sonnet-4-5 --session ses_123 --variant high")
+    }
+
     @Test("launchCommand with ollama service inserts launcher + model + separator")
     func launchCommandWithOllamaService() {
         let service = APIService(

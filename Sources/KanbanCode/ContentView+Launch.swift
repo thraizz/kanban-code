@@ -51,7 +51,8 @@ extension ContentView {
                 promptImagePaths: card.link.promptImagePaths ?? [],
                 assistant: card.link.effectiveAssistant,
                 apiServiceId: card.link.apiServiceId,
-                modelOverride: card.link.modelOverride
+                modelOverride: card.link.modelOverride,
+                modelVariantOverride: card.link.modelVariantOverride
             )
         }
     }
@@ -231,7 +232,8 @@ extension ContentView {
             sessionId: sessionId,
             assistant: card.link.effectiveAssistant,
             apiServiceId: card.link.apiServiceId,
-            modelOverride: card.link.modelOverride
+            modelOverride: card.link.modelOverride,
+            modelVariantOverride: card.link.modelVariantOverride
         )
     }
 
@@ -277,6 +279,7 @@ extension ContentView {
                     source: .discovered,
                     parentCardId: card.link.parentCardId,
                     modelOverride: card.link.modelOverride,
+                    modelVariantOverride: card.link.modelVariantOverride,
                     selfCompactContextThresholdTokens: card.link.selfCompactContextThresholdTokens,
                     sessionLink: SessionLink(sessionId: newSessionId, sessionPath: newPath),
                     worktreeLink: keepWorktree ? card.link.worktreeLink : nil,
@@ -301,7 +304,7 @@ extension ContentView {
         }
     }
 
-    func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?, assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, machineChoice: BoxdMachineChoice? = nil, focusCard: Bool = true) {
+    func executeResume(cardId: String, runRemotely: Bool, skipPermissions: Bool = true, commandOverride: String?, assistant: CodingAssistant = .claude, serviceIdOverride: String? = nil, modelOverride: String? = nil, modelVariantOverride: String? = nil, machineChoice: BoxdMachineChoice? = nil, focusCard: Bool = true) {
         engine.resume(
             cardId: cardId,
             runRemotely: runRemotely,
@@ -310,6 +313,7 @@ extension ContentView {
             assistant: assistant,
             serviceIdOverride: serviceIdOverride,
             modelOverride: modelOverride,
+            modelVariantOverride: modelVariantOverride,
             machineChoice: machineChoice,
             keepSelection: !focusCard,
             afterDispatch: focusCard ? { [self] in shouldFocusTerminal = true } : nil

@@ -223,7 +223,8 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         skipPermissions: Bool,
         worktreeName: String?,
         service: APIService? = nil,
-        modelOverride: String? = nil
+        modelOverride: String? = nil,
+        modelVariantOverride: String? = nil
     ) -> String {
         var flags: [String] = []
         if skipPermissions { flags.append(contentsOf: autoApproveFlags) }
@@ -231,7 +232,13 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         if supportsWorktree, let worktreeName {
             flags += worktreeName.isEmpty ? ["--worktree"] : ["--worktree", worktreeName]
         }
-        return assemble(skipPermissions: skipPermissions, service: service, modelOverride: modelOverride, flags: flags)
+        return assemble(
+            skipPermissions: skipPermissions,
+            service: service,
+            modelOverride: modelOverride,
+            modelVariantOverride: modelVariantOverride,
+            flags: flags
+        )
     }
 
     /// Builds the tmux resume command, optionally wrapping with an `APIService`.
@@ -242,7 +249,8 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         sessionId: String,
         skipPermissions: Bool,
         service: APIService? = nil,
-        modelOverride: String? = nil
+        modelOverride: String? = nil,
+        modelVariantOverride: String? = nil
     ) -> String {
         var flags: [String] = []
         switch self {
@@ -257,7 +265,13 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
             flags.append(resumeFlag)
             flags.append(sessionId)
         }
-        return assemble(skipPermissions: skipPermissions, service: service, modelOverride: modelOverride, flags: flags)
+        return assemble(
+            skipPermissions: skipPermissions,
+            service: service,
+            modelOverride: modelOverride,
+            modelVariantOverride: modelVariantOverride,
+            flags: flags
+        )
     }
 
     /// `autoApproveFlag` as argv words: none for an assistant without one.
@@ -276,6 +290,7 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         skipPermissions: Bool,
         service: APIService?,
         modelOverride: String?,
+        modelVariantOverride: String?,
         flags: [String]
     ) -> String {
         var prefix: [String] = []
@@ -285,6 +300,12 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
         }
         if let launcher = service?.launcherPrefix { prefix.append(contentsOf: launcher.split(separator: " ").map(String.init)) }
         prefix.append(cliCommand)
+        // The interactive TUI does not accept --variant. OpenCode's `run`
+        // command does, and --interactive keeps the session attached to a
+        // terminal for Kanban's prompt and follow-up handling.
+        if self == .opencode, modelVariantOverride != nil {
+            prefix += ["run", "--interactive"]
+        }
         if let model = modelOverride ?? service?.modelFlag {
             prefix += ["--model", shellEscapeCommandArgument(model)]
         }
@@ -297,7 +318,18 @@ public enum CodingAssistant: String, Codable, Sendable, CaseIterable {
                 || (service?.modelFlag != nil && modelOverride == nil)
         }
         let sep: [String] = needsServiceSeparator ? ["--"] : []
-        return (prefix + sep + flags).joined(separator: " ")
+        var assistantFlags = flags
+        if let modelVariantOverride, !modelVariantOverride.isEmpty {
+            switch self {
+            case .claude:
+                assistantFlags += ["--effort", shellEscapeCommandArgument(modelVariantOverride)]
+            case .opencode:
+                assistantFlags += ["--variant", shellEscapeCommandArgument(modelVariantOverride)]
+            case .gemini, .codex, .pi:
+                break
+            }
+        }
+        return (prefix + sep + assistantFlags).joined(separator: " ")
     }
 
     /// The part of a session id that names its tmux session: the first 8

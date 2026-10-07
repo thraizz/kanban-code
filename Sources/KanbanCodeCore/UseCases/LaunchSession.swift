@@ -22,7 +22,8 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         preamble: String? = nil,
         assistant: CodingAssistant = .claude,
         service: APIService? = nil,
-        modelOverride: String? = nil
+        modelOverride: String? = nil,
+        modelVariantOverride: String? = nil
     ) async throws -> String {
 
         let cmd: String
@@ -35,7 +36,8 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
                 skipPermissions: skipPermissions,
                 worktreeName: worktreeName,
                 service: service,
-                modelOverride: modelOverride
+                modelOverride: modelOverride,
+                modelVariantOverride: modelVariantOverride
             )
 
             // The user's template wraps the assistant command, and the env
@@ -77,7 +79,8 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
         preamble: String? = nil,
         assistant: CodingAssistant = .claude,
         service: APIService? = nil,
-        modelOverride: String? = nil
+        modelOverride: String? = nil,
+        modelVariantOverride: String? = nil
     ) async throws -> String {
         // Kill stale tmux session if one exists — we always want a fresh resume
         let existing = try await tmux.listSessions()
@@ -95,7 +98,8 @@ public final class LaunchSession: SessionLauncher, @unchecked Sendable {
                 sessionId: sessionId,
                 skipPermissions: skipPermissions,
                 service: service,
-                modelOverride: modelOverride
+                modelOverride: modelOverride,
+                modelVariantOverride: modelVariantOverride
             )
             built = CodingAssistant.applyCommandTemplate(built, template: commandTemplate)
             let envPrefix = buildEnvPrefix(shellOverride: shellOverride, extraEnv: extraEnv)

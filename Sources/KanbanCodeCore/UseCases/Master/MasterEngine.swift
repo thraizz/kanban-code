@@ -107,6 +107,7 @@ public final class MasterEngine {
         assistant: CodingAssistant = .claude,
         serviceIdOverride: String? = nil,
         modelOverride: String? = nil,
+        modelVariantOverride: String? = nil,
         machineChoice: BoxdMachineChoice? = nil,
         keepSelection: Bool = false,
         humanPrompt: Bool = false,
@@ -140,6 +141,7 @@ public final class MasterEngine {
         store.dispatch(.launchCard(cardId: cardId, prompt: prompt, projectPath: projectPath, worktreeName: worktreeName, runRemotely: runRemotely, commandOverride: commandOverride))
         if keepSelection { store.dispatch(.selectCard(cardId: previouslySelectedCardId)) }
         let effectiveModelOverride = modelOverride ?? store.state.links[cardId]?.modelOverride
+        let effectiveModelVariantOverride = modelVariantOverride ?? store.state.links[cardId]?.modelVariantOverride
         // The reducer computed the unique tmux name and stored it in the link.
         let predictedTmuxName = store.state.links[cardId]?.tmuxLink?.sessionName ?? cardId
         KanbanCodeLog.info("launch", "Starting launch for card=\(cardId.prefix(12)) tmux=\(predictedTmuxName) project=\(projectPath)")
@@ -226,7 +228,13 @@ public final class MasterEngine {
                 }
 
                 if boxdPreparation == nil,
-                   rushChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .rush {
+                   rushChoice(
+                       settings: settings,
+                       assistant: assistant,
+                       remote: isRemote,
+                       commandOverride: commandOverride,
+                       modelVariantOverride: effectiveModelVariantOverride
+                   ) == .rush {
                     var cwd = projectPath
                     var worktreeLink: WorktreeLink?
                     if let worktreeName {
@@ -262,8 +270,13 @@ public final class MasterEngine {
 
                 if let preparation = boxdPreparation,
                    let machineRush = await machineRush(
-                       machineName: preparation.machineName, settings: settings, assistant: assistant,
-                       commandOverride: commandOverride, service: resolvedService) {
+                       machineName: preparation.machineName,
+                       settings: settings,
+                       assistant: assistant,
+                       commandOverride: commandOverride,
+                       service: resolvedService,
+                       modelVariantOverride: effectiveModelVariantOverride
+                   ) {
                     let sessionId = UUID().uuidString.lowercased()
                     let name = try await startOnRush(
                         cardId: cardId,
@@ -353,7 +366,8 @@ public final class MasterEngine {
                     preamble: preamble,
                     assistant: assistant,
                     service: resolvedService,
-                    modelOverride: effectiveModelOverride
+                    modelOverride: effectiveModelOverride,
+                    modelVariantOverride: effectiveModelVariantOverride
                 )
                 KanbanCodeLog.info("launch", "Tmux session created: \(tmuxName)")
                 if let preparation = boxdPreparation, let boxdSupervisor {
@@ -669,6 +683,7 @@ public final class MasterEngine {
         assistant: CodingAssistant = .claude,
         serviceIdOverride: String? = nil,
         modelOverride: String? = nil,
+        modelVariantOverride: String? = nil,
         machineChoice: BoxdMachineChoice? = nil,
         keepSelection: Bool = false,
         afterDispatch: (() -> Void)? = nil
@@ -704,6 +719,7 @@ public final class MasterEngine {
             return true
         }
         let effectiveModelOverride = modelOverride ?? card.link.modelOverride
+        let effectiveModelVariantOverride = modelVariantOverride ?? card.link.modelVariantOverride
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         // For worktree cards, cd into the worktree — that's where Claude stored the session data.
         let projectPath: String
@@ -920,7 +936,13 @@ public final class MasterEngine {
                 }
 
                 if boxdPreparation == nil,
-                   rushChoice(settings: settings, assistant: assistant, remote: isRemote, commandOverride: commandOverride) == .rush {
+                   rushChoice(
+                       settings: settings,
+                       assistant: assistant,
+                       remote: isRemote,
+                       commandOverride: commandOverride,
+                       modelVariantOverride: effectiveModelVariantOverride
+                   ) == .rush {
                     await killTmuxSessions(of: sessionId)
                     let name = try await startOnRush(
                         cardId: cardId,
@@ -941,8 +963,13 @@ public final class MasterEngine {
 
                 if let preparation = boxdPreparation,
                    let machineRush = await machineRush(
-                       machineName: preparation.machineName, settings: settings, assistant: assistant,
-                       commandOverride: commandOverride, service: resolvedService) {
+                       machineName: preparation.machineName,
+                       settings: settings,
+                       assistant: assistant,
+                       commandOverride: commandOverride,
+                       service: resolvedService,
+                       modelVariantOverride: effectiveModelVariantOverride
+                   ) {
                     // The conversation runs in one place only: its tmux
                     // sessions, here or on the machine, end first.
                     await killTmuxSessions(of: sessionId)
@@ -977,7 +1004,8 @@ public final class MasterEngine {
                     preamble: preamble,
                     assistant: assistant,
                     service: resolvedService,
-                    modelOverride: effectiveModelOverride
+                    modelOverride: effectiveModelOverride,
+                    modelVariantOverride: effectiveModelVariantOverride
                 )
                 KanbanCodeLog.info("resume", "Resume launched for card=\(cardId.prefix(12)) actualTmux=\(actualTmuxName)")
                 if let preparation = boxdPreparation, let boxdSupervisor {
@@ -1012,13 +1040,15 @@ public final class MasterEngine {
         settings: Settings?,
         assistant: CodingAssistant,
         remote: Bool,
-        commandOverride: String?
+        commandOverride: String?,
+        modelVariantOverride: String? = nil
     ) -> RushLaunchPlanner.Choice {
         let choice = RushLaunchPlanner.choose(
             assistant: assistant,
             runtime: settings?.runtime(for: assistant) ?? .tmux,
             remote: remote,
             commandOverride: commandOverride,
+            hasModelVariantOverride: modelVariantOverride != nil,
             rushInstalled: tmux.rush.isAvailable
         )
         if case .fallback(let fallback) = choice {
@@ -1039,13 +1069,16 @@ public final class MasterEngine {
         settings: Settings?,
         assistant: CodingAssistant,
         commandOverride: String?,
-        service: APIService?
+        service: APIService?,
+        modelVariantOverride: String? = nil
     ) async -> RushCliAdapter? {
         guard settings?.runtime(for: assistant) == .rush else { return nil }
         guard let boxdSupervisor, await boxdSupervisor.isHost(machineName) else { return nil }
         let choice = RushLaunchPlanner.choose(
             assistant: assistant, runtime: .rush, remote: false,
-            commandOverride: commandOverride, rushInstalled: tmux.registry.rush(for: machineName) != nil)
+            commandOverride: commandOverride,
+            hasModelVariantOverride: modelVariantOverride != nil,
+            rushInstalled: tmux.registry.rush(for: machineName) != nil)
         guard choice == .rush, let rush = tmux.registry.rush(for: machineName) else {
             if case .fallback(let fallback) = choice {
                 KanbanCodeLog.info("rush", "Running on tmux on \(machineName): \(fallback.reason)")

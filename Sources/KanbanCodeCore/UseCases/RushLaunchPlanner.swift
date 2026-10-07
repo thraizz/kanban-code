@@ -8,6 +8,7 @@ public enum RushLaunchPlanner {
         case notClaude
         case remote
         case commandOverride
+        case modelVariantOverride
         case notInstalled
 
         public var reason: String {
@@ -15,6 +16,7 @@ public enum RushLaunchPlanner {
             case .notClaude: "cards run only Claude Code on rush"
             case .remote: "remote cards run on tmux"
             case .commandOverride: "a custom command runs on tmux"
+            case .modelVariantOverride: "a model variant runs on tmux"
             case .notInstalled: "rush is not installed"
             }
         }
@@ -32,11 +34,13 @@ public enum RushLaunchPlanner {
         runtime: SessionRuntime,
         remote: Bool,
         commandOverride: String?,
+        hasModelVariantOverride: Bool = false,
         rushInstalled: Bool
     ) -> Choice {
         guard runtime == .rush else { return .tmux }
         if assistant != .claude { return .fallback(.notClaude) }
         if remote { return .fallback(.remote) }
+        if hasModelVariantOverride { return .fallback(.modelVariantOverride) }
         if let commandOverride, !commandOverride.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return .fallback(.commandOverride)
         }

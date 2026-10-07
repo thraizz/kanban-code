@@ -2290,7 +2290,8 @@ struct CardDetailView: View {
             cmd += card.link.effectiveAssistant.resumeCommand(
                 sessionId: sessionId,
                 skipPermissions: false,
-                modelOverride: card.link.modelOverride
+                modelOverride: card.link.modelOverride,
+                modelVariantOverride: card.link.modelVariantOverride
             )
         } else {
             cmd += "# no session yet"

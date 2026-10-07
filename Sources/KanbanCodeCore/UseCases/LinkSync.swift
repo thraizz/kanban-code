@@ -46,6 +46,7 @@ public enum LinkSync {
         SharedField("promptImagePaths", \.promptImagePaths),
         SharedField("parentCardId", \.parentCardId),
         SharedField("modelOverride", \.modelOverride),
+        SharedField("modelVariantOverride", \.modelVariantOverride),
         SharedField("selfCompactContextThresholdTokens", \.selfCompactContextThresholdTokens),
         SharedField("prLinks", \.prLinks),
         SharedField("issueLink", \.issueLink),

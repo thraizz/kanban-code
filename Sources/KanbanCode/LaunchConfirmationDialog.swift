@@ -20,6 +20,7 @@ struct LaunchConfirmationDialog: View {
     let assistant: CodingAssistant
     let initialServiceId: String?
     let modelOverride: String?
+    let modelVariantOverride: String?
     @Binding var isPresented: Bool
     /// Boxd machine the user picked. Called just before `onLaunch` when the
     /// launch runs on boxd.
@@ -58,6 +59,7 @@ struct LaunchConfirmationDialog: View {
         assistant: CodingAssistant = .claude,
         initialServiceId: String? = nil,
         modelOverride: String? = nil,
+        modelVariantOverride: String? = nil,
         isPresented: Binding<Bool>,
         onLaunch: @escaping (String, Bool, String?, Bool, Bool, String?, [ImageAttachment], String?) -> Void = { _, _, _, _, _, _, _, _ in },
         onMachineChoice: @escaping (BoxdMachineChoice) -> Void = { _ in },
@@ -77,6 +79,7 @@ struct LaunchConfirmationDialog: View {
         self.assistant = assistant
         self.initialServiceId = initialServiceId
         self.modelOverride = modelOverride
+        self.modelVariantOverride = modelVariantOverride
         self._isPresented = isPresented
         self.onMachineChoice = onMachineChoice
         self.onRemoveMachine = onRemoveMachine
@@ -422,7 +425,8 @@ struct LaunchConfirmationDialog: View {
                 sessionId: sid,
                 skipPermissions: dangerouslySkipPermissions,
                 service: service,
-                modelOverride: modelOverride
+                modelOverride: modelOverride,
+                modelVariantOverride: modelVariantOverride
             )
             let templated = CodingAssistant.applyCommandTemplate(resumeCmd, template: template)
             parts.append("cd \(projectPath) && \(templated)")
@@ -440,7 +444,8 @@ struct LaunchConfirmationDialog: View {
                 skipPermissions: dangerouslySkipPermissions,
                 worktreeName: effectiveWorktreeName,
                 service: service,
-                modelOverride: modelOverride
+                modelOverride: modelOverride,
+                modelVariantOverride: modelVariantOverride
             )
             parts.append(CodingAssistant.applyCommandTemplate(launchCmd, template: template))
         }

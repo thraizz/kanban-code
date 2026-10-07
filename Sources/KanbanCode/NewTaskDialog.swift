@@ -10,10 +10,10 @@ struct NewTaskDialog: View {
     /// `globalRemoteSettings` is ignored.
     var remoteOptions: RemoteLaunchOptions?
     var enabledAssistants: [CodingAssistant] = CodingAssistant.allCases
-    /// (prompt, projectPath, title, startImmediately, images) — creates task without an assistant set
-    var onCreate: (String, String?, String?, Bool, [ImageAttachment]) -> Void = { _, _, _, _, _ in }
-    /// (prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant, apiServiceId) — creates and launches directly (skips LaunchConfirmation)
-    var onCreateAndLaunch: (String, String?, String?, Bool, Bool, Bool, String?, [ImageAttachment], CodingAssistant, String?) -> Void = { _, _, _, _, _, _, _, _, _, _ in }
+    /// (prompt, projectPath, title, startImmediately, images, assistant, apiServiceId, model, variant)
+    var onCreate: (String, String?, String?, Bool, [ImageAttachment], CodingAssistant, String?, String?, String?) -> Void = { _, _, _, _, _, _, _, _, _ in }
+    /// (prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant, apiServiceId, model, variant) — creates and launches directly (skips LaunchConfirmation)
+    var onCreateAndLaunch: (String, String?, String?, Bool, Bool, Bool, String?, [ImageAttachment], CodingAssistant, String?, String?, String?) -> Void = { _, _, _, _, _, _, _, _, _, _, _, _ in }
     /// Boxd machine the user picked. Called just before `onCreateAndLaunch`
     /// when the launch runs on boxd.
     var onMachineChoice: (BoxdMachineChoice) -> Void = { _ in }
@@ -23,6 +23,12 @@ struct NewTaskDialog: View {
     @State private var apiServices: [APIService] = []
     @State private var defaultAPIServiceIds: [String: String] = [:]
     @State private var selectedServiceId: String? = nil
+    @State private var openCodeModels: [String] = []
+    @State private var modelSearch = ""
+    @State private var selectedModel = ""
+    @State private var customModel = ""
+    @State private var selectedVariant = ""
+    @State private var customVariant = ""
     @AppStorage("selectedAssistant") private var selectedAssistantRaw: String = CodingAssistant.claude.rawValue
     private var selectedAssistant: CodingAssistant {
         get { CodingAssistant(rawValue: selectedAssistantRaw) ?? .claude }
@@ -45,6 +51,8 @@ struct NewTaskDialog: View {
     @AppStorage("lastSelectedProjectPath") private var lastSelectedProjectPath = ""
 
     private static let customPathSentinel = "__custom__"
+    private static let customModelSentinel = "__custom_model__"
+    private static let customVariantSentinel = "__custom_variant__"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -90,7 +98,7 @@ struct NewTaskDialog: View {
             }
 
             // Assistant picker (when multiple enabled)
-            if startImmediately && enabledAssistants.count > 1 {
+            if enabledAssistants.count > 1 {
                 Picker("Assistant", selection: $selectedAssistantRaw) {
                     ForEach(enabledAssistants, id: \.self) { assistant in
                         Text(assistant.displayName).tag(assistant.rawValue)
@@ -103,7 +111,7 @@ struct NewTaskDialog: View {
 
             // API Service picker (when services exist for this assistant)
             let servicesForAssistant = apiServices.filter { $0.assistant == selectedAssistant }
-            if startImmediately && !servicesForAssistant.isEmpty {
+            if !servicesForAssistant.isEmpty {
                 Picker("API Service", selection: $selectedServiceId) {
                     Text("Default").tag(String?.none)
                     ForEach(servicesForAssistant) { service in
@@ -114,6 +122,8 @@ struct NewTaskDialog: View {
                     if !commandEdited { command = commandPreview }
                 }
             }
+
+            modelSelectionSection
 
             // Start immediately toggle
             Toggle("Start immediately", isOn: $startImmediately)
@@ -217,44 +227,98 @@ struct NewTaskDialog: View {
             command = commandPreview
             titleFocused = true
         }
-        .task { await reloadServices() }
-        .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSettingsChanged)) { _ in
-            Task { await reloadServices() }
+        .task {
+            await reloadServices()
+            await reloadOpenCodeModels()
         }
-        .onChange(of: prompt) {
-            if !commandEdited { command = commandPreview }
+        .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSettingsChanged)) { _ in
+            Task {
+                await reloadServices()
+                await reloadOpenCodeModels()
+            }
         }
         .onChange(of: createWorktree) {
             if let path = resolvedProjectPath {
                 UserDefaults.standard.set(createWorktree, forKey: "createWorktree_\(path)")
             }
-            if !commandEdited { command = commandPreview }
-        }
-        .onChange(of: worktreeBranch) {
-            if !commandEdited { command = commandPreview }
         }
         .onChange(of: runRemotely) {
             rememberRunRemotely()
-            if !commandEdited { command = commandPreview }
-        }
-        .onChange(of: machineChoice) {
-            if !commandEdited { command = commandPreview }
         }
         .onChange(of: selectedProjectPath) {
             applyProjectDefaults()
-            if !commandEdited { command = commandPreview }
-        }
-        .onChange(of: dangerouslySkipPermissions) {
-            if !commandEdited { command = commandPreview }
+            if selectedAssistant == .opencode { Task { await reloadOpenCodeModels() } }
         }
         .onChange(of: selectedAssistantRaw) {
-            if !commandEdited { command = commandPreview }
             // Reset to default service for the newly selected assistant
             selectedServiceId = defaultAPIServiceIds[selectedAssistant.rawValue]
+            selectedModel = ""
+            modelSearch = ""
+            customModel = ""
+            selectedVariant = ""
+            customVariant = ""
+            Task { await reloadOpenCodeModels() }
+        }
+        .onChange(of: commandPreview) {
+            if !commandEdited { command = commandPreview }
         }
     }
 
     // MARK: - Remote row
+
+    @ViewBuilder
+    private var modelSelectionSection: some View {
+        if supportsModelSelection {
+            VStack(alignment: .leading, spacing: 6) {
+                Picker("Model", selection: $selectedModel) {
+                    Text("Default").tag("")
+                    ForEach(filteredModelOptions, id: \.self) { model in
+                        Text(model).tag(model)
+                    }
+                    Divider()
+                    Text("Custom…").tag(Self.customModelSentinel)
+                }
+                .pickerStyle(.menu)
+
+                if selectedAssistant == .opencode && openCodeModels.count > 20 {
+                    TextField("Filter models", text: $modelSearch)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.app(.caption))
+                        .padding(.leading, 20)
+                }
+
+                if selectedModel == Self.customModelSentinel {
+                    TextField(
+                        selectedAssistant == .opencode ? "provider/model" : "Model alias or ID",
+                        text: $customModel
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .font(.app(.callout))
+                    .padding(.leading, 20)
+                }
+
+                Picker(selectedAssistant == .claude ? "Effort" : "Variant", selection: $selectedVariant) {
+                    Text("Default").tag("")
+                    ForEach(variantOptions, id: \.self) { variant in
+                        Text(variant.capitalized).tag(variant)
+                    }
+                    Divider()
+                    Text("Custom…").tag(Self.customVariantSentinel)
+                }
+                .pickerStyle(.menu)
+
+                if selectedVariant == Self.customVariantSentinel {
+                    TextField(
+                        selectedAssistant == .claude ? "Effort level" : "Variant name",
+                        text: $customVariant
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .font(.app(.callout))
+                    .padding(.leading, 20)
+                }
+            }
+        }
+    }
 
     @ViewBuilder
     private var remoteSection: some View {
@@ -338,6 +402,36 @@ struct NewTaskDialog: View {
         if !commandEdited { command = commandPreview }
     }
 
+    private func reloadOpenCodeModels() async {
+        guard selectedAssistant == .opencode,
+              let executable = ShellCommand.findExecutable("opencode") else {
+            openCodeModels = []
+            return
+        }
+        let projectPath = resolvedProjectPath
+        openCodeModels = []
+        do {
+            let result = try await ShellCommand.run(
+                executable,
+                arguments: ["models"],
+                currentDirectory: projectPath,
+                timeout: 20
+            )
+            guard selectedAssistant == .opencode,
+                  resolvedProjectPath == projectPath,
+                  result.succeeded else { return }
+            openCodeModels = Array(Set(result.stdout
+                .split(whereSeparator: \.isNewline)
+                .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { $0.contains("/") && !$0.hasPrefix("#") }
+            )).sorted()
+        } catch {
+            // Keep the custom-model option available when OpenCode's catalog
+            // cannot be read (for example, when the CLI is not authenticated).
+        }
+        if !commandEdited { command = commandPreview }
+    }
+
     private func submitForm() {
         guard !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
         let proj = resolvedProjectPath
@@ -360,10 +454,22 @@ struct NewTaskDialog: View {
                 commandEdited ? command : nil,
                 images,
                 selectedAssistant,
-                selectedServiceId
+                selectedServiceId,
+                selectedModelOverride,
+                selectedModelVariantOverride
             )
         } else {
-            onCreate(prompt, proj, titleOrNil, false, images)
+            onCreate(
+                prompt,
+                proj,
+                titleOrNil,
+                false,
+                images,
+                selectedAssistant,
+                selectedServiceId,
+                selectedModelOverride,
+                selectedModelVariantOverride
+            )
         }
         isPresented = false
     }
@@ -413,6 +519,38 @@ struct NewTaskDialog: View {
         runRemotely && canRunRemotely
     }
 
+    private var supportsModelSelection: Bool {
+        selectedAssistant == .claude || selectedAssistant == .opencode
+    }
+
+    private var modelOptions: [String] {
+        selectedAssistant == .claude ? ["sonnet", "opus", "haiku", "fable"] : openCodeModels
+    }
+
+    private var filteredModelOptions: [String] {
+        let query = modelSearch.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return modelOptions }
+        return modelOptions.filter { $0.localizedCaseInsensitiveContains(query) }
+    }
+
+    private var variantOptions: [String] {
+        selectedAssistant == .claude
+            ? ["low", "medium", "high", "xhigh", "max", "ultracode"]
+            : ["none", "minimal", "low", "medium", "high", "xhigh", "max"]
+    }
+
+    private var selectedModelOverride: String? {
+        let model = selectedModel == Self.customModelSentinel ? customModel : selectedModel
+        let trimmed = model.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private var selectedModelVariantOverride: String? {
+        let variant = selectedVariant == Self.customVariantSentinel ? customVariant : selectedVariant
+        let trimmed = variant.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
     /// True when the session runs on a machine: an ssh machine or boxd.
     private var runsOnBoxd: Bool {
         remoteMode.runsOnMachines && effectiveRunRemotely
@@ -442,7 +580,9 @@ struct NewTaskDialog: View {
         let launchCmd = selectedAssistant.launchCommand(
             skipPermissions: dangerouslySkipPermissions,
             worktreeName: worktreeName,
-            service: service
+            service: service,
+            modelOverride: selectedModelOverride,
+            modelVariantOverride: selectedModelVariantOverride
         )
         let template = settings.commandTemplate(for: selectedAssistant, remote: effectiveRunRemotely)
         parts.append(CodingAssistant.applyCommandTemplate(launchCmd, template: template))
