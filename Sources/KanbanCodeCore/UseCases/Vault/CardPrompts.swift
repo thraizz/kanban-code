@@ -75,7 +75,7 @@ public enum CardPromptReader {
         guard let path = ConversationExportCommand.transcriptPath(for: link, kanbanHome: kanbanHome) else { return nil }
         switch link.effectiveAssistant {
         case .claude, .codex: return read(path: path)
-        case .gemini, .opencode: return nil
+        case .gemini, .opencode, .pi: return nil
         }
     }
 

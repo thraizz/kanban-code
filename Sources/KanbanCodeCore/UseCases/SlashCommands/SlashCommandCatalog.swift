@@ -42,6 +42,9 @@ public enum SlashCommandCatalog {
                 ("new", "Start a new conversation"),
                 ("init", "Write an AGENTS.md for this project"),
             ]
+        case .pi:
+            // Pi surfaces no agent slash commands in Kanban yet.
+            pairs = []
         }
         return pairs.map { RemoteSlashCommand(name: $0.0, description: $0.1, source: RemoteSlashCommand.Source.agent) }
     }

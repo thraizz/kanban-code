@@ -155,6 +155,7 @@ public struct ConversationExportCommand: Sendable, Equatable {
         case .codex: CodexSessionStore()
         case .gemini: GeminiSessionStore()
         case .opencode: OpenCodeSessionStore()
+        case .pi: PiSessionStore()
         }
     }
 
