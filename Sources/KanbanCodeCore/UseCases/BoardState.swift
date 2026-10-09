@@ -162,12 +162,13 @@ public final class BoardState: @unchecked Sendable {
         self.sessionStore = sessionStore
     }
 
-    /// Cards visible after project filtering. Orphan worktree cards (no
-    /// session, no running terminal) stay off the board.
+    /// Cards visible after project filtering. Worktree cards without a
+    /// terminal stay off the board, unless one is launching or busy.
     public var filteredCards: [KanbanCodeCard] {
         cards.filter {
             cardMatchesProjectFilter($0)
-                && !AssignColumn.isOrphanWorktree(link: $0.link, hasLiveSession: false)
+                && !($0.link.worktreeLink != nil && $0.link.tmuxLink == nil
+                    && $0.link.isLaunching != true && !$0.isBusy)
         }
     }
 
