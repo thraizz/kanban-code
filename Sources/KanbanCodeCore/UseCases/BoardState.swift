@@ -162,9 +162,13 @@ public final class BoardState: @unchecked Sendable {
         self.sessionStore = sessionStore
     }
 
-    /// Cards visible after project filtering.
+    /// Cards visible after project filtering. Orphan worktree cards (no
+    /// session, no running terminal) stay off the board.
     public var filteredCards: [KanbanCodeCard] {
-        cards.filter { cardMatchesProjectFilter($0) }
+        cards.filter {
+            cardMatchesProjectFilter($0)
+                && !AssignColumn.isOrphanWorktree(link: $0.link, hasLiveSession: false)
+        }
     }
 
     /// Cards for a specific column, sorted by manual sortOrder then last activity (newest first).
