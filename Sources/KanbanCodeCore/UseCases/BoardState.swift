@@ -35,6 +35,13 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     /// failed, ended. The one value every surface renders.
     public let sessionStatus: CardSessionStatus
 
+    /// A worktree card without a terminal stays off the board, unless one
+    /// is launching or busy.
+    public var isHiddenWorktree: Bool {
+        link.worktreeLink != nil && link.tmuxLink == nil
+            && link.isLaunching != true && !isBusy
+    }
+
     public init(
         link: Link,
         session: Session? = nil,
@@ -166,9 +173,7 @@ public final class BoardState: @unchecked Sendable {
     /// terminal stay off the board, unless one is launching or busy.
     public var filteredCards: [KanbanCodeCard] {
         cards.filter {
-            cardMatchesProjectFilter($0)
-                && !($0.link.worktreeLink != nil && $0.link.tmuxLink == nil
-                    && $0.link.isLaunching != true && !$0.isBusy)
+            cardMatchesProjectFilter($0) && !$0.isHiddenWorktree
         }
     }
 

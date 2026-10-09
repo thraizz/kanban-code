@@ -510,6 +510,7 @@ public final class AppState: @unchecked Sendable {
         let newFiltered = cards.filter { card in
             // Exclusion rules match on the prompt, so they are checked per card, outside the path memo.
             guard !sessionExclusion.excludes(link: card.link, session: card.session) else { return false }
+            guard !card.isHiddenWorktree else { return false }
             guard let path = card.link.projectPath ?? card.session?.projectPath else {
                 return cardMatchesProjectFilter(card)
             }
