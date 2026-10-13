@@ -128,10 +128,13 @@ final class ServerMaster {
                 guard let link = await MainActor.run(body: { store?.vaultCardLink(id) }) else { return nil }
                 return CardPromptReader.read(link: link, kanbanHome: home)
             },
+            cardFamily: { [weak store] id in await MainActor.run { store?.vaultCardFamily(id) ?? [] } },
             cardSessions: { [weak store] in await MainActor.run { store?.vaultCardSessions() ?? [:] } },
             peers: { [peerSync] in await peerSync.configuredPeers() }
         )
         engine.cardSessionEnvironment = { [vault] cardId in await vault.sessionEnvironment(cardId: cardId) }
+        engine.cardTokenOwner = { [vault] token in await vault.cardTokens.issuedCard(of: token) }
+        engine.cardHasToken = { [vault] cardId in await vault.cardTokens.hasToken(cardId: cardId) }
         engine.vaultUnsealed = { [vault] id, unsealed in await vault.broker.deliver(id: id, unsealed: unsealed) }
     }
 
@@ -187,6 +190,7 @@ final class ServerMaster {
         }
         Task { await engine.runSelfCompactMonitor() }
         Task { await engine.runSessionModelMonitor() }
+        Task { await engine.runRushTokenMonitor() }
         Task { await engine.runOwnershipLoop() }
         Task { await engine.monitorSubagentCommands() }
     }

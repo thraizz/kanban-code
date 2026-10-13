@@ -31,9 +31,11 @@ public enum RemoteAPI {
         public static let slashCommands = "slashCommands"
         /// `GET /v1/cards/search`.
         public static let cardSearch = "cardSearch"
+        /// `POST /v1/cards/{id}/fork`.
+        public static let fork = "fork"
     }
 
-    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees, Feature.sideChat, Feature.slashCommands, Feature.cardSearch]
+    public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees, Feature.sideChat, Feature.slashCommands, Feature.cardSearch, Feature.fork]
 }
 
 /// What a device may do. `full` is a phone: everything, terminals included.
@@ -716,17 +718,31 @@ public struct RemoteVaultSecretName: Codable, Sendable, Equatable {
     public init(name: String) { self.name = name }
 }
 
-/// Body of `POST /v1/vault/secrets`.
+/// Body of `POST /v1/vault/secrets` and `POST /v1/vault/compare`. Without a
+/// tier or rules a stored secret keeps its own.
 public struct RemoteVaultAddRequest: Codable, Sendable, Equatable {
     public var name: String
     public var value: String
-    public var tier: String
-    public var rules: String
-    public init(name: String, value: String, tier: String, rules: String) {
+    public var tier: String?
+    public var rules: String?
+    /// Why a stored value is replaced, shown to the human who approves it.
+    public var reason: String?
+    public init(name: String, value: String, tier: String? = nil, rules: String? = nil, reason: String? = nil) {
         self.name = name
         self.value = value
         self.tier = tier
         self.rules = rules
+        self.reason = reason
+    }
+}
+
+/// Answer of `POST /v1/vault/compare`: `absent`, `same` or `different`.
+public struct RemoteVaultValueCheck: Codable, Sendable, Equatable {
+    public var name: String
+    public var outcome: String
+    public init(name: String, outcome: String) {
+        self.name = name
+        self.outcome = outcome
     }
 }
 

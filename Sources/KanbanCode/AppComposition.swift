@@ -213,11 +213,14 @@ final class AppComposition {
                 guard let link = await MainActor.run(body: { boardStore?.vaultCardLink(id) }) else { return nil }
                 return CardPromptReader.read(link: link, kanbanHome: NSHomeDirectory() + "/.kanban-code")
             },
+            cardFamily: { [weak boardStore] id in await MainActor.run { boardStore?.vaultCardFamily(id) ?? [] } },
             cardSessions: { [weak boardStore] in await MainActor.run { boardStore?.vaultCardSessions() ?? [:] } },
             peers: { await peerSync.configuredPeers() },
             deviceApprovals: (MacVaultDevice.approvals, MacVaultDevice.deviceName)
         )
         engine.cardSessionEnvironment = { [vault] cardId in await vault.sessionEnvironment(cardId: cardId) }
+        engine.cardTokenOwner = { [vault] token in await vault.cardTokens.issuedCard(of: token) }
+        engine.cardHasToken = { [vault] cardId in await vault.cardTokens.hasToken(cardId: cardId) }
         engine.vaultUnsealed = { [vault] id, unsealed in await vault.broker.deliver(id: id, unsealed: unsealed) }
         Task { await vault.start() }
 
@@ -251,13 +254,24 @@ final class AppComposition {
             let notifications = Self.readNotificationSettings()
             Task { await attentionCenter.configure(settings: notifications.attentionPolicy, phone: notifications.phoneSender) }
         }
-        AppServices.resolveAttention = { [weak engine] id, resolution, unsealed in
+        AppServices.resolveAttention = { [weak engine] id, resolution, unsealed, noteFollows in
             guard let engine else { return "Kanban Code is still starting." }
             do {
-                try await engine.resolveAttention(id: id, resolution: resolution, by: MacVaultDevice.deviceName, unsealed: unsealed)
+                try await engine.resolveAttention(id: id, resolution: resolution, by: MacVaultDevice.deviceName, unsealed: unsealed,
+                                                  noteFollows: noteFollows)
                 return nil
             } catch {
                 KanbanCodeLog.warn("attention", "Resolving \(id) from the Mac failed: \(error)")
+                return (error as? RemoteHostError)?.message ?? error.localizedDescription
+            }
+        }
+        AppServices.noteAttention = { [weak engine] id, note, typing in
+            guard let engine else { return "Kanban Code is still starting." }
+            do {
+                try await engine.noteAttention(id: id, note: note, typing: typing)
+                return nil
+            } catch {
+                KanbanCodeLog.warn("attention", "The note for \(id) from the Mac was not taken: \(error)")
                 return (error as? RemoteHostError)?.message ?? error.localizedDescription
             }
         }

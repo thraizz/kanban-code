@@ -65,6 +65,10 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// a machine this master drives, or back here.
     func moveCard(cardId: String, to target: String) async throws -> RemoteCard
 
+    /// Copies the card's conversation into a new card, on the master that
+    /// owns the card. Returns the new card.
+    func forkCard(cardId: String, keepWorktree: Bool) async throws -> RemoteCard
+
     /// Removes the card's worktree on the machine that holds it and drops
     /// the worktree from the card (the card itself when it has no session).
     func removeWorktree(cardId: String) async throws -> RemoteWorktreeRemoval
@@ -91,6 +95,17 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// clears it on every device. `by` names the device acting.
     /// `unsealed` is what the device opened with its own vault key.
     func resolveAttention(id: String, resolution: String, by: String, unsealed: VaultUnsealed?) async throws
+
+    /// The same, for a refused vault request: `note` is what the owner
+    /// tells the agent, `noteFollows` makes the refusal wait for
+    /// `noteAttention`.
+    func resolveAttention(id: String, resolution: String, by: String, unsealed: VaultUnsealed?,
+                          note: String?, noteFollows: Bool) async throws
+
+    /// The note of a refusal answered with `noteFollows`; nil sends the
+    /// refusal on without one. `typing` sends no note: the owner is
+    /// writing one, wait longer.
+    func noteAttention(id: String, note: String?, typing: Bool) async throws
 
     /// Presence the Mac reported, for the escalation of the requests here.
     func reportPresence(_ presence: MacPresence) async
@@ -127,6 +142,10 @@ extension RemoteControlHost {
 
     public func moveCard(cardId: String, to target: String) async throws -> RemoteCard {
         throw RemoteHostError.notFound("this host does not move cards")
+    }
+
+    public func forkCard(cardId: String, keepWorktree: Bool) async throws -> RemoteCard {
+        throw RemoteHostError.notFound("this host does not fork cards")
     }
 
     public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
@@ -173,6 +192,15 @@ extension RemoteControlHost {
 
     public func resolveAttention(id: String, resolution: String, by: String, unsealed: VaultUnsealed?) async throws {
         throw RemoteHostError.notFound("this host has no attention requests")
+    }
+
+    public func resolveAttention(id: String, resolution: String, by: String, unsealed: VaultUnsealed?,
+                                 note: String?, noteFollows: Bool) async throws {
+        try await resolveAttention(id: id, resolution: resolution, by: by, unsealed: unsealed)
+    }
+
+    public func noteAttention(id: String, note: String?, typing: Bool) async throws {
+        throw RemoteHostError.notFound("this host takes no notes on attention requests")
     }
 
     public func reportPresence(_ presence: MacPresence) async {}

@@ -20,6 +20,14 @@ public struct StoreVaultApprovals: VaultApprovals {
         }
     }
 
+    public func answer(of id: String) async -> VaultHumanAnswer? {
+        await MainActor.run {
+            guard let request = store.state.attentionRequests[id], !request.isOpen else { return nil }
+            return VaultHumanAnswer(resolution: request.resolution, by: request.resolvedBy ?? "unknown",
+                                    note: request.resolutionNote, noteUntil: request.noteUntil)
+        }
+    }
+
     public func close(id: String, resolution: String, by: String) async {
         await MainActor.run { store.dispatch(.attentionResolved(id: id, resolution: resolution, by: by)) }
     }
@@ -41,5 +49,14 @@ extension BoardStore {
 
     @MainActor public func vaultCardLink(_ cardId: String) -> Link? {
         state.links[cardId]
+    }
+
+    /// The other cards of `cardId`'s subagent tree: its root card and every
+    /// card under that root.
+    @MainActor public func vaultCardFamily(_ cardId: String) -> [String] {
+        let links = state.links
+        guard links[cardId] != nil else { return [] }
+        let root = SubagentHierarchy.rootId(of: cardId, in: links)
+        return ([root] + SubagentHierarchy.descendantIds(of: root, in: links)).filter { $0 != cardId }
     }
 }

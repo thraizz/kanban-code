@@ -30,15 +30,37 @@ public enum VaultTier: String, Codable, Sendable, CaseIterable, Comparable {
 /// How long an approval for a card lasts, or that every use asks.
 public struct VaultLeasePolicy: Codable, Sendable, Equatable, Hashable {
     public static let maximumLease: TimeInterval = 2 * 24 * 3600
+    public static let minimumLease: TimeInterval = 60
+    /// The lengths the settings offer.
+    public static let presets: [TimeInterval] = [15 * 60, 3600, 8 * 3600, maximumLease]
 
-    /// Seconds a card lease lasts, capped at two days.
+    /// Seconds a card lease on this secret lasts, from one minute to two days.
     public var leaseSeconds: TimeInterval
     /// No leases: each release asks.
     public var everyUseAsks: Bool
 
     public init(leaseSeconds: TimeInterval = VaultLeasePolicy.maximumLease, everyUseAsks: Bool = false) {
-        self.leaseSeconds = min(max(leaseSeconds, 60), Self.maximumLease)
+        self.leaseSeconds = Self.clamped(leaseSeconds)
         self.everyUseAsks = everyUseAsks
+    }
+
+    public static func clamped(_ seconds: TimeInterval) -> TimeInterval {
+        guard seconds.isFinite else { return maximumLease }
+        return min(max(seconds, minimumLease), maximumLease)
+    }
+
+    /// The length a lease granted under this policy gets: a stored value
+    /// outside the bounds (an edited file, an older replica) is brought
+    /// back inside them.
+    public var grantedSeconds: TimeInterval { Self.clamped(leaseSeconds) }
+
+    /// Why a requested lease length is refused, nil when it is allowed.
+    public static func problem(leaseSeconds seconds: TimeInterval) -> String? {
+        guard seconds.isFinite, seconds >= minimumLease else { return "a lease lasts at least 1 minute" }
+        guard seconds <= maximumLease else {
+            return "a lease lasts at most \(AttentionCopy.duration(maximumLease))"
+        }
+        return nil
     }
 
     public static let standard = VaultLeasePolicy()
@@ -276,12 +298,18 @@ public struct VaultAuditEntry: Codable, Sendable, Equatable {
     /// Why it was decided so (Jev's choice, the rule that fired).
     public var detail: String?
     public var requestId: String?
+    /// When the card lease a human approval gave ends.
+    public var leaseUntil: Date?
+    /// What the owner wrote for the caller when refusing the request.
+    public var note: String?
     /// SHA-256 of the line before this one in the log.
     public var prev: String?
 
     public init(at: Date = Date(), machine: String, cardId: String?, sessionId: String? = nil, secret: String,
                 tier: VaultTier?, outcome: VaultOutcome, decider: VaultDecider, action: String,
-                command: String? = nil, reason: String? = nil, detail: String? = nil, requestId: String? = nil) {
+                command: String? = nil, reason: String? = nil, detail: String? = nil, requestId: String? = nil,
+                leaseUntil: Date? = nil, note: String? = nil) {
+        self.note = note
         self.at = at
         self.machine = machine
         self.cardId = cardId
@@ -295,6 +323,7 @@ public struct VaultAuditEntry: Codable, Sendable, Equatable {
         self.reason = reason
         self.detail = detail
         self.requestId = requestId
+        self.leaseUntil = leaseUntil
     }
 }
 
@@ -386,5 +415,51 @@ public struct VaultCaller: Codable, Sendable, Equatable {
 
     public static func openClawAgent(principal: String) -> String? {
         principal.hasPrefix(openClawPrefix) ? String(principal.dropFirst(openClawPrefix.count)) : nil
+    }
+}
+
+/// How often one secret reached a human in a period, and why: the input
+/// for deciding which secrets to re-tier, scope or drop from a manifest.
+public struct VaultAskSummary: Codable, Sendable, Equatable {
+    public struct Count: Codable, Sendable, Equatable {
+        public var text: String
+        public var count: Int
+
+        public init(text: String, count: Int) {
+            self.text = text
+            self.count = count
+        }
+    }
+
+    public var secret: String
+    /// Requests for it that a human had to answer.
+    public var asks: Int
+    public var approved: Int
+    /// Denied by the human or left to time out.
+    public var denied: Int
+    /// Asks whose caller was not a verified card session.
+    public var outsideCard: Int
+    public var lastAt: Date
+    /// The reasons the callers gave, most common first.
+    public var reasons: [Count]
+    /// Why the vault asked (the tier, Jev's answer, the rate limit), most common first.
+    public var why: [Count]
+    /// The commands that asked, most common first.
+    public var commands: [Count]
+    /// What the owner wrote when refusing, most common first.
+    public var notes: [Count]?
+
+    public init(secret: String, asks: Int, approved: Int, denied: Int, outsideCard: Int, lastAt: Date,
+                reasons: [Count], why: [Count], commands: [Count], notes: [Count]? = nil) {
+        self.notes = notes
+        self.secret = secret
+        self.asks = asks
+        self.approved = approved
+        self.denied = denied
+        self.outsideCard = outsideCard
+        self.lastAt = lastAt
+        self.reasons = reasons
+        self.why = why
+        self.commands = commands
     }
 }

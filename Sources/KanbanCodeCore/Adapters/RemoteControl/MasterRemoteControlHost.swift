@@ -442,6 +442,16 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         try await engine.resolveAttention(id: id, resolution: resolution, by: by, unsealed: unsealed)
     }
 
+    public func resolveAttention(id: String, resolution: String, by: String, unsealed: VaultUnsealed?,
+                                 note: String?, noteFollows: Bool) async throws {
+        try await engine.resolveAttention(id: id, resolution: resolution, by: by, unsealed: unsealed,
+                                          note: note, noteFollows: noteFollows)
+    }
+
+    public func noteAttention(id: String, note: String?, typing: Bool) async throws {
+        try await engine.noteAttention(id: id, note: note, typing: typing)
+    }
+
     public func reportPresence(_ presence: MacPresence) async {
         await engine.attentionCenter?.reportPresence(presence)
     }
@@ -482,18 +492,29 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         if let owner = await ownerClient(cardId) {
             return try await forwarded { try await owner.resume(cardId: cardId) }
         }
-        let (current, running) = try await MainActor.run { () throws -> (RemoteCard, Bool) in
+        let (current, running, rushSession) = try await MainActor.run { () throws -> (RemoteCard, Bool, String?) in
             if let moving = engine.stillMovingHere(cardId) { throw RemoteHostError.conflict(moving) }
             // A session this master just started is not in the last tmux
             // scan yet: a second resume would start it over.
-            let status = try card(cardId).sessionStatus
-            let running: Bool = switch status {
+            let card = try card(cardId)
+            let running: Bool = switch card.sessionStatus {
             case .live, .starting: true
             default: false
             }
-            return (try remoteCard(cardId), running)
+            // A rush card reads as live while its host rests between turns
+            // or until the next scan sees it stopped; rush says whether the
+            // host runs.
+            var rushSession: String?
+            if case .live = card.sessionStatus, let name = card.link.tmuxLink?.sessionName, RushSessionName.isRush(name) {
+                rushSession = name
+            }
+            return (try remoteCard(cardId), running, rushSession)
         }
-        if current.isLive || running { return current }
+        if let alive = await rushHostAlive(rushSession) {
+            if alive { return current }
+        } else if current.isLive || running {
+            return current
+        }
         await MainActor.run { engine.resumeRemoteCard(cardId) }
         // The caller may be another master or a phone that shows nothing of
         // this board: a start that fails is its answer, not a line in a log
@@ -508,6 +529,19 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             if !launching { break }
         } while Date() < deadline
         return try await MainActor.run { try remoteCard(cardId) }
+    }
+
+    /// Whether the host of rush session `name` runs, false for a host rush
+    /// does not know; nil when there is no such session or rush could not
+    /// be asked.
+    private func rushHostAlive(_ name: String?) async -> Bool? {
+        guard let name, let id = RushSessionName.rushId(fromName: name),
+              let rush = try? rushFor(name) else { return nil }
+        do {
+            return try await rush.info(id: id)?.alive ?? false
+        } catch {
+            return nil
+        }
     }
 
     public func terminalCommand(cardId: String, sessionName: String) async throws -> [String] {
@@ -625,6 +659,19 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         }
         try? await Task.sleep(for: .milliseconds(200))
         return try await MainActor.run { try remoteCard(cardId) }
+    }
+
+    public func forkCard(cardId: String, keepWorktree: Bool) async throws -> RemoteCard {
+        if let owner = await ownerClient(cardId) {
+            return try await forwarded { try await owner.fork(cardId: cardId, keepWorktree: keepWorktree) }
+        }
+        let newId: String
+        do {
+            newId = try await engine.forkCard(cardId: cardId, keepWorktree: keepWorktree)
+        } catch let error as MasterPeerError {
+            throw Self.hostError(error)
+        }
+        return try await MainActor.run { try remoteCard(newId) }
     }
 
     // MARK: Cards another master owns

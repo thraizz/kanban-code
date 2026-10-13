@@ -4,6 +4,16 @@ import FoundationNetworking
 #endif
 
 /// POST /v1/cards/{id}/move: continue the card somewhere else.
+/// Body of `POST /v1/cards/{id}/fork`.
+public struct RemoteForkRequest: Codable, Sendable, Equatable {
+    /// Keep the card's worktree; otherwise the fork runs from the project root.
+    public var keepWorktree: Bool?
+
+    public init(keepWorktree: Bool? = nil) {
+        self.keepWorktree = keepWorktree
+    }
+}
+
 public struct RemoteMoveRequest: Codable, Sendable, Equatable {
     /// A master (its machine id or name), "mac"/"local" for the master that
     /// serves the request, or a boxd/ssh machine that master drives.
@@ -63,6 +73,13 @@ public struct RemoteHandoverInfo: Codable, Sendable, Equatable {
     /// adopting master's own machine: the adopter continues there, with
     /// the worktree and transcript as they are.
     public var machineCwd: String?
+    /// For a repository with no `origin`: whether it has commits. Its
+    /// files cannot follow to the adopting master, which can only start
+    /// such a project fresh when there is nothing to bring.
+    public var repoHasCommits: Bool?
+    /// Set when the card is coming back: the master it was released to
+    /// could not adopt it, for this reason.
+    public var refusal: String?
 
     public init(cardId: String, sessionId: String?, assistant: String, projectPath: String?, cwd: String?,
                 repoUrl: String?, branch: String?, worktreeName: String?, patch: String?, transcriptSize: Int) {
@@ -159,6 +176,15 @@ extension RemoteClient {
     /// POST /v1/cards/{id}/move
     public func move(cardId: String, to target: String) async throws -> RemoteCard {
         let request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/move", body: RemoteMoveRequest(to: target))
+        let (data, status) = try await rawData(for: request)
+        guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
+        return try JSONDecoder.remote.decode(RemoteCard.self, from: data)
+    }
+
+    /// POST /v1/cards/{id}/fork: the new card, in Waiting with a copy of
+    /// the conversation.
+    public func fork(cardId: String, keepWorktree: Bool) async throws -> RemoteCard {
+        let request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/fork", body: RemoteForkRequest(keepWorktree: keepWorktree))
         let (data, status) = try await rawData(for: request)
         guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
         return try JSONDecoder.remote.decode(RemoteCard.self, from: data)

@@ -253,9 +253,21 @@ public struct RemoteClient: Sendable {
     }
 
     /// Answers a decision: `resolution` is one of its options or free text.
-    public func resolveAttention(id: String, resolution: String, by: String? = nil, unsealed: VaultUnsealed? = nil) async throws {
+    /// A refusal of a vault request takes a `note` for the agent, or
+    /// `noteFollows` when the note comes next through `noteAttention`.
+    public func resolveAttention(id: String, resolution: String, by: String? = nil, unsealed: VaultUnsealed? = nil,
+                                 note: String? = nil, noteFollows: Bool = false) async throws {
         try await sendEmpty(makeRequest("POST", "v1/attention/\(Self.escape(id))/resolve",
-                                        body: AttentionResolveRequest(resolution: resolution, by: by, unsealed: unsealed)))
+                                        body: AttentionResolveRequest(resolution: resolution, by: by, unsealed: unsealed,
+                                                                      note: note, noteFollows: noteFollows ? true : nil)))
+    }
+
+    /// The note of a refusal sent with `noteFollows`; nil sends the
+    /// refusal on without one.
+    /// `typing` sends no note: the owner is writing one, wait longer.
+    public func noteAttention(id: String, note: String?, typing: Bool = false) async throws {
+        try await sendEmpty(makeRequest("POST", "v1/attention/\(Self.escape(id))/note",
+                                        body: AttentionNoteRequest(note: typing ? nil : note, typing: typing ? true : nil)))
     }
 
     /// The keys of the vault's owner-only secrets on this master.
@@ -285,10 +297,49 @@ public struct RemoteClient: Sendable {
     }
 
     /// Adds a secret. A new name is stored at once (`granted`); an existing
-    /// one asks the human (`pending`); `denied` arrives as a 403.
-    public func addVaultSecret(name: String, value: String, tier: String, rules: String) async throws -> RemoteVaultResponse {
+    /// one asks the human (`pending`, see `vaultPending`); `denied` arrives
+    /// as a 403. Without a tier or rules a stored secret keeps its own.
+    public func addVaultSecret(name: String, value: String, tier: String? = nil, rules: String? = nil,
+                               reason: String? = nil) async throws -> RemoteVaultResponse {
         let request = makeRequest("POST", "v1/vault/secrets",
-                                  body: RemoteVaultAddRequest(name: name, value: value, tier: tier, rules: rules))
+                                  body: RemoteVaultAddRequest(name: name, value: value, tier: tier, rules: rules, reason: reason))
+        return try await vaultAnswer(request)
+    }
+
+    /// Where a `pending` vault request stands: still `pending`, or its outcome.
+    public func vaultPending(id: String) async throws -> RemoteVaultResponse {
+        try await vaultAnswer(makeRequest("GET", "v1/vault/pending/\(id)"))
+    }
+
+    /// Adds or replaces a secret and waits out the human's approval when the
+    /// vault asks for one, calling `waiting` once when it does.
+    public func saveVaultSecret(name: String, value: String, tier: String? = nil, rules: String? = nil,
+                                reason: String? = nil, pollEvery: Duration = .seconds(1),
+                                isolation: isolated (any Actor)? = #isolation,
+                                waiting: () -> Void = {}) async throws -> RemoteVaultResponse {
+        var r = try await addVaultSecret(name: name, value: value, tier: tier, rules: rules, reason: reason)
+        guard r.status == "pending" else { return r }
+        waiting()
+        while r.status == "pending", let id = r.id {
+            try await Task.sleep(for: pollEvery)
+            r = try await vaultPending(id: id)
+        }
+        return r
+    }
+
+    /// How `value` compares with the secret stored under `name`. A master
+    /// that has no such route answers nil.
+    public func compareVaultSecret(name: String, value: String) async throws -> StoredSecretMatch? {
+        let request = makeRequest("POST", "v1/vault/compare", body: RemoteVaultAddRequest(name: name, value: value))
+        do {
+            let check: RemoteVaultValueCheck = try await send(request)
+            return StoredSecretMatch(rawValue: check.outcome)
+        } catch RemoteClientError.notFound {
+            return nil
+        }
+    }
+
+    private func vaultAnswer(_ request: URLRequest) async throws -> RemoteVaultResponse {
         do {
             return try await send(request)
         } catch RemoteClientError.forbidden(let body) {

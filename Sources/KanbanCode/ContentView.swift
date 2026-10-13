@@ -1506,6 +1506,9 @@ struct ContentView: View {
             .task(id: "session-model-monitor") {
                 await engine.runSessionModelMonitor()
             }
+            .task(id: "rush-token-monitor") {
+                await engine.runRushTokenMonitor()
+            }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelsChanged).receive(on: RunLoop.main)) { _ in
                 store.dispatch(.refreshChannels)
                 channelsWatcher.syncChannelLogs(store.state.channels.map(\.name))

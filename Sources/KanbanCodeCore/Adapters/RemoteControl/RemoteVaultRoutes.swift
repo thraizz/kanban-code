@@ -10,6 +10,8 @@ import KanbanCodeRemoteKit
 ///   POST   /v1/vault/aws               short-lived AWS credentials for a profile
 ///   GET    /v1/vault/secrets           names, tiers and rules, never values (?project=X for one project)
 ///   POST   /v1/vault/secrets           add a secret (replacing one asks the human)
+///   GET    /v1/vault/asks?days=30      per secret, how often a human was asked and why
+///   POST   /v1/vault/compare           whether the secret under a name holds a value: absent, same or different
 ///   PATCH  /v1/vault/secrets           one change to several secrets, in one approval
 ///   PATCH  /v1/vault/secrets/{name}    tier, rules, tags (asks the human)
 ///   DELETE /v1/vault/secrets/{name}    (asks the human)
@@ -139,6 +141,16 @@ enum RemoteVaultRoutes {
             await vault.replica?.poke()
             return respond(r)
 
+        case ("POST", "compare", 1):
+            guard let req = decode(VaultAddRequest.self) else {
+                return .error(400, "body must be {\"name\", \"value\", \"project\", \"environment\"}")
+            }
+            let who = await caller(claimedCard: query["card"], sessionId: nil)
+            guard let check = await vault.broker.compare(req, caller: who) else {
+                return .error(429, "too many value checks, wait \(Int(VaultPolicy.rateWindow / 60)) minutes")
+            }
+            return .json(check)
+
         case ("PATCH", "secrets", 1):
             guard let req = decode(VaultBatchEditRequest.self) else {
                 return .error(400, "body must be {\"names\": [...], \"valuePrefixes\": [...], \"edit\": {\"tier\", \"leasePolicy\", \"reason\"}}")
@@ -160,6 +172,10 @@ enum RemoteVaultRoutes {
         case ("GET", "log", 1):
             let limit = min(max(Int(query["limit"] ?? "") ?? 100, 1), 2000)
             return .json(await vault.store.log(limit: limit, cardId: query["card"], secret: query["secret"]))
+
+        case ("GET", "asks", 1):
+            let days = min(max(Double(query["days"] ?? "") ?? 30, 1), 365)
+            return .json(await vault.store.askSummary(since: Date().addingTimeInterval(-days * 86400)))
 
         case ("GET", "leases", 1):
             return .json(await vault.store.activeLeases(cardId: query["card"]))

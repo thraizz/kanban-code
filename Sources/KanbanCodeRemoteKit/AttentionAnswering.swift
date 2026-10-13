@@ -6,6 +6,7 @@ public enum AttentionAnswerCopy {
     public static let gone = "This request is no longer open."
     public static let ownerUnreachable = "The machine that asked is not reachable."
     public static let sessionGone = "The session that asked is not running any more."
+    public static let noteTooLate = "The refusal already reached the agent without a note."
     public static let needsDeviceKey = "Approving this unlocks a secret with the device's own key: answer it in Kanban Code on the Mac or the phone."
 
     /// "This was already answered on the phone: Approve once."
@@ -20,6 +21,50 @@ public enum AttentionAnswerCopy {
         }
         let what = resolution.map { ": \($0)" } ?? ""
         return "This was already answered\(who)\(what)."
+    }
+}
+
+/// What a device asks of its owner before it sends an answer. Refusing
+/// releases and changes no secret, so it never asks for anything; only
+/// an approval can need the device key or a confirmation.
+public enum AttentionAnswerGate {
+    public enum Need: Sendable, Equatable {
+        /// The answer goes out as it is.
+        case nothing
+        /// The device key opens what the request names (Touch ID or Face ID).
+        case deviceKey(VaultUnsealChallenge)
+        /// The owner confirms with Touch ID, Face ID or the device password.
+        case confirmation
+    }
+
+    public static func need(for request: AttentionRequest, option: String) -> Need {
+        if AttentionCopy.isDenial(option) { return .nothing }
+        if let challenge = request.unseal, !challenge.isEmpty { return .deviceKey(challenge) }
+        return request.requiresBiometry ? .confirmation : .nothing
+    }
+
+    public enum Passed: Sendable, Equatable {
+        /// Send the answer, with what the device key opened.
+        case send(VaultUnsealed?)
+        /// The owner backed out of the confirmation.
+        case cancelled
+    }
+
+    /// Runs what `need` asks for. `unlock` and `confirm` are the device's
+    /// own prompts; neither is called for a refusal. An error of `unlock`
+    /// is thrown on. It runs on the caller's actor, so the prompts may
+    /// touch what the caller is isolated to.
+    public static func pass(
+        isolation: isolated (any Actor)? = #isolation,
+        _ request: AttentionRequest, option: String,
+        unlock: (VaultUnsealChallenge) async throws -> VaultUnsealed,
+        confirm: () async -> Bool
+    ) async throws -> Passed {
+        switch need(for: request, option: option) {
+        case .nothing: return .send(nil)
+        case .deviceKey(let challenge): return .send(try await unlock(challenge))
+        case .confirmation: return await confirm() ? .send(nil) : .cancelled
+        }
     }
 }
 

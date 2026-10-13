@@ -907,7 +907,7 @@ private struct ListCardRowView: View {
 
             if card.showSpinner {
                 CardActivitySpinner()
-            } else if card.column == .backlog {
+            } else if card.showsStartButton {
                 Button(action: onStart) {
                     Image(systemName: "play.fill")
                         .font(.app(size: 10))

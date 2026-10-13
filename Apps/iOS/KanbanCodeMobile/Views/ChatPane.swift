@@ -28,6 +28,7 @@ struct ChatPane: View {
     /// Top of the keyboard and bottom of the chat, in window coordinates.
     @State private var keyboardTop: CGFloat?
     @State private var paneBottom: CGFloat = 0
+    @State private var paneTop: CGFloat = 0
     /// The card's side chat (`/btw`, `/catchup`), made when first used.
     @State private var sideChat: SideChatController?
     @State private var sideChatCollapsed = false
@@ -203,6 +204,7 @@ struct ChatPane: View {
                 .background(Color(.systemBackground))
         }
         .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).maxY.rounded() } action: { paneBottom = $0 }
+        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .global).minY.rounded() } action: { paneTop = $0 }
         .background {
             KeyboardTopReader { top, duration in
                 if duration > 0 {
@@ -294,7 +296,8 @@ struct ChatPane: View {
             }
             if secretOffer != nil {
                 VaultSecretOfferCard(offer: Binding(get: { secretOffer! }, set: { secretOffer = $0 }),
-                                     onSave: saveOfferedSecrets, onSendAsIs: sendOfferAsIs)
+                                     onSave: saveOfferedSecrets, onSendAsIs: sendOfferAsIs,
+                                     onReplace: answerReplace)
             }
             if card.isLive, card.sessionStatus?.kind != .machine {
                 composer
@@ -327,6 +330,18 @@ struct ChatPane: View {
         .background(Color(.systemBackground))
     }
 
+    /// The most lines the composer text shows before it scrolls: eight,
+    /// or fewer when the pane above the keyboard is too short for eight
+    /// plus the images and the button row. A composer taller than the
+    /// pane draws its last line under the buttons.
+    private var composerMaxLines: Int {
+        let room = min(paneBottom, keyboardTop ?? paneBottom) - paneTop
+        guard room > 0 else { return 8 }
+        let around: CGFloat = 96 + (draft.images.isEmpty ? 0 : 70)
+        let line = UIFont.preferredFont(forTextStyle: .body).lineHeight
+        return min(8, max(2, Int((room - around) / line)))
+    }
+
     /// One rounded container: images, the text, then a row with + on the
     /// left and send on the right. Touch and hold send to send now.
     private var composer: some View {
@@ -336,7 +351,7 @@ struct ChatPane: View {
                     attachments
                 }
                 TextField("Message", text: composerText, selection: $composerSelection, axis: .vertical)
-                    .lineLimit(1...8)
+                    .lineLimit(1...composerMaxLines)
                     .focused($composerFocused)
                     .padding(.horizontal, 6)
                     .padding(.top, 4)
@@ -680,21 +695,35 @@ struct ChatPane: View {
     }
 
     private func saveOfferedSecrets() {
-        guard var offer = secretOffer, !offer.isSaving, let client = board.client else { return }
+        guard var offer = secretOffer, !offer.isSaving, offer.replaceName == nil, let client = board.client else { return }
         offer.isSaving = true
         offer.error = nil
         secretOffer = offer
         Task {
-            let result = await PhoneVault.save(offer, client: client)
-            if let error = result.error {
-                // What was saved stays referenced; the rest stays offered.
-                secretOffer = PendingSecretOffer(text: result.text, mode: offer.mode, proposals: result.remaining, error: error)
-                UINotificationFeedbackGenerator().notificationOccurred(.error)
+            let result = await PhoneVault.save(offer, client: client) { waiting in
+                secretOffer?.waiting = waiting
+            }
+            if result.error != nil || result.replace != nil {
+                // What was saved stays referenced; the rest stays offered,
+                // the first with its replace question when it has one.
+                secretOffer = PendingSecretOffer(text: result.text, mode: offer.mode, proposals: result.remaining,
+                                                 error: result.error, replaceName: result.replace)
+                if result.error != nil { UINotificationFeedbackGenerator().notificationOccurred(.error) }
                 return
             }
             secretOffer = nil
             deliver(result.text, offer.mode)
         }
+    }
+
+    /// Replace saves again with the stored name confirmed; the other answer
+    /// puts the free name back for another edit.
+    private func answerReplace(_ replace: Bool) {
+        guard var offer = secretOffer, offer.replaceName != nil, !offer.isSaving else { return }
+        offer.replaceName = nil
+        offer.proposals = SecretDetector.answeringReplace(offer.proposals, replace: replace)
+        secretOffer = offer
+        if replace { saveOfferedSecrets() }
     }
 
     /// Sends what the human wrote: the draft with its images, or with

@@ -5,11 +5,17 @@ import SwiftUI
 /// The caller the Mac app acts as when Rogerio edits the vault in Settings.
 private let settingsCaller = VaultCaller(ancestry: ["Kanban Code settings"])
 
-/// Settings > Vault: the secrets (names only), their tiers and rules, and
-/// the recent releases of this Mac.
+/// Settings > Vault: the secrets (names only), their tiers and rules, the
+/// approvals you gave recently and the releases of this Mac.
 struct VaultSettingsView: View {
     @State private var secrets: [VaultSecretInfo] = []
     @State private var log: [VaultAuditEntry] = []
+    @State private var approvals: [VaultAuditEntry] = []
+    @State private var cardTitles: [String: String] = [:]
+    @State private var approvalHours = 24
+    /// What the right side lists when no secret is open.
+    @State private var history: VaultHistory = .approved
+    @State private var asks: [VaultAskSummary] = []
     @State private var status = ""
     @State private var selected: String?
     @State private var showAdd = false
@@ -44,6 +50,10 @@ struct VaultSettingsView: View {
                                         }
                                         if s.leasePolicy.everyUseAsks {
                                             Image(systemName: "hand.raised").foregroundStyle(.orange).help("Every use asks")
+                                        } else if s.leasePolicy.grantedSeconds < VaultLeasePolicy.maximumLease {
+                                            Text(AttentionCopy.duration(s.leasePolicy.grantedSeconds))
+                                                .font(.caption2).foregroundStyle(.secondary)
+                                                .help("A card approval lasts \(AttentionCopy.duration(s.leasePolicy.grantedSeconds))")
                                         }
                                         if s.aws != nil {
                                             Text("AWS").font(.caption2).foregroundStyle(.secondary)
@@ -90,7 +100,27 @@ struct VaultSettingsView: View {
                         }
                         .id(s.name + s.updatedAt.description)
                     } else {
-                        VaultLogList(entries: log)
+                        VStack(spacing: 6) {
+                            Picker("", selection: $history) {
+                                Text("Recently approved").tag(VaultHistory.approved)
+                                Text("Most asked").tag(VaultHistory.asked)
+                                Text("All releases").tag(VaultHistory.all)
+                            }
+                            .pickerStyle(.segmented)
+                            .labelsHidden()
+                            .padding(.horizontal, 8)
+                            switch history {
+                            case .all:
+                                VaultLogList(entries: log)
+                            case .asked:
+                                VaultAsksList(asks: asks) { selected = $0 }
+                            case .approved:
+                                VaultApprovalsList(entries: approvals, cardTitles: cardTitles, hours: approvalHours) {
+                                    approvalHours += 24
+                                    Task { await reloadApprovals() }
+                                }
+                            }
+                        }
                     }
                 }
                 .frame(minWidth: 380, maxWidth: .infinity, maxHeight: .infinity)
@@ -124,10 +154,153 @@ struct VaultSettingsView: View {
             self.error = "\(error)"
         }
         log = await vault.store.log(limit: 200)
+        await reloadApprovals()
+        asks = await vault.store.askSummary(since: Date().addingTimeInterval(-VaultAsksList.days * 86400))
         let leases = await vault.store.activeLeases().count
         status = unlocked
             ? "\(secrets.count) secrets, \(leases) active card leases. Values never show here; agents get them with kv."
             : "Locked: this Mac has no vault key yet. The box is the vault's home; its key is imported once."
+    }
+
+    private func reloadApprovals() async {
+        let since = Date().addingTimeInterval(-Double(approvalHours) * 3600)
+        approvals = await vault.store.approvals(since: since)
+        for card in Set(approvals.compactMap(\.cardId)) where cardTitles[card] == nil {
+            if let title = await vault.broker.cardTitle(card) { cardTitles[card] = title }
+        }
+    }
+}
+
+enum VaultHistory: Hashable {
+    case approved, asked, all
+}
+
+/// The secrets that asked you most in the last 30 days, with why the vault
+/// asked and what callers said they wanted, so the noisiest can be
+/// re-tiered or dropped from a manifest. Clicking one opens it.
+struct VaultAsksList: View {
+    static let days: Double = 30
+    let asks: [VaultAskSummary]
+    let open: (String) -> Void
+
+    var body: some View {
+        List {
+            if asks.isEmpty {
+                Text("You were not asked about any secret in the last \(Int(Self.days)) days.").foregroundStyle(.secondary)
+            }
+            ForEach(asks, id: \.secret) { a in
+                Button { open(a.secret) } label: {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("\(a.asks)").font(.system(.body, design: .rounded).weight(.semibold)).monospacedDigit()
+                                .frame(minWidth: 28, alignment: .trailing)
+                            Text(a.secret).font(.system(.body, design: .monospaced)).lineLimit(1).truncationMode(.middle)
+                            Spacer()
+                            Text(a.lastAt.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary)
+                        }
+                        Text(summary(a)).font(.caption).foregroundStyle(.secondary)
+                        ForEach(a.why, id: \.text) { w in
+                            Text("\(w.text) (\(w.count))").font(.caption).lineLimit(1)
+                        }
+                        ForEach(a.reasons, id: \.text) { r in
+                            Text("\u{201C}\(r.text)\u{201D} (\(r.count))").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                        ForEach(a.notes ?? [], id: \.text) { n in
+                            Text("Denied with: \(n.text) (\(n.count))").font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        }
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.vertical, 2)
+            }
+        }
+    }
+
+    private func summary(_ a: VaultAskSummary) -> String {
+        var parts = ["\(a.approved) approved", "\(a.denied) denied"]
+        if a.outsideCard > 0 { parts.append("\(a.outsideCard) from outside a card") }
+        return parts.joined(separator: " · ")
+    }
+}
+
+/// The approvals you gave, one row per request: what, for which card, why,
+/// and how long its card lease runs.
+struct VaultApprovalsList: View {
+    let entries: [VaultAuditEntry]
+    let cardTitles: [String: String]
+    let hours: Int
+    let showMore: () -> Void
+
+    private struct Approval: Identifiable {
+        var id: String
+        var entries: [VaultAuditEntry]
+        var first: VaultAuditEntry { entries[0] }
+    }
+
+    private var grouped: [Approval] {
+        var order: [String] = []
+        var byId: [String: [VaultAuditEntry]] = [:]
+        for e in entries {
+            let key = e.requestId ?? "\(e.machine)|\(e.at.timeIntervalSince1970)|\(e.secret)"
+            if byId[key] == nil { order.append(key) }
+            byId[key, default: []].append(e)
+        }
+        return order.map { Approval(id: $0, entries: byId[$0]!) }
+    }
+
+    var body: some View {
+        List {
+            if entries.isEmpty {
+                Text("No approvals in the last \(span).").foregroundStyle(.secondary)
+            }
+            ForEach(grouped) { a in
+                let e = a.first
+                VStack(alignment: .leading, spacing: 2) {
+                    HStack(alignment: .firstTextBaseline) {
+                        Image(systemName: "checkmark.seal.fill").foregroundStyle(.green)
+                        Text(Set(a.entries.map { VaultSecretName($0.secret).key }).sorted().joined(separator: ", "))
+                            .font(.system(.body, design: .monospaced))
+                        Spacer()
+                        Text(e.at.formatted(.relative(presentation: .named))).font(.caption).foregroundStyle(.secondary)
+                            .help(e.at.formatted(date: .abbreviated, time: .shortened))
+                    }
+                    Text([card(e), lease(e)].compactMap { $0 }.joined(separator: " · "))
+                        .font(.caption).foregroundStyle(.secondary)
+                    if let reason = e.reason, !reason.isEmpty {
+                        Text(reason).font(.caption).lineLimit(2)
+                    }
+                    if let note = e.note, !note.isEmpty {
+                        Text("You told the agent: \(note)").font(.caption).foregroundStyle(.secondary).lineLimit(3)
+                    }
+                    if let command = e.command, !command.isEmpty {
+                        Text(command).font(.system(.caption, design: .monospaced)).lineLimit(2).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.vertical, 2)
+            }
+            HStack {
+                Spacer()
+                Button("Show 24 more hours") { showMore() }
+                    .buttonStyle(.link)
+                Spacer()
+            }
+        }
+    }
+
+    private var span: String { hours == 24 ? "24 hours" : "\(hours) hours" }
+
+    private func card(_ e: VaultAuditEntry) -> String? {
+        guard let id = e.cardId else { return "outside any card" }
+        return cardTitles[id] ?? id
+    }
+
+    private func lease(_ e: VaultAuditEntry) -> String {
+        guard let until = e.leaseUntil else {
+            return e.action == "lease" || e.detail?.contains("card lease") == true ? "card lease" : "approved once"
+        }
+        if until <= Date() { return "card lease ended \(until.formatted(date: .omitted, time: .shortened))" }
+        return "card lease until \(until.formatted(date: until.timeIntervalSinceNow > 20 * 3600 ? .abbreviated : .omitted, time: .shortened))"
     }
 }
 
@@ -137,8 +310,18 @@ private struct VaultSecretEditor: View {
     let onDelete: () -> Void
     @State private var tier: VaultTier
     @State private var rules: String
-    @State private var everyUse: Bool
+    /// How long a card approval lasts, in seconds; 0 is "every use asks".
+    @State private var lease: TimeInterval
     @State private var confirmDelete = false
+
+    private static func leaseChoice(_ policy: VaultLeasePolicy) -> TimeInterval {
+        policy.everyUseAsks ? 0 : policy.grantedSeconds
+    }
+
+    /// The preset lengths, plus the secret's own when the CLI set another.
+    private var leaseChoices: [TimeInterval] {
+        Array(Set(VaultLeasePolicy.presets + [Self.leaseChoice(secret.leasePolicy)].filter { $0 > 0 })).sorted()
+    }
 
     init(secret: VaultSecretInfo, onSave: @escaping (VaultEditRequest) -> Void, onDelete: @escaping () -> Void) {
         self.secret = secret
@@ -146,7 +329,7 @@ private struct VaultSecretEditor: View {
         self.onDelete = onDelete
         _tier = State(initialValue: secret.tier)
         _rules = State(initialValue: secret.rules)
-        _everyUse = State(initialValue: secret.leasePolicy.everyUseAsks)
+        _lease = State(initialValue: Self.leaseChoice(secret.leasePolicy))
     }
 
     var body: some View {
@@ -164,7 +347,10 @@ private struct VaultSecretEditor: View {
                 Picker("Tier", selection: $tier) {
                     ForEach(VaultTier.allCases, id: \.self) { Text($0.label).tag($0) }
                 }
-                Toggle("Every use asks (no card leases)", isOn: $everyUse)
+                Picker("An approval for a card lasts", selection: $lease) {
+                    Text("Every use asks").tag(TimeInterval(0))
+                    ForEach(leaseChoices, id: \.self) { Text(AttentionCopy.duration($0)).tag($0) }
+                }
                 VStack(alignment: .leading) {
                     Text("Rules for Jev").font(.caption).foregroundStyle(.secondary)
                     TextEditor(text: $rules)
@@ -187,11 +373,13 @@ private struct VaultSecretEditor: View {
                     Button("Delete", role: .destructive) { confirmDelete = true }
                     Spacer()
                     Button("Save") {
-                        let policy = VaultLeasePolicy(leaseSeconds: secret.leasePolicy.leaseSeconds, everyUseAsks: everyUse)
+                        let policy = lease == 0
+                            ? VaultLeasePolicy(leaseSeconds: secret.leasePolicy.grantedSeconds, everyUseAsks: true)
+                            : VaultLeasePolicy(leaseSeconds: lease)
                         onSave(VaultEditRequest(tier: tier, rules: rules, leasePolicy: policy))
                     }
                     .keyboardShortcut(.defaultAction)
-                    .disabled(tier == secret.tier && rules == secret.rules && everyUse == secret.leasePolicy.everyUseAsks)
+                    .disabled(tier == secret.tier && rules == secret.rules && lease == Self.leaseChoice(secret.leasePolicy))
                 }
             }
         }

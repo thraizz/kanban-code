@@ -83,6 +83,17 @@ final class FleetModel {
     /// Answers on their way and the requests settled from this phone.
     private(set) var answers = AttentionAnswerState()
 
+    /// A vault request just refused from this phone: the vault holds the
+    /// refusal while the phone asks for a note to the agent.
+    struct DenialNoteTarget: Identifiable {
+        let id: String
+        let title: String
+        let master: BoardModel
+        let pacer: DenialNotePacer
+    }
+
+    var denialNote: DenialNoteTarget?
+
     /// Open decisions on every master, oldest first, each once. The master
     /// that raised a request decides whether it is still open; one this
     /// phone answered is gone at once (`AttentionFleet`).
@@ -100,7 +111,8 @@ final class FleetModel {
     /// Sends an answer. The row shows it is on its way at once and takes
     /// no second tap; it leaves the list when the master took the answer
     /// or says the request is settled, and shows the error otherwise.
-    /// `confirm` runs first for a request that wants Face ID.
+    /// `confirm` runs first for an approval that wants Face ID; a refusal
+    /// is sent as it is (`AttentionAnswerGate`).
     @MainActor
     func answer(_ item: FleetAttention, _ resolution: String, confirm: () async -> Bool = { true }) async {
         let id = item.request.id
@@ -109,38 +121,48 @@ final class FleetModel {
         // An approval that needs this phone's vault key unlocks with it
         // (Face ID, no passcode); any other one that wants Face ID asks first.
         let isVault = item.request.kind == .vaultApproval
-        var unsealed: VaultUnsealed?
-        if !AttentionCopy.isDenial(resolution), let challenge = item.request.unseal, !challenge.isEmpty {
-            guard PhoneVaultDevice.key.exists else {
-                answers.failed(id, error: PhoneVaultDevice.Problem(
-                    text: "This phone has no vault key yet. Enrol it under Machines > Vault key, or answer on the Mac."))
+        let unsealed: VaultUnsealed?
+        do {
+            let passed = try await AttentionAnswerGate.pass(item.request, option: resolution, unlock: { challenge in
+                guard PhoneVaultDevice.key.exists else { throw NoVaultKey() }
+                return try await PhoneVaultDevice.key.answer(challenge, reason: "\(resolution): \(item.request.title)")
+            }, confirm: confirm)
+            guard case .send(let opened) = passed else {
+                answers.cancelled(id)
                 return
             }
-            do {
-                unsealed = try await PhoneVaultDevice.key.answer(challenge, reason: "\(resolution): \(item.request.title)")
-            } catch {
-                let text = PhoneVaultDevice.describe(error)
-                PhoneVaultDevice.approvals.record(item.request, resolution: resolution, error: text)
-                if PhoneVaultDevice.isCancel(error) {
-                    answers.cancelled(id)
-                } else {
-                    answers.failed(id, error: PhoneVaultDevice.Problem(text: "Not unlocked: \(text)"))
-                }
-                return
+            unsealed = opened
+        } catch is NoVaultKey {
+            answers.failed(id, error: PhoneVaultDevice.Problem(
+                text: "This phone has no vault key yet. Enrol it under Machines > Vault key, or answer on the Mac."))
+            return
+        } catch {
+            let text = PhoneVaultDevice.describe(error)
+            PhoneVaultDevice.approvals.record(item.request, resolution: resolution, error: text)
+            if PhoneVaultDevice.isCancel(error) {
+                answers.cancelled(id)
+            } else {
+                answers.failed(id, error: PhoneVaultDevice.Problem(text: "Not unlocked: \(text)"))
             }
-        } else if item.request.requiresBiometry, !(await confirm()) {
-            answers.cancelled(id)
             return
         }
+        // A refused vault request is refused at once; a note for the agent
+        // is asked for next, and the vault holds the refusal for it.
+        let takesNote = isVault && AttentionCopy.isDenial(resolution)
         do {
-            try await item.master.resolveAttention(item.request, resolution: resolution, unsealed: unsealed)
+            try await item.master.resolveAttention(item.request, resolution: resolution, unsealed: unsealed, noteFollows: takesNote)
             if isVault { PhoneVaultDevice.approvals.record(item.request, resolution: resolution) }
             answers.succeeded(id)
+            if takesNote {
+                denialNote = DenialNoteTarget(id: id, title: item.request.title, master: item.master, pacer: DenialNotePacer())
+            }
         } catch {
             if isVault { PhoneVaultDevice.approvals.record(item.request, resolution: resolution, error: error.localizedDescription) }
             answers.failed(id, error: error)
         }
     }
+
+    private struct NoVaultKey: Error {}
 
     func clearAttentionNote() {
         answers.clearNote()

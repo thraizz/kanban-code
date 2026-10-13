@@ -11,7 +11,8 @@ public struct VaultDecisionInput: Sendable, Equatable {
     public var overNetwork: Bool
     /// The card holds an active lease on the secret.
     public var hasLease: Bool
-    /// Releases of this secret in the rate window, this one excluded.
+    /// Other callers that took this secret in the rate window. The same
+    /// caller again does not count: it already holds the value.
     public var recentReleases: Int
     /// The secret is a project's development secret without rules of its
     /// own, and the card's process runs in that project's folder.
@@ -58,8 +59,8 @@ public struct JevVerdict: Sendable, Equatable {
 ///
 /// 1. tier never: deny.
 /// 2. the request came over the network: ask, whatever the tier.
-/// 3. more than `rateLimit` releases of the secret in the window: ask.
-/// 4. an active card lease (and the secret allows leases): allow.
+/// 3. an active card lease (and the secret allows leases): allow.
+/// 4. `rateLimit` other callers took the secret in the window: ask.
 /// 5. tier open: allow. judged: allow the project's own development
 ///    secret, else Jev. ask: the human.
 ///
@@ -87,8 +88,12 @@ public enum VaultPolicy {
         return callerProjects.contains(project)
     }
 
-    public static let rateLimit = 20
+    public static let rateLimit = 10
     public static let rateWindow: TimeInterval = 5 * 60
+    /// Value checks (`kv same`) one caller may make in `rateWindow`, and all
+    /// callers together, so a short value cannot be found by guessing.
+    public static let compareLimit = 10
+    public static let compareLimitAll = 30
     /// Jev must be at least this sure to allow on its own.
     public static let jevAllowConfidence = 0.6
     /// How long the human has to answer before the request is denied.
@@ -113,11 +118,11 @@ public enum VaultPolicy {
         if input.overNetwork {
             return .ask(overNetworkReason)
         }
-        if input.recentReleases >= rateLimit {
-            return .ask("released \(input.recentReleases) times in the last \(Int(rateWindow / 60)) minutes")
-        }
         if input.hasLease && !input.everyUseAsks {
             return .allow(.lease, "the card holds a lease")
+        }
+        if input.recentReleases >= rateLimit {
+            return .ask("\(input.recentReleases) other callers took it in the last \(Int(rateWindow / 60)) minutes")
         }
         switch input.tier {
         case .open: return .allow(.tier, input.insideCard ? "open tier" : "open tier, \(outsideCardNote)")
@@ -148,10 +153,18 @@ public enum VaultPolicy {
 
     /// The options the human gets: no card lease for secrets that ask on
     /// every use, nor for callers outside a card.
-    public static func approvalOptions(everyUseAsks: Bool, insideCard: Bool) -> [String] {
-        let all = AttentionRequest.vaultApprovalOptions
+    public static func approvalOptions(everyUseAsks: Bool, insideCard: Bool,
+                                       leaseSeconds: TimeInterval = VaultLeasePolicy.maximumLease) -> [String] {
+        let all = AttentionRequest.vaultApprovalOptions(leaseSeconds: leaseSeconds)
         if everyUseAsks || !insideCard { return Array(all.dropFirst()) }
         return all
+    }
+
+    /// The length of the lease one approval gives on `policies`: the
+    /// shortest of them, so the card never keeps a secret for longer than
+    /// the option the human picked said.
+    public static func leaseSeconds(for policies: [VaultLeasePolicy]) -> TimeInterval {
+        policies.map(\.grantedSeconds).min() ?? VaultLeasePolicy.maximumLease
     }
 
     public enum Approval: Equatable, Sendable {
@@ -163,9 +176,8 @@ public enum VaultPolicy {
     /// Reads the human's resolution; anything unrecognised denies.
     public static func approval(from resolution: String?) -> Approval {
         guard let resolution else { return .deny }
-        let options = AttentionRequest.vaultApprovalOptions
-        if resolution == options[0] { return .lease }
-        if resolution == options[1] { return .once }
+        if AttentionRequest.isVaultLeaseOption(resolution) { return .lease }
+        if resolution == AttentionRequest.vaultApprovalOptions[1] { return .once }
         let lower = resolution.lowercased()
         if lower.hasPrefix("approve for") || lower == "lease" { return .lease }
         if lower.hasPrefix("approve") || lower == "once" || lower == "allow" { return .once }
@@ -177,22 +189,23 @@ public enum VaultPolicy {
     }
 }
 
-/// Releases per secret in a sliding window, in memory.
+/// Who took each secret in a sliding window, in memory.
 public struct VaultRateCounter: Sendable {
-    private var events: [String: [Date]] = [:]
+    private var events: [String: [(caller: String, at: Date)]] = [:]
     public let window: TimeInterval
 
     public init(window: TimeInterval = VaultPolicy.rateWindow) {
         self.window = window
     }
 
-    public func count(_ secret: String, now: Date) -> Int {
-        (events[secret] ?? []).filter { now.timeIntervalSince($0) < window }.count
+    /// The distinct callers that took `secret` in the window, `excluding` one.
+    public func count(_ secret: String, excluding: String? = nil, now: Date) -> Int {
+        Set((events[secret] ?? []).filter { now.timeIntervalSince($0.at) < window && $0.caller != excluding }.map(\.caller)).count
     }
 
-    public mutating func record(_ secret: String, at now: Date) {
-        var list = (events[secret] ?? []).filter { now.timeIntervalSince($0) < window }
-        list.append(now)
+    public mutating func record(_ secret: String, caller: String, at now: Date) {
+        var list = (events[secret] ?? []).filter { now.timeIntervalSince($0.at) < window && $0.caller != caller }
+        list.append((caller, now))
         events[secret] = list
     }
 

@@ -54,7 +54,7 @@ private final class TestMaster {
     /// A token this master issued, for the other one.
     var tokenForPeer = ""
 
-    init(name: String, root: String, alwaysOn: Bool = false) throws {
+    init(name: String, root: String, alwaysOn: Bool = false, clonesMissingProjects: Bool = true) throws {
         home = "\(root)/\(name)"
         try FileManager.default.createDirectory(atPath: home, withIntermediateDirectories: true)
         identity = MachineIdentity(name: name, alwaysOn: alwaysOn ? true : nil)
@@ -70,6 +70,7 @@ private final class TestMaster {
         platform.projectsDirectory = "\(home)/Projects"
         platform.claudeProjectsDirectory = "\(home)/claude-projects"
         platform.kanbanHome = home
+        platform.clonesMissingProjects = clonesMissingProjects
         engine = MasterEngine(
             store: store,
             settingsStore: SettingsStore(basePath: home),
@@ -565,7 +566,7 @@ struct MasterHandoverTests {
         #expect(box.tmux.created.first?.command?.contains("--resume \(sessionId)") == true)
     }
 
-    @Test("a first launch on a peer releases the card and the peer starts it")
+    @Test("a first launch on a peer releases the card, opens it here, and the peer starts it")
     func launchOnPeer() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(atPath: root) }
@@ -594,12 +595,165 @@ struct MasterHandoverTests {
         #expect(mac.store.state.links["card_new"]?.ownerMachine == box.identity.id)
         #expect(mac.store.state.links["card_new"]?.isLaunching != true)
         #expect(mac.tmux.created.isEmpty)
+        #expect(mac.store.state.selectedCardId == "card_new")
 
         await box.peerSync.pullAll()
         try await box.engine.adopt(cardId: "card_new")
         #expect(box.store.state.links["card_new"]?.projectPath == "\(box.home)/Projects/widgets")
         for _ in 0..<50 where box.tmux.created.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
         #expect(box.tmux.created.count == 1)
+    }
+
+    @Test("a card of a project with no remote says whether the project has commits to bring")
+    func unpublishedProjectTellsItsCommits() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repo = "\(root)/mac/twin"
+        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        try await sh(["git", "init", "-q"], in: repo)
+        let mac = try TestMaster(name: "mac", root: root)
+        mac.store.dispatch(.createManualTask(Link(id: "card_new", name: "New work", projectPath: repo, column: .backlog, promptBody: "do it")))
+
+        var info = try await mac.engine.handoverInfo(cardId: "card_new")
+        #expect(info.repoUrl == nil)
+        #expect(info.repoHasCommits == false)
+
+        try await sh(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], in: repo)
+        info = try await mac.engine.handoverInfo(cardId: "card_new")
+        #expect(info.repoHasCommits == true)
+    }
+
+    @Test("a new project with no remote and no commits starts on the adopting master as a new repository")
+    func unpublishedEmptyProjectStartsFresh() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let box = try TestMaster(name: "box", root: root)
+
+        let here = try await box.engine.localRepository(repoUrl: nil, fallback: "/nowhere/Projects/twin", hasCommits: false)
+        #expect(here == "\(box.home)/Projects/twin")
+        #expect(FileManager.default.fileExists(atPath: "\(here)/.git"))
+        // The next card of the project finds the folder made for the first.
+        #expect(try await box.engine.localRepository(repoUrl: nil, fallback: "/nowhere/Projects/twin", hasCommits: true) == here)
+    }
+
+    @Test("a project with commits and no remote is refused by the adopting master, naming the reason")
+    func unpublishedCommitsAreRefused() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let box = try TestMaster(name: "box", root: root)
+
+        do {
+            _ = try await box.engine.localRepository(repoUrl: nil, fallback: "/nowhere/Projects/twin", hasCommits: true)
+            Issue.record("the project was taken")
+        } catch {
+            #expect(error.localizedDescription.contains("has no git remote"))
+        }
+        #expect(!FileManager.default.fileExists(atPath: "\(box.home)/Projects/twin"))
+    }
+
+    @Test("a card the peer cannot take comes back to the master that launched it, with the reason")
+    func refusedLaunchComesBack() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let origin = "\(root)/origin/widgets.git"
+        let repoA = "\(root)/mac/widgets"
+        try FileManager.default.createDirectory(atPath: "\(root)/origin", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: "\(root)/mac", withIntermediateDirectories: true)
+        try await sh(["git", "init", "--bare", "-q", origin], in: root)
+        try await sh(["git", "clone", "-q", origin, repoA], in: root)
+
+        let mac = try TestMaster(name: "mac", root: root)
+        // A master that has no clone of the project and may not make one.
+        let box = try TestMaster(name: "box", root: root, clonesMissingProjects: false)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        await mac.peerSync.pullAll()
+        await box.peerSync.pullAll()
+
+        mac.store.dispatch(.createManualTask(Link(id: "card_new", name: "New work", projectPath: repoA, column: .backlog, promptBody: "do it")))
+        mac.engine.launch(cardId: "card_new", prompt: "do it now", projectPath: repoA, worktreeName: nil,
+                          runRemotely: true, machineChoice: .existing("box"))
+        #expect(mac.store.state.links["card_new"]?.column == .inProgress)
+        await box.peerSync.pullAll()
+
+        #expect(await box.engine.adoptOrHandBack(cardId: "card_new"))
+        #expect(box.store.state.links["card_new"]?.ownerMachine == mac.identity.id)
+        #expect(box.tmux.created.isEmpty)
+
+        await mac.peerSync.pullAll()
+        #expect(mac.store.state.links["card_new"]?.migrating == true)
+        #expect(await mac.engine.adoptOrHandBack(cardId: "card_new"))
+        let back = mac.store.state.links["card_new"]
+        #expect(back?.ownerMachine == mac.identity.id)
+        #expect(back?.migrating == nil)
+        #expect(back?.column == .backlog)
+        #expect(back?.projectPath == repoA)
+        guard case .failed(let line) = mac.store.state.cardStarts["card_new"] else {
+            Issue.record("the card does not say why it came back")
+            return
+        }
+        #expect(line.contains("box could not take it"))
+        #expect(line.contains("no project with origin"))
+        #expect(mac.tmux.created.isEmpty)
+
+        // The peer no longer queues the card.
+        await box.peerSync.pullAll()
+        #expect(box.store.state.links["card_new"]?.migrating == nil)
+        #expect(box.store.state.links["card_new"]?.ownerMachine == mac.identity.id)
+    }
+
+    @Test("an adoption that may work on a later try leaves the card where it is")
+    func transientFailureKeepsTheCard() {
+        #expect(MasterPeerError.noProject("x").refusesAdoption)
+        #expect(MasterPeerError.failed("x").refusesAdoption)
+        #expect(!MasterPeerError.notReady("x").refusesAdoption)
+        #expect(!MasterPeerError.peerOffline("x").refusesAdoption)
+        #expect(!MasterPeerError.unknownPeer("x").refusesAdoption)
+    }
+
+    @Test("a fork asked from the phone on a card the peer owns is made on the peer, from the project root")
+    func forkOnTheOwner() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-fork-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+
+        let project = "\(box.home)/Projects/widgets"
+        let worktree = "\(project)/.claude/worktrees/calm-river"
+        let dir = "\(box.home)/claude-projects/\(SessionFileMover.encodeProjectPath(worktree))"
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let transcript = "\(dir)/s-1.jsonl"
+        let line = #"{"type":"user","sessionId":"s-1","cwd":"\#(worktree)","message":{"role":"user","content":"hi"}}"#
+        try (line + "\n").write(toFile: transcript, atomically: true, encoding: .utf8)
+        box.store.dispatch(.createManualTask(Link(
+            id: "card_src", name: "Source", projectPath: worktree, column: .waiting,
+            sessionLink: SessionLink(sessionId: "s-1", sessionPath: transcript),
+            worktreeLink: WorktreeLink(path: worktree, branch: "calm-river"))))
+        await mac.peerSync.pullAll()
+        #expect(mac.store.state.links["card_src"]?.ownerMachine == box.identity.id)
+
+        let phone = RemoteClient(baseURL: URL(string: mac.url)!, token: mac.tokenForPeer)
+        let fork = try await phone.fork(cardId: "card_src", keepWorktree: false)
+        let made = try #require(box.store.state.links[fork.id])
+        #expect(made.name == "Source (fork)")
+        #expect(made.column == .waiting)
+        #expect(made.projectPath == project)
+        #expect(made.worktreeLink == nil)
+        let path = try #require(made.sessionLink?.sessionPath)
+        #expect(path.hasPrefix("\(box.home)/claude-projects/\(SessionFileMover.encodeProjectPath(project))/"))
+        #expect(FileManager.default.fileExists(atPath: path))
+        #expect(mac.store.state.links[fork.id]?.ownerMachine == nil || mac.store.state.links[fork.id]?.ownerMachine == box.identity.id)
+
+        let kept = try await phone.fork(cardId: "card_src", keepWorktree: true)
+        #expect(box.store.state.links[kept.id]?.worktreeLink?.path == worktree)
     }
 
     @Test("a task for a peer in a project only the peer knows is created and run there")

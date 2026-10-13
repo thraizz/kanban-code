@@ -20,7 +20,7 @@ public final class MasterEngine {
 
     /// Cards with a resume in flight. A resume is long (machine creation,
     /// a transcript push); a second one for the same card must not start.
-    private var resumingCards: Set<String> = []
+    var resumingCards: Set<String> = []
 
     /// Self-compact bookkeeping, by session id.
     var selfCompactTriggeredThresholds: [String: Set<Int>] = [:]
@@ -30,6 +30,9 @@ public final class MasterEngine {
     var handoversInFlight: Set<String> = []
     /// First launches handed to a peer, served with the handover info.
     var pendingPeerLaunches: [String: PeerLaunch] = [:]
+    /// Cards this master could not adopt and sent back, with the reason
+    /// the master that released them shows.
+    var refusedHandovers: [String: String] = [:]
     /// Cards this master released, as they were at the release, until the
     /// new owner adopts them.
     var releasedCards: [String: Link] = [:]
@@ -48,6 +51,13 @@ public final class MasterEngine {
     /// What a card's new local session gets in its environment for the
     /// vault (the card id and a fresh session token); nil without a vault.
     public var cardSessionEnvironment: (@Sendable (String) async -> [String: String])?
+    /// The card a session token was issued for, nil for a token the vault
+    /// does not know; nil without a vault.
+    public var cardTokenOwner: (@Sendable (String) async -> String?)?
+    /// Whether the vault has any token of a card on file; nil without a vault.
+    public var cardHasToken: (@Sendable (String) async -> Bool)?
+    /// Which rush hosts of this master's cards still need a valid token.
+    var rushTokens = RushTokenKeeper()
     /// Hands the vault what a device unlocked for an approval, before the
     /// request resolves.
     public var vaultUnsealed: (@Sendable (String, VaultUnsealed) async -> Void)?
@@ -120,6 +130,7 @@ public final class MasterEngine {
         }
         if isForeign(cardId) {
             // The master that owns the card starts it.
+            if !keepSelection { store.dispatch(.selectCard(cardId: cardId)) }
             forwardToOwner(cardId, "start the card", isStart: true) { client in _ = try await client.resume(cardId: cardId) }
             completion?(nil)
             return
@@ -133,6 +144,7 @@ public final class MasterEngine {
         }
         if runRemotely, let name = machineChoice?.machineName, let peer = peerMachine(named: name) {
             // Another master runs it: the card moves there and starts there.
+            if !keepSelection { store.dispatch(.selectCard(cardId: cardId)) }
             launchOnPeer(cardId: cardId, prompt: prompt, worktree: worktreeName, peer: peer)
             completion?(nil)
             return
@@ -211,21 +223,9 @@ public final class MasterEngine {
                 let resolvedService = resolvedServiceId.flatMap { sid in
                     settings?.apiServices.first { $0.id == sid && $0.assistant == assistant }
                 }
-                var serviceExtraEnv = extraEnv
-                if let svc = resolvedService,
-                   let envKey = assistant.baseURLEnvKey,
-                   let url = svc.baseURL, !url.isEmpty {
-                    serviceExtraEnv[envKey] = url
-                }
-                if let parentEnv = Self.subagentCacheEnv(parentCardId: cardLink?.parentCardId, assistant: assistant) {
-                    serviceExtraEnv.merge(parentEnv) { _, new in new }
-                }
-                serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
-                // The vault runs on this master: only a session on this
-                // machine can use its token.
-                if !isRemote, let cardSessionEnvironment {
-                    serviceExtraEnv.merge(await cardSessionEnvironment(cardId)) { _, new in new }
-                }
+                let serviceExtraEnv = await sessionEnvironment(
+                    cardId: cardId, base: extraEnv, service: resolvedService,
+                    parentCardId: cardLink?.parentCardId, assistant: assistant, isRemote: isRemote)
 
                 if boxdPreparation == nil,
                    rushChoice(
@@ -691,6 +691,7 @@ public final class MasterEngine {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return false }
         if isForeign(cardId) {
             // The master that owns the card resumes it.
+            if !keepSelection { store.dispatch(.selectCard(cardId: cardId)) }
             forwardToOwner(cardId, "resume the card", isStart: true) { client in _ = try await client.resume(cardId: cardId) }
             return false
         }
@@ -707,6 +708,7 @@ public final class MasterEngine {
             // master continues the conversation, also while this one is off.
             // A card that ran there over ssh moves the same way.
             KanbanCodeLog.info("resume", "Card=\(cardId.prefix(12)) continues on \(peer.name), handing it over")
+            if !keepSelection { store.dispatch(.selectCard(cardId: cardId)) }
             afterDispatch?()
             Task {
                 do {
@@ -919,21 +921,9 @@ public final class MasterEngine {
                 let resolvedService = resumeServiceId.flatMap { sid in
                     settings?.apiServices.first { $0.id == sid && $0.assistant == assistant }
                 }
-                var serviceExtraEnv = extraEnv
-                if let svc = resolvedService,
-                   let envKey = assistant.baseURLEnvKey,
-                   let url = svc.baseURL, !url.isEmpty {
-                    serviceExtraEnv[envKey] = url
-                }
-                if let parentEnv = Self.subagentCacheEnv(parentCardId: card.link.parentCardId, assistant: assistant) {
-                    serviceExtraEnv.merge(parentEnv) { _, new in new }
-                }
-                serviceExtraEnv.merge(platform.sessionEnvironment) { current, _ in current }
-                // The vault runs on this master: only a session on this
-                // machine can use its token.
-                if !isRemote, let cardSessionEnvironment {
-                    serviceExtraEnv.merge(await cardSessionEnvironment(cardId)) { _, new in new }
-                }
+                let serviceExtraEnv = await sessionEnvironment(
+                    cardId: cardId, base: extraEnv, service: resolvedService,
+                    parentCardId: card.link.parentCardId, assistant: assistant, isRemote: isRemote)
 
                 if boxdPreparation == nil,
                    rushChoice(
@@ -1091,6 +1081,32 @@ public final class MasterEngine {
             return nil
         }
         return rush
+    }
+
+    /// The environment a card's session starts with: `base` (what its
+    /// machine needs), the API service's base URL, the subagent cache tier,
+    /// the platform's, and for a session on this machine the card id and a
+    /// fresh vault token (the vault runs here: only a session here can use it).
+    func sessionEnvironment(
+        cardId: String,
+        base: [String: String],
+        service: APIService?,
+        parentCardId: String?,
+        assistant: CodingAssistant,
+        isRemote: Bool
+    ) async -> [String: String] {
+        var env = base
+        if let service, let envKey = assistant.baseURLEnvKey, let url = service.baseURL, !url.isEmpty {
+            env[envKey] = url
+        }
+        if let parentEnv = Self.subagentCacheEnv(parentCardId: parentCardId, assistant: assistant) {
+            env.merge(parentEnv) { _, new in new }
+        }
+        env.merge(platform.sessionEnvironment) { current, _ in current }
+        if !isRemote, let cardSessionEnvironment {
+            env.merge(await cardSessionEnvironment(cardId)) { _, new in new }
+        }
+        return env
     }
 
     /// Starts, or resumes, a card's Claude session on a rush host and

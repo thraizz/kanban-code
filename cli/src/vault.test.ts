@@ -21,8 +21,12 @@ import {
   parseSecretName,
   secretDisplay,
   execProviderAnswer,
+  LOG_COMMAND_LIMIT,
   leasePolicyFlags,
+  leaseText,
+  logCommand,
   parseEnvVault,
+  parseLease,
   reasonProblem,
   runKv,
   shellQuote,
@@ -137,6 +141,59 @@ test("a denial exits with the denied code and a hint", async () => {
   m.close();
 });
 
+test("a denial with the owner's note prints the note and tells the caller to stop", async () => {
+  const note = "what? why do you need prod credentials? you are testing lw-dev";
+  const m = await fakeMaster((method) =>
+    method === "POST"
+      ? { status: 202, body: { status: "pending", message: "Waiting for Rogerio's approval", id: "vault_1" } }
+      : { status: 403, body: { status: "denied", message: `Rogerio denied it: ${note}`, id: "vault_1", ownerNote: note } }
+  );
+  await assert.rejects(runKv(["run", "A", "--", "true"], io(m.url, [])), (e: any) => {
+    assert.equal(e.code, EXIT_DENIED);
+    assert.equal(
+      e.message,
+      `kv: denied by the owner: ${note}\n` +
+        "Stop and rethink what you are doing before you ask again: do not retry the same request."
+    );
+    assert.doesNotMatch(e.message, /kv request NAME/);
+    return true;
+  });
+  m.close();
+});
+
+test("a denial without a note reads as before", async () => {
+  for (const ownerNote of [undefined, null, "", "  "]) {
+    const m = await fakeMaster(() => ({ status: 403, body: { status: "denied", message: "Rogerio denied it.", ownerNote } }));
+    await assert.rejects(runKv(["get", "A"], io(m.url, [])), (e: any) => {
+      assert.equal(e.code, EXIT_DENIED);
+      assert.equal(e.message, 'kv: Rogerio denied it.\nIf the work needs it anyway, ask Rogerio: kv request NAME --reason "<one plain sentence>"');
+      return true;
+    });
+    m.close();
+  }
+});
+
+test("kv log and kv asks show the owner's note of a denial", async () => {
+  const m = await fakeMaster((_method, path) =>
+    path.startsWith("/v1/vault/log")
+      ? {
+          status: 200,
+          body: [{ at: "2026-10-09T10:00:00Z", machine: "mac", secret: "PROD_KEY", outcome: "denied", decider: "human", action: "run", detail: "by mac", note: "use the dev key" }],
+        }
+      : {
+          status: 200,
+          body: [{ secret: "PROD_KEY", asks: 1, approved: 0, denied: 1, outsideCard: 0, lastAt: "2026-10-09T10:00:00Z", reasons: [], why: [], commands: [], notes: [{ text: "use the dev key", count: 1 }] }],
+        }
+  );
+  const lines: string[] = [];
+  const stdout = { ...io(m.url, []), stdout: (s: string) => lines.push(s) };
+  assert.equal(await runKv(["log"], stdout), 0);
+  assert.equal(await runKv(["asks"], stdout), 0);
+  m.close();
+  assert.match(lines.join(""), /    note to the agent: use the dev key\n/);
+  assert.match(lines.join(""), /        denied with: use the dev key x1\n/);
+});
+
 test("kv run passes the command line for Jev", async () => {
   const m = await fakeMaster(() => ({ status: 200, body: { status: "granted", message: "released", values: { A: "v" } } }));
   const reason = "Check that the test script sees the key it needs";
@@ -151,6 +208,8 @@ test("reasons must be one plain sentence a human reads on a phone", () => {
   assert.equal(reasonProblem(undefined), "missing");
   assert.equal(reasonProblem("change aws:lw-dev: rules"), "tooShort");
   assert.equal(reasonProblem("kubectl apply -f deploy.yaml"), "looksLikeCommand");
+  assert.equal(reasonProblem("make build the app"), "looksLikeCommand");
+  assert.equal(reasonProblem("Make the key ask on every use"), undefined);
   assert.equal(reasonProblem("run the deploy with --force please"), "looksLikeCommand");
   assert.equal(reasonProblem("load env && run the migration now"), "looksLikeCommand");
   assert.equal(reasonProblem("first line\nsecond line of it"), "tooLong");
@@ -251,6 +310,104 @@ test("the exec provider answers OpenClaw's protocol without waiting on a human",
   });
   assert.equal(m.calls.length, 3);
   assert.equal(m.calls[0].body.mode, "get");
+});
+
+test("--lease takes a length from one minute to two days", () => {
+  assert.equal(parseLease("1h"), 3600);
+  assert.equal(parseLease("30m"), 1800);
+  assert.equal(parseLease("2d"), 172800);
+  assert.equal(parseLease("90s"), 90);
+  assert.equal(parseLease("1h30m"), 5400);
+  assert.equal(parseLease(" 8H "), 28800);
+  assert.equal(parseLease("1m"), 60);
+  for (const bad of ["", "1", "h", "1 hour", "1.5h", "-1h", "1w", "abc", "1h-30m", "0x10m"]) {
+    assert.throws(() => parseLease(bad), /--lease takes a length/, bad);
+  }
+  assert.throws(() => parseLease("59s"), /at least 1 minute/);
+  assert.throws(() => parseLease("0m"), /at least 1 minute/);
+  assert.throws(() => parseLease("3d"), /at most 2 days/);
+  assert.throws(() => parseLease("49h"), /at most 2 days/);
+  assert.throws(() => parseLease("99999999999999999999d"), /at most 2 days|at least 1 minute/);
+});
+
+test("a lease length prints in its largest whole unit", () => {
+  assert.equal(leaseText(172800), "2d");
+  assert.equal(leaseText(3600), "1h");
+  assert.equal(leaseText(28800), "8h");
+  assert.equal(leaseText(5400), "90m");
+  assert.equal(leaseText(900), "15m");
+  assert.equal(leaseText(90), "90s");
+});
+
+test("--lease sets the lease length and contradicts --every-use-asks", () => {
+  const a = ["METABASE_API_KEY", "ask", "--lease", "1h"];
+  assert.deepEqual(leasePolicyFlags(a), { leaseSeconds: 3600, everyUseAsks: false });
+  assert.deepEqual(a, ["METABASE_API_KEY", "ask"]);
+  assert.deepEqual(leasePolicyFlags(["X", "--leases", "--lease", "30m"]), { leaseSeconds: 1800, everyUseAsks: false });
+  assert.throws(() => leasePolicyFlags(["X", "--lease", "1h", "--every-use-asks"]), /contradict/);
+  assert.throws(() => leasePolicyFlags(["X", "--lease"]), /needs a length/);
+  assert.throws(() => leasePolicyFlags(["X", "--lease", "--reason"]), /needs a length/);
+  assert.throws(() => leasePolicyFlags(["X", "--lease", "5d"]), /at most 2 days/);
+});
+
+test("kv tier --lease sends the length; kv ls and kv leases show it", async () => {
+  const listed = [
+    { name: "METABASE_API_KEY", tier: "ask", rules: "", leasePolicy: { leaseSeconds: 3600, everyUseAsks: false }, tags: [], sources: [], hasValue: true },
+    { name: "STRIPE", tier: "ask", rules: "", leasePolicy: { leaseSeconds: 172800, everyUseAsks: true }, tags: [], sources: [], hasValue: true },
+    { name: "OPENAI", tier: "judged", rules: "", leasePolicy: { leaseSeconds: 172800, everyUseAsks: false }, tags: [], sources: [], hasValue: true },
+    { name: "PROD_DB", tier: "ask", rules: "", leasePolicy: { leaseSeconds: 172800, everyUseAsks: false }, tags: [], sources: [], hasValue: true },
+    { name: "SENTRY", tier: "judged", rules: "", leasePolicy: { leaseSeconds: 900, everyUseAsks: false }, tags: [], sources: [], hasValue: true },
+  ];
+  const leases = [{ cardId: "card_1", secret: "METABASE_API_KEY", grantedAt: "2026-10-05T10:00:00.000Z", expiresAt: "2026-10-05T11:00:00.000Z" }];
+  const m = await fakeMaster((method, url) => {
+    if (method === "GET" && url.startsWith("/v1/vault/secrets")) return { status: 200, body: listed };
+    if (method === "GET" && url.startsWith("/v1/vault/leases")) return { status: 200, body: leases };
+    return { status: 200, body: { status: "granted", message: "changed METABASE_API_KEY" } };
+  });
+  await runKv(["tier", "METABASE_API_KEY", "ask", "--lease", "1h", "--reason", "Limit how long a card keeps the Metabase key"], io(m.url, []));
+  assert.equal(m.calls[0].method, "PATCH");
+  assert.deepEqual(m.calls[0].body.leasePolicy, { leaseSeconds: 3600, everyUseAsks: false });
+  await runKv(["tiers", "ask", "A", "B", "--lease", "30m", "--reason", "Limit how long a card keeps these two keys"], io(m.url, []));
+  assert.deepEqual(m.calls[1].body.edit.leasePolicy, { leaseSeconds: 1800, everyUseAsks: false });
+  await assert.rejects(runKv(["tier", "METABASE_API_KEY", "ask", "--lease", "3d"], io(m.url, [])), /at most 2 days/);
+  assert.equal(m.calls.length, 2);
+
+  const out: string[] = [];
+  const printing = { ...io(m.url, []), stdout: (t: string) => out.push(t) };
+  await runKv(["ls"], printing);
+  const lines = out.join("").split("\n");
+  assert.match(lines[0], /^METABASE_API_KEY\s+ask\s+lease 1h/);
+  assert.match(lines[1], /^STRIPE\s+ask\s+every use asks/);
+  assert.match(lines[2], /^OPENAI\s+judged$/);
+  assert.match(lines[3], /^PROD_DB\s+ask\s+lease 2d/);
+  assert.match(lines[4], /^SENTRY\s+judged lease 15m/);
+  out.length = 0;
+  await runKv(["ls", "--json"], printing);
+  assert.equal(JSON.parse(out.join(""))[0].leasePolicy.leaseSeconds, 3600);
+  out.length = 0;
+  await runKv(["leases"], printing);
+  assert.match(out.join(""), /METABASE_API_KEY.*card card_1  until 2026-10-05T11:00 \(1h lease\)/);
+  await m.close();
+});
+
+test("kv log shows the command of each line on one line, cut when long", async () => {
+  const entries = [
+    { at: "2026-10-05T10:00:01.200Z", machine: "box", cardId: "card_1", secret: "OPENAI", outcome: "allowed", decider: "jev", action: "run", command: "python report.py\n  --week 40", detail: "Jev allowed (90%)" },
+    { at: "2026-10-05T10:00:01.000Z", machine: "box", cardId: "card_1", secret: "METABASE_API_KEY", outcome: "allowed", decider: "lease", action: "run", command: "python report.py\n  --week 40", detail: "the card holds a lease" },
+    { at: "2026-10-05T10:00:00.000Z", machine: "box", cardId: "card_1", secret: "METABASE_API_KEY", outcome: "allowed", decider: "human", action: "lease", detail: "by mac, card lease of 1 hour" },
+  ];
+  const m = await fakeMaster(() => ({ status: 200, body: entries }));
+  const out: string[] = [];
+  await runKv(["log", "--secret", "METABASE_API_KEY"], { ...io(m.url, []), stdout: (t: string) => out.push(t) });
+  const lines = out.join("").split("\n");
+  // The two secrets of one command share its line.
+  assert.match(lines[0], /allowed jev\s+run\s+.*OPENAI/);
+  assert.match(lines[1], /allowed lease\s+run\s+.*METABASE_API_KEY.*\(the card holds a lease\)/);
+  assert.equal(lines[2], "    $ python report.py --week 40");
+  assert.match(lines[3], /by mac, card lease of 1 hour/);
+  assert.equal(lines[4], "");
+  assert.equal(logCommand("x".repeat(LOG_COMMAND_LIMIT + 50)), "x".repeat(LOG_COMMAND_LIMIT) + "...");
+  await m.close();
 });
 
 test("--every-use-asks and --leases set the lease policy, together they are refused", () => {
@@ -489,6 +646,21 @@ test("kv set stores a project's secret, kv ls filters by project, kv mv renames"
   assert.equal(await runKv(["mv", "A__SHOP", "shop/dev/A", "--reason", "Give the shop key its project name"], io(m.url, [])), 0);
   m.close();
   assert.deepEqual(m.calls[1].body.renames, [{ from: "A__SHOP", to: "shop/dev/A" }]);
+});
+
+test("kv same says how a value compares with the stored one and writes no secret", async () => {
+  const m = await fakeMaster((_method, _path, body) => ({
+    status: 200,
+    body: { name: body.name, outcome: body.value === "stored" ? "same" : "different" },
+  }));
+  const printed: string[] = [];
+  const kvIo = (value: string) => ({ ...io(m.url, []), stdin: async () => value, stdout: (t: string) => printed.push(t) });
+  assert.equal(await runKv(["same", "METABASE_API_KEY"], kvIo("stored\n")), 0);
+  assert.equal(await runKv(["same", "METABASE_API_KEY"], kvIo("rotated")), 0);
+  m.close();
+  assert.deepEqual(printed, ["same\n", "different\n"]);
+  assert.deepEqual(m.calls.map((c) => `${c.method} ${c.path}`), ["POST /v1/vault/compare?card=card_x", "POST /v1/vault/compare?card=card_x"]);
+  assert.equal(m.calls[0].body.value, "stored");
 });
 
 test("import names a second value after its project and environment", () => {
