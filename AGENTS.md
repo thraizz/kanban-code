@@ -8,6 +8,18 @@ swift test           # run all tests
 make run-app         # build + launch the app
 ```
 
+After any change to app code, build, install and relaunch the app so the running copy matches the source:
+
+```bash
+make app                                   # build build/KanbanCode.app
+pkill -TERM -x KanbanCode                  # quit the running app
+rm -rf /Applications/KanbanCode.app
+ditto build/KanbanCode.app /Applications/KanbanCode.app
+open /Applications/KanbanCode.app          # never launch build/KanbanCode.app
+```
+
+The Dock and Spotlight open the `/Applications` copy, so a stale one there reopens old behavior.
+
 ## Architecture
 
 - **KanbanCodeCore** (`Sources/KanbanCodeCore/`) — pure Swift library, no UI. Domain entities, use cases, adapters.
