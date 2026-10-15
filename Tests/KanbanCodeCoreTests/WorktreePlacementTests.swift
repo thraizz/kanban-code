@@ -40,8 +40,9 @@ struct WorktreePlacementTests {
         let paths = WorktreePlacement.remotePaths(of: card)
         #expect(paths?.worktree == "/root/Projects/acme/.claude/worktrees/fix-bug")
         #expect(paths?.repoRoot == "/root/Projects/acme")
-        #expect(WorktreePlacement.removeCommand(worktree: "/r/it's", repoRoot: "/r")
-            == "git -C '/r' worktree remove --force '/r/it'\\''s'")
+        let command = WorktreePlacement.removeCommand(worktree: "/r/it's", repoRoot: "/r")
+        #expect(command.contains("git -C '/r' worktree remove --force '/r/it'\\''s'"))
+        #expect(command.contains("--force --force"))
     }
 
     @Test("a card on its own boxd machine offers no cleanup")

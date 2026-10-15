@@ -74,3 +74,24 @@ struct WorktreeParserTests {
         #expect(wt.directoryName == "feature-x")
     }
 }
+
+@Suite("Git Worktree Lock")
+struct WorktreeLockTests {
+    @Test("Reads the locking pid from git's message")
+    func parsesPid() {
+        let stderr = "fatal: cannot remove a locked working tree, lock reason: claude session curried-soaring-haven (pid 29051 start Wed Oct 14 08:35:27 2026)\nuse 'remove -f -f' to override or unlock first"
+        #expect(GitWorktreeAdapter.lockingPid(in: stderr) == 29051)
+    }
+
+    @Test("Ignores other failures and locks without a pid")
+    func ignoresOthers() {
+        #expect(GitWorktreeAdapter.lockingPid(in: "fatal: contains modified or untracked files (pid 12)") == nil)
+        #expect(GitWorktreeAdapter.lockingPid(in: "fatal: cannot remove a locked working tree, lock reason: manual") == nil)
+    }
+
+    @Test("A dead pid returns at once, a live one times out")
+    func waitForExit() async {
+        #expect(await GitWorktreeAdapter.waitForExit(pid: 2_000_000_000, timeout: 1))
+        #expect(await GitWorktreeAdapter.waitForExit(pid: getpid(), timeout: 0.3) == false)
+    }
+}

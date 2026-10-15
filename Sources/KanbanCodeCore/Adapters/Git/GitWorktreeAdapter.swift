@@ -49,9 +49,40 @@ public final class GitWorktreeAdapter: WorktreeManagerPort, @unchecked Sendable 
         }
 
         let result = try await ShellCommand.run(gitPath, arguments: args, currentDirectory: effectiveRoot)
-        if !result.succeeded {
-            throw WorktreeError.removeFailed(path: path, message: result.stderr)
+        if result.succeeded { return }
+
+        // Claude locks its worktree with its own pid and unlocks on exit. A
+        // session killed a moment ago may not have exited yet, so wait for the
+        // locking process to die, then drop the stale lock with a second force.
+        if force, let pid = Self.lockingPid(in: result.stderr) {
+            if await Self.waitForExit(pid: pid, timeout: 15) {
+                let retry = try await ShellCommand.run(
+                    gitPath,
+                    arguments: ["worktree", "remove", "--force", "--force", path],
+                    currentDirectory: effectiveRoot)
+                if retry.succeeded { return }
+                throw WorktreeError.removeFailed(path: path, message: retry.stderr)
+            }
         }
+        throw WorktreeError.removeFailed(path: path, message: result.stderr)
+    }
+
+    /// The pid named in git's "cannot remove a locked working tree" message.
+    static func lockingPid(in stderr: String) -> Int32? {
+        guard stderr.contains("locked working tree"),
+              let range = stderr.range(of: #"\(pid (\d+)"#, options: .regularExpression) else { return nil }
+        let digits = stderr[range].filter(\.isNumber)
+        return Int32(digits)
+    }
+
+    /// Polls until `pid` no longer exists. False when it is still alive at the timeout.
+    static func waitForExit(pid: Int32, timeout: TimeInterval) async -> Bool {
+        let deadline = Date().addingTimeInterval(timeout)
+        while kill(pid, 0) == 0 {
+            if Date() >= deadline { return false }
+            try? await Task.sleep(for: .milliseconds(250))
+        }
+        return true
     }
 
     /// Whether the worktree at `path` holds anything a forced removal would

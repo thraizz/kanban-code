@@ -52,7 +52,19 @@ public enum WorktreePlacement: Equatable, Sendable {
 
     /// The shell command that removes a worktree on another machine.
     public static func removeCommand(worktree: String, repoRoot: String) -> String {
-        "git -C \(shellQuote(repoRoot)) worktree remove --force \(shellQuote(worktree))"
+        let git = "git -C \(shellQuote(repoRoot)) worktree remove"
+        let path = shellQuote(worktree)
+        // A session killed a moment ago still holds its lock (claude locks
+        // with its own pid). Wait for that pid to exit, then override the
+        // stale lock with a second force.
+        return """
+        out=$(\(git) --force \(path) 2>&1) && exit 0; \
+        pid=$(printf '%s' "$out" | sed -n 's/.*locked working tree.*(pid \\([0-9][0-9]*\\).*/\\1/p' | head -n1); \
+        if [ -n "$pid" ]; then \
+        i=0; while kill -0 "$pid" 2>/dev/null && [ $i -lt 60 ]; do sleep 0.25; i=$((i+1)); done; \
+        kill -0 "$pid" 2>/dev/null || { \(git) --force --force \(path) 2>&1 && exit 0; exit 1; }; \
+        fi; printf '%s\\n' "$out" >&2; exit 1
+        """
     }
 
     static func shellQuote(_ value: String) -> String {
