@@ -122,6 +122,74 @@ struct ActivityDetectorTests {
         #expect(state == .activelyWorking, "Post-Stop transcript writes indicate continuation in progress")
     }
 
+    private static func entryLine(type: String, at date: Date) -> String {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return #"{"type":"\#(type)","timestamp":"\#(formatter.string(from: date))","message":{"content":[{"type":"text","text":"done"}]}}"#
+    }
+
+    @Test("Old Stop + transcript only touched since (no new entry) → needsAttention")
+    func stopWithTouchedTranscript() async {
+        // An idle Claude process refreshes its transcript's mtime about once
+        // an hour without writing. That must not read as a continuation.
+        let stopTime = Date.now.addingTimeInterval(-2 * 86400)
+        let detector = ClaudeCodeActivityDetector(stopDelay: 1)
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop", timestamp: stopTime))
+        let t = Self.transcript([
+            Self.entryLine(type: "assistant", at: stopTime.addingTimeInterval(-0.5)),
+            #"{"type":"system","subtype":"away_summary","timestamp":"2099-01-01T00:00:00.000Z"}"#,
+        ], age: 10)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention)
+    }
+
+    @Test("Old Stop + new assistant entry after it → activelyWorking")
+    func stopWithNewEntry() async {
+        let stopTime = Date.now.addingTimeInterval(-60)
+        let detector = ClaudeCodeActivityDetector(stopDelay: 1)
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop", timestamp: stopTime))
+        let t = Self.transcript([
+            Self.entryLine(type: "assistant", at: stopTime.addingTimeInterval(-0.5)),
+            Self.entryLine(type: "assistant", at: Date.now.addingTimeInterval(-10)),
+        ], age: 10)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .activelyWorking)
+    }
+
+    @Test("Old Notification + transcript only touched since → needsAttention")
+    func notificationWithTouchedTranscript() async {
+        let notified = Date.now.addingTimeInterval(-3600)
+        let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Notification", timestamp: notified))
+        let t = Self.transcript([Self.entryLine(type: "assistant", at: notified.addingTimeInterval(-1))], age: 1)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention)
+    }
+
+    @Test("Permission prompt + transcript only touched since → awaitingPermission")
+    func permissionPromptWithTouchedTranscript() async {
+        let prompted = Date.now.addingTimeInterval(-3600)
+        let t = Self.transcript([Self.entryLine(type: "assistant", at: prompted.addingTimeInterval(-1))], age: 10)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        let detector = ClaudeCodeActivityDetector()
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "Notification", transcriptPath: t.path,
+            notificationType: "permission_prompt", timestamp: prompted))
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .awaitingPermission)
+    }
+
     @Test("Stop + stale file → needsAttention")
     func stopWithStaleFile() async {
         let detector = ClaudeCodeActivityDetector(stopDelay: 0)

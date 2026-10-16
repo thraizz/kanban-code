@@ -242,7 +242,8 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
                let fileAge = Self.fileAge(path),
                fileAge < activeTimeout {
                 let fileMtime = Date.now.addingTimeInterval(-fileAge)
-                if fileMtime.timeIntervalSince(lastEvent.timestamp) > 1.0 {
+                if fileMtime.timeIntervalSince(lastEvent.timestamp) > 1.0,
+                   Self.hasEntry(after: lastEvent.timestamp.addingTimeInterval(1.0), path: path) {
                     return .activelyWorking
                 }
             }
@@ -257,7 +258,8 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
             // Claude is already resuming work.
             if let path = sessionPaths[sessionId],
                let fileAge = Self.fileAge(path) {
-                if fileAge < 5 {
+                let fileMtime = Date.now.addingTimeInterval(-fileAge)
+                if fileAge < 5, Self.hasEntry(after: fileMtime.addingTimeInterval(-5), path: path) {
                     return .activelyWorking
                 }
                 // Answering the prompt (a permission, an AskUserQuestion)
@@ -267,9 +269,9 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
                 // without this, every tool call longer than 5s read as
                 // Waiting. The margin covers the hook timestamp's
                 // whole-second resolution.
-                let fileMtime = Date.now.addingTimeInterval(-fileAge)
                 if fileMtime.timeIntervalSince(lastEvent.timestamp) > 2.0,
-                   fileAge < activeTimeout || isRunningToolCall(path: path, fileAge: fileAge) {
+                   fileAge < activeTimeout || isRunningToolCall(path: path, fileAge: fileAge),
+                   Self.hasEntry(after: lastEvent.timestamp.addingTimeInterval(2.0), path: path) {
                     return .activelyWorking
                 }
             }
@@ -329,6 +331,49 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
               let fileAge = Self.fileAge(path) else { return true }
         let fileMtime = Date.now.addingTimeInterval(-fileAge)
         return fileMtime.timeIntervalSince(event.timestamp) < 2.0
+            || !Self.hasEntry(after: event.timestamp.addingTimeInterval(2.0), path: path)
+    }
+
+    /// Whether the transcript has a conversation entry (user or assistant)
+    /// written after `date`.
+    ///
+    /// A newer mtime alone is not a write: an idle Claude process refreshes
+    /// its transcript's mtime about once an hour without adding anything,
+    /// which read as a turn running after the last Stop and pulled
+    /// long-finished cards into In Progress. A transcript with no
+    /// timestamped entry to go by counts as written.
+    static func hasEntry(after date: Date, path: String) -> Bool {
+        guard let last = lastEntryDate(path) else { return true }
+        return last > date
+    }
+
+    /// Timestamp of the transcript's last user or assistant entry.
+    /// Bookkeeping and system lines (hook summaries, away summaries) are
+    /// skipped: they are not work.
+    static func lastEntryDate(_ path: String) -> Date? {
+        guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
+        defer { try? handle.close() }
+
+        // An entry carries its tool input or output, so read well past one
+        // short line.
+        let fileSize = handle.seekToEndOfFile()
+        let readSize: UInt64 = min(1024 * 1024, fileSize)
+        handle.seek(toFileOffset: fileSize - readSize)
+        let data = handle.availableData
+        guard let tail = String(data: data, encoding: .utf8) else { return nil }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        for line in tail.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+            guard line.contains("\"type\":\"assistant\"") || line.contains("\"type\":\"user\""),
+                  let lineData = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
+                  let type = obj["type"] as? String, type == "user" || type == "assistant",
+                  let stamp = obj["timestamp"] as? String,
+                  let date = formatter.date(from: stamp) else { continue }
+            return date
+        }
+        return nil
     }
 
     /// Quick mtime check — returns seconds since file was last modified, or nil on error.
