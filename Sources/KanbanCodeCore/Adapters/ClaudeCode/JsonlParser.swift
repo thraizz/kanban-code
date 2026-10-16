@@ -103,6 +103,41 @@ public enum JsonlParser {
         return metadata
     }
 
+    /// When the transcript was last written to: the newest `timestamp` among
+    /// its last lines.
+    ///
+    /// The file's mtime is not that. An interactive Claude process refreshes
+    /// its own transcript's mtime every hour (so the retention sweep never
+    /// deletes a live session) without writing anything, which made cards
+    /// idle for days read as active an hour ago. Nil when the tail holds no
+    /// timestamped line.
+    public static func lastWrittenAt(_ filePath: String, tailBytes: UInt64 = 64 * 1024) -> Date? {
+        guard let handle = FileHandle(forReadingAtPath: filePath) else { return nil }
+        defer { try? handle.close() }
+        let fileSize = handle.seekToEndOfFile()
+        handle.seek(toFileOffset: fileSize - min(tailBytes, fileSize))
+        guard let tail = String(data: handle.availableData, encoding: .utf8) else { return nil }
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        for line in tail.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
+            guard line.contains("\"timestamp\""),
+                  let data = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let stamp = obj["timestamp"] as? String,
+                  let date = formatter.date(from: stamp) else { continue }
+            return date
+        }
+        return nil
+    }
+
+    /// The time a transcript last changed: its newest timestamped line,
+    /// falling back to the mtime when it has none. Never later than the mtime.
+    public static func writeTime(of filePath: String, mtime: Date) -> Date {
+        guard let written = lastWrittenAt(filePath) else { return mtime }
+        return min(written, mtime)
+    }
+
     /// Where and how a session was started: the first `cwd` and
     /// `entrypoint` its transcript records. Reads only the first lines that
     /// carry them, so it costs far less than `extractMetadata`.

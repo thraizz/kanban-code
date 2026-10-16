@@ -131,6 +131,30 @@ struct SessionDiscoveryTests {
         #expect(sessions[1].id == "old-sess")
     }
 
+    @Test("A transcript only touched since its last line keeps the time of that line")
+    func touchedTranscriptKeepsWriteTime() async throws {
+        // A live interactive Claude process refreshes its transcript's mtime
+        // every hour without writing; that is not activity.
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        let projectDir = (dir as NSString).appendingPathComponent("-Users-test-touched")
+        try FileManager.default.createDirectory(atPath: projectDir, withIntermediateDirectories: true)
+
+        let path = (projectDir as NSString).appendingPathComponent("idle-sess.jsonl")
+        try [
+            #"{"type":"user","sessionId":"idle-sess","message":{"content":"Hi"},"cwd":"/test","timestamp":"2026-10-14T21:03:38.562Z"}"#,
+            #"{"type":"system","subtype":"turn_duration","timestamp":"2026-10-14T21:03:40.430Z"}"#,
+            #"{"type":"permission-mode","permissionMode":"default"}"#,
+        ].joined(separator: "\n").write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date.now], ofItemAtPath: path)
+
+        let sessions = try await ClaudeCodeSessionDiscovery(claudeDir: dir).discoverSessions()
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        #expect(sessions.first?.modifiedTime == formatter.date(from: "2026-10-14T21:03:40.430Z"))
+    }
+
     @Test("A transcript moved to another project directory keeps its session, at the new path")
     func transcriptMovedBetweenProjectDirs() async throws {
         let dir = try makeTempDir()

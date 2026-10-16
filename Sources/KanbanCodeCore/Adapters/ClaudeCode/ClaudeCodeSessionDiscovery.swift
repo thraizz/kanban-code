@@ -141,7 +141,7 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
                     session.name = indexEntry?.summary
                     session.projectPath = indexEntry?.projectPath
                     session.jsonlPath = filePath
-                    session.modifiedTime = mtime
+                    session.modifiedTime = JsonlParser.writeTime(of: filePath, mtime: mtime)
                     session.messageCount = metadata.messageCount
                     session.entrypoint = metadata.entrypoint
 
@@ -169,7 +169,7 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
                         session.name = session.name ?? entry.summary
                         session.projectPath = session.projectPath ?? entry.projectPath
                         session.jsonlPath = filePath
-                        session.modifiedTime = mtime
+                        session.modifiedTime = JsonlParser.writeTime(of: filePath, mtime: mtime)
                         cachedSessions[sessionId] = session
                     }
                 }
