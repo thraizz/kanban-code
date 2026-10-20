@@ -45,6 +45,8 @@ struct CardActionEnvironment {
     var destroyMachine: (String) -> Void
     var unarchive: (String) -> Void
     var requestAddLink: (String) -> Void
+    /// Titles the card from its prompt with a model, in the background.
+    var generateTitle: (_ cardId: String, _ prompt: String) -> Void = { _, _ in }
     /// Where the card can continue: this Mac, the peer masters, the ssh
     /// machines this Mac drives.
     var continueTargets: [(label: String, target: String)]
@@ -69,6 +71,18 @@ struct CardActionEnvironment {
                     object: nil,
                     userInfo: ["cardId": cardId]
                 )
+            },
+            generateTitle: { cardId, prompt in
+                Task {
+                    let store = AppComposition.shared.store
+                    do {
+                        let title = try await TaskTitleGenerator.generate(prompt: prompt)
+                        store.dispatch(.renameCard(cardId: cardId, name: title))
+                    } catch {
+                        KanbanCodeLog.warn("title", "card \(cardId): \(error.localizedDescription)")
+                        store.dispatch(.setError(error.localizedDescription))
+                    }
+                }
             },
             continueTargets: continueTargets(for: card, state: AppComposition.shared.store.state),
             isSharedMachine: { AppServices.sshTargets[$0] != nil }
@@ -152,6 +166,14 @@ struct CardActionCatalog {
             }
         }
         return out
+    }
+
+    /// The prompt of a card that has no title of its own, to title it from.
+    private var untitledPrompt: String? {
+        guard card.link.name?.isEmpty ?? true, let prompt = card.link.promptBody,
+              !InjectedPromptText.strip(prompt).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return nil }
+        return prompt
     }
 
     private var hasSessionPath: Bool { card.link.sessionLink?.sessionPath != nil }
@@ -252,6 +274,13 @@ struct CardActionCatalog {
             id: "rename", title: "Rename", icon: "pencil", paletteTitle: "Rename Card",
             shortcut: .renameCard, kind: .perform(actions.onRenameRequest)
         ))
+        if let prompt = untitledPrompt {
+            let cardId = card.id
+            items.append(CardActionItem(
+                id: "generateTitle", title: "Generate Title from Prompt", icon: "sparkles",
+                kind: .perform { environment.generateTitle(cardId, prompt) }
+            ))
+        }
         if card.link.parentCardId == nil {
             let pinned = card.link.isPinned
             items.append(CardActionItem(

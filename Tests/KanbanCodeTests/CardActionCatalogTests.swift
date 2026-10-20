@@ -14,6 +14,7 @@ struct CardActionCatalogTests {
         var hits: Set<String> = []
         var copied: [String] = []
         var unarchived: [String] = []
+        var titled: [(cardId: String, prompt: String)] = []
     }
 
     private static func actions(_ r: Recorder, archive: Bool = true) -> CardActionsMenuActions {
@@ -54,6 +55,7 @@ struct CardActionCatalogTests {
             destroyMachine: { _ in },
             unarchive: { r.unarchived.append($0) },
             requestAddLink: { _ in },
+            generateTitle: { r.titled.append(($0, $1)) },
             continueTargets: [("box", "box")],
             isSharedMachine: { _ in false }
         )
@@ -165,5 +167,23 @@ struct CardActionCatalogTests {
         #expect(titles.contains("Self-Compact Threshold: Use Global Settings (current)"))
         #expect(titles.contains("PR #7: Copy PR Link"))
         #expect(titles.contains("Branch feat/live: Unlink Branch"))
+    }
+
+    @Test("only a card with a prompt and no name offers Generate Title")
+    func generateTitleOffer() throws {
+        let r = Recorder()
+        let untitled = KanbanCodeCard(link: Link(
+            id: "untitled", projectPath: "/repo", column: .backlog, source: .manual, promptBody: "fix the login bug"
+        ))
+        try #require(Self.catalog(untitled, r).paletteEntries
+            .first { $0.title == "Generate Title from Prompt" }).run()
+        #expect(r.titled.map(\.cardId) == ["untitled"])
+        #expect(r.titled.map(\.prompt) == ["fix the login bug"])
+
+        var link = untitled.link
+        link.name = "Login bug"
+        let named = KanbanCodeCard(link: link)
+        #expect(!Self.catalog(named, r).paletteEntries.contains { $0.title == "Generate Title from Prompt" })
+        #expect(!Self.catalog(Self.card("noPrompt"), r).paletteEntries.contains { $0.title == "Generate Title from Prompt" })
     }
 }
