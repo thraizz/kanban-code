@@ -221,7 +221,7 @@ Feature: First-class subagents
     Given "child-1" is owned by the current parent
     Then `kanban subagent transcript child-1` should use the top-level transcript implementation
     And `kanban subagent capture child-1` should use the top-level capture implementation
-    And `kanban subagent dm child-1 <message>` should use the top-level direct-message implementation
+    And `kanban subagent dm child-1 <message>` should paste the message into the child's tmux session
     And `kanban subagent send child-1 <keys>` should use the low-level send implementation
     And the subagent help should document when each operation is appropriate
 
@@ -230,7 +230,8 @@ Feature: First-class subagents
   Scenario: Child reports to its direct parent
     Given the current card is "child-1" with parent "parent-1"
     When it runs `kanban parent dm "The parser bug is in tokenizer.swift"`
-    Then the message should be delivered to "parent-1" through the established direct-message path
+    Then the message should be delivered to "parent-1" by pasting it into the parent's tmux session
+    And the message should not be written to any DM history log
     And the sender identity should identify "child-1"
 
   Scenario: Child reports completion and self-archives
@@ -255,11 +256,6 @@ Feature: First-class subagents
       | sender     | receiver   | handle   | role            |
       | "parent-1" | "child-1"  | parent-1 |  (parent agent) |
       | "child-1"  | "parent-1" | child-1  |  (subagent)     |
-
-  Scenario: Unrelated agents get no role label
-    Given two cards without a parent-child relationship
-    When one sends a direct message to the other
-    Then the delivered text should read "[DM from @handle]" with no role suffix
 
   # Codex startup readiness
 

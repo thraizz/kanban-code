@@ -8,12 +8,6 @@ struct BoardView: View {
     @State private var sidebarReorderState = SidebarReorderState()
     @State private var renamingPinnedCardId: String?
     @State private var collapsedPinnedSubagentParents: Set<String> = []
-    var onOpenChannel: (String) -> Void = { _ in }
-    var onNewChannel: () -> Void = {}
-    var onDeleteChannel: (String) -> Void = { _ in }
-    var onRenameChannel: (String) -> Void = { _ in }
-    var unreadCountForChannel: (Channel) -> Int = { _ in 0 }
-    var onlineCountForChannel: (Channel) -> Int = { _ in 0 }
     var onStartCard: (String) -> Void = { _ in }
     var onResumeCard: (String) -> Void = { _ in }
     var onForkCard: (String, Bool) -> Void = { _, _ in }
@@ -60,17 +54,16 @@ struct BoardView: View {
     }
 
     @ViewBuilder
-    private var channelsPseudoColumn: some View {
-        let channels = store.state.channels
+    private var pinnedRail: some View {
         let pinnedCards = store.state.pinnedCards
         let descendantCounts = store.state.descendantCounts
-        if !channels.isEmpty || !pinnedCards.isEmpty {
+        if !pinnedCards.isEmpty {
             // The rail scrolls on its own. Bare, its height grows with the
             // pinned count, and a rail taller than the window vertically
             // centers the whole horizontal board: every column header and
             // the first cards of every column end up above the screen.
             ScrollView {
-                railContent(channels: channels, pinnedCards: pinnedCards, descendantCounts: descendantCounts)
+                railContent(pinnedCards: pinnedCards, descendantCounts: descendantCounts)
                     .padding(.horizontal, 6)
             }
             .frame(width: 240, alignment: .top)
@@ -78,60 +71,10 @@ struct BoardView: View {
     }
 
     private func railContent(
-        channels: [Channel],
         pinnedCards: [KanbanCodeCard],
         descendantCounts: [String: Int]
     ) -> some View {
         VStack(alignment: .leading, spacing: 8) {
-                if !channels.isEmpty {
-                    // Subtle header so the column reads as "Channels" without competing with real columns.
-                    HStack(spacing: 6) {
-                        Text("Channels")
-                            .font(.app(.caption, weight: .semibold))
-                            .foregroundStyle(.tertiary)
-                            .textCase(.uppercase)
-                        Spacer(minLength: 0)
-                        Button(action: onNewChannel) {
-                            Image(systemName: "plus")
-                                .font(.app(.caption))
-                        }
-                        .buttonStyle(.plain)
-                        .foregroundStyle(.secondary)
-                        .help("New chat channel")
-                    }
-                    .padding(.horizontal, 10)
-                    .padding(.top, 2)
-
-                    ForEach(channels) { ch in
-                        let msgs = store.state.channelMessages[ch.name]
-                        let last = msgs?.last
-                        SidebarReorderableRow(
-                            item: .channel(ch.id),
-                            reorderState: sidebarReorderState,
-                            onMove: reorderChannel
-                        ) {
-                            ChannelTile(
-                                channel: ch,
-                                onlineCount: onlineCountForChannel(ch),
-                                lastMessageAt: last?.ts,
-                                lastMessageBody: last?.body,
-                                isSelected: store.state.selectedChannelName == ch.name,
-                                unreadCount: unreadCountForChannel(ch),
-                                onOpen: { onOpenChannel(ch.name) },
-                                onDelete: { onDeleteChannel(ch.name) },
-                                onRename: { onRenameChannel(ch.name) }
-                            )
-                        }
-                    }
-                    if channels.count > 1 {
-                        SidebarReorderEndTarget(
-                            kind: .channel(""),
-                            reorderState: sidebarReorderState,
-                            onMove: reorderChannel
-                        )
-                    }
-                }
-
                 if !pinnedCards.isEmpty {
                     HStack(spacing: 6) {
                         Image(systemName: "pin.fill")
@@ -143,7 +86,7 @@ struct BoardView: View {
                     .foregroundStyle(.tertiary)
                     .textCase(.uppercase)
                     .padding(.horizontal, 10)
-                    .padding(.top, channels.isEmpty ? 2 : 6)
+                    .padding(.top, 2)
 
                     ForEach(pinnedCards) { card in
                         SidebarReorderableRow(
@@ -171,10 +114,6 @@ struct BoardView: View {
             }
     }
 
-    private func reorderChannel(_ channelId: String, _ targetChannelId: String?, _ above: Bool) {
-        store.dispatch(.reorderChannel(channelId: channelId, targetChannelId: targetChannelId, above: above))
-    }
-
     private func reorderPinnedCard(_ cardId: String, _ targetCardId: String?, _ above: Bool) {
         store.dispatch(.reorderPinnedCard(cardId: cardId, targetCardId: targetCardId, above: above))
     }
@@ -184,8 +123,8 @@ struct BoardView: View {
         return ScrollViewReader { proxy in
             ScrollView(.horizontal, showsIndicators: true) {
                 HStack(alignment: .top, spacing: 6) {
-                    channelsPseudoColumn
-                        .id("channels")
+                    pinnedRail
+                        .id("pinned")
                     ForEach(store.state.visibleColumns, id: \.self) { column in
                         DroppableColumnView(
                             column: column,
@@ -250,7 +189,7 @@ struct BoardView: View {
                 let rootId = SubagentHierarchy.rootId(of: selectedId, in: store.state.links)
                 if store.state.pinnedCards.contains(where: { $0.id == rootId }) {
                     withAnimation(.easeInOut(duration: 0.25)) {
-                        proxy.scrollTo("channels", anchor: .leading)
+                        proxy.scrollTo("pinned", anchor: .leading)
                     }
                     return
                 }

@@ -58,13 +58,6 @@ struct LaunchConfig: Identifiable {
     }
 }
 
-/// Tiny Identifiable wrapper so `.sheet(item:)` can present the rename dialog
-/// keyed on the channel name.
-private struct RenameTarget: Identifiable, Equatable {
-    let name: String
-    var id: String { name }
-}
-
 private struct SubagentManagerTarget: Identifiable, Equatable {
     let parentId: String
     var id: String { parentId }
@@ -72,8 +65,6 @@ private struct SubagentManagerTarget: Identifiable, Equatable {
 
 private enum DrawerNavigationTarget: Equatable {
     case card(String)
-    case channel(String)
-    case dm(ChannelParticipant)
 
     init?(_ drawer: Drawer) {
         switch drawer {
@@ -81,10 +72,6 @@ private enum DrawerNavigationTarget: Equatable {
             return nil
         case .card(let id):
             self = .card(id)
-        case .channel(let name):
-            self = .channel(name)
-        case .dm(let participant):
-            self = .dm(participant)
         }
     }
 }
@@ -93,8 +80,6 @@ struct ContentView: View {
     // Properties are internal (not private) to allow extensions in separate files
     @State var store: BoardStore
     @State var orchestrator: BackgroundOrchestrator
-    @State var channelsWatcher: ChannelsWatcher = ChannelsWatcher()
-    @State var shareController: ChannelShareController = ChannelShareController()
     @State var searchInitialQuery = ""
     @State var terminalHadFocusBeforeSearch = false
     @State var deepSearchTrigger = false
@@ -105,8 +90,6 @@ struct ContentView: View {
     @State var newTaskPreset: PromptPreset?
     @AppStorage("sidebarMode") var sidebarModeRaw = SidebarMode.sessions.rawValue
     @State var showOnboarding = false
-    @State var showCreateChannel = false
-    @State var renameChannelName: String? = nil
     @AppStorage("appearanceMode") var appearanceMode: AppearanceMode = .auto
     @AppStorage("boardViewMode") var boardViewModeRaw = BoardViewMode.kanban.rawValue
     @State var showProcessManager = false
@@ -129,14 +112,10 @@ struct ContentView: View {
     @State var showBoxdPopover = false
     @State var rawSyncOutput = ""
     @State var editingQueuedPromptId: String?
-    @State var channelGithubBaseURLByCardId: [String: String] = [:]
-    @State var channelDraftImages: [String: [Data]] = [:]
-    @State var dmDraftImages: [String: [Data]] = [:]
     @State var activeDialog: DialogState = .none
     @State private var navigationBackStack: [DrawerNavigationTarget] = []
     @State private var navigationForwardStack: [DrawerNavigationTarget] = []
     @State private var suppressNextNavigationRecord = false
-    @State private var channelFocusRequestToken = 0
     // showSearch and isExpandedDetail live in AppState (store.state.paletteOpen / detailExpanded)
     var showSearch: Bool {
         get { store.state.paletteOpen }
@@ -289,12 +268,6 @@ struct ContentView: View {
             let cleanupBranchCounts = activeWorktreeBranchCounts
             return BoardView(
             store: store,
-            onOpenChannel: { name in store.dispatch(.selectChannel(name: name)) },
-            onNewChannel: { showCreateChannel = true },
-            onDeleteChannel: { name in presentDialog(.confirmDeleteChannel(name: name)) },
-            onRenameChannel: { name in renameChannelName = name },
-            unreadCountForChannel: { ch in unreadCount(for: ch) },
-            onlineCountForChannel: { ch in onlineCount(for: ch) },
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
             onForkCard: { cardId, _ in presentForkDialog(cardId: cardId) },
@@ -357,17 +330,11 @@ struct ContentView: View {
     private var sidebarListView: some View {
         RenderDiagnostics.measure(
             "ContentView.sidebarListView",
-            metadata: "cards=\(store.state.cards.count) channels=\(store.state.channels.count)"
+            metadata: "cards=\(store.state.cards.count)"
         ) {
             let cleanupBranchCounts = activeWorktreeBranchCounts
             return ListBoardView(
             store: store,
-            onOpenChannel: { name in store.dispatch(.selectChannel(name: name)) },
-            onNewChannel: { showCreateChannel = true },
-            onDeleteChannel: { name in presentDialog(.confirmDeleteChannel(name: name)) },
-            onRenameChannel: { name in renameChannelName = name },
-            unreadCountForChannel: { ch in unreadCount(for: ch) },
-            onlineCountForChannel: { ch in onlineCount(for: ch) },
             onStartCard: { cardId in startCard(cardId: cardId) },
             onResumeCard: { cardId in resumeCard(cardId: cardId) },
             onForkCard: { cardId, _ in presentForkDialog(cardId: cardId) },
@@ -457,11 +424,6 @@ struct ContentView: View {
                             Image(systemName: "square.and.pencil")
                         }
                         .help("New task (⌘N)")
-
-                        Button { showCreateChannel = true } label: {
-                            Image(systemName: "number")
-                        }
-                        .help("New chat channel")
 
                         Button { Task { await store.reconcile() } } label: {
                             Image(systemName: "arrow.clockwise")
@@ -694,38 +656,9 @@ struct ContentView: View {
         }
     }
 
-    private func copyChannelConversationMarkdown(channelName: String) {
-        let exportStart = RenderDiagnostics.mark()
-        Task {
-            let markdown = await Task.detached(priority: .utility) {
-                let channelsStore = ChannelsStore()
-                let messages = await channelsStore.loadMessages(channel: channelName, limit: nil)
-                return ChannelConversationMarkdownExporter.markdown(
-                    channelName: channelName,
-                    messages: messages
-                )
-            }.value
-
-            NSPasteboard.general.clearContents()
-            NSPasteboard.general.setString(markdown, forType: .string)
-            store.dispatch(.setNotice("Channel conversation markdown copied to clipboard", kind: .success))
-            RenderDiagnostics.logIfSlow(
-                "ContentView.copyChannelConversationMarkdown",
-                since: exportStart,
-                thresholdMs: 100,
-                metadata: "channel=\(channelName)"
-            )
-        }
-    }
-
     @ViewBuilder
     private var inspectorContent: some View {
-        if let dm = store.state.selectedDMParticipant {
-            dmChatContent(other: dm)
-        } else if let name = store.state.selectedChannelName,
-                  let ch = store.state.channels.first(where: { $0.name == name }) {
-            channelChatContent(channel: ch)
-        } else if let card = store.state.selectedCard {
+        if let card = store.state.selectedCard {
             makeCardDetailView(card: card)
         }
     }
@@ -749,19 +682,13 @@ struct ContentView: View {
     private var boardWithOverlays: some View {
         Group {
             if isExpandedDetail {
-                if let dm = store.state.selectedDMParticipant {
-                    dmChatContent(other: dm)
-                } else if let name = store.state.selectedChannelName,
-                          let ch = store.state.channels.first(where: { $0.name == name }) {
-                    channelChatContent(channel: ch)
-                } else if let card = store.state.selectedCard {
+                if let card = store.state.selectedCard {
                     makeCardDetailView(card: card)
                 } else {
                     expandedEmptyState
                 }
             } else {
                 // Normal: kanban board with inspector.
-                // When a channel/DM is selected the inspector shows chat instead of card detail.
                 boardView
                     .ignoresSafeArea(edges: .top)
                     .inspector(isPresented: showInspector) {
@@ -900,25 +827,6 @@ struct ContentView: View {
             }
             .sheet(isPresented: $showAddFromPath) {
                 addFromPathSheet
-            }
-            .sheet(isPresented: $showCreateChannel) {
-                CreateChannelDialog(isPresented: $showCreateChannel) { name in
-                    store.dispatch(.createChannel(name: name))
-                }
-            }
-            .sheet(item: Binding(
-                get: { renameChannelName.map { RenameTarget(name: $0) } },
-                set: { renameChannelName = $0?.name }
-            )) { target in
-                RenameChannelDialog(
-                    isPresented: Binding(
-                        get: { renameChannelName != nil },
-                        set: { if !$0 { renameChannelName = nil } }
-                    ),
-                    currentName: target.name
-                ) { newName in
-                    store.dispatch(.renameChannel(old: target.name, new: newName))
-                }
             }
             .sheet(item: $launchConfig) { config in
                 LaunchConfirmationDialog(
@@ -1067,7 +975,6 @@ struct ContentView: View {
         case .confirmMigration: return "Migrate Session?"
         case .confirmTrimSession: return "Trim Session History?"
         case .remoteWorktreeCleanup: return "Remote Worktree"
-        case .confirmDeleteChannel(let name): return "Delete #\(name)?"
         case .confirmArchiveWithMachine: return "Archive and destroy machine?"
         case .confirmDestroyMachine: return "Destroy machine?"
         case .confirmDeleteColumn(let column, let cardIds):
@@ -1214,12 +1121,6 @@ struct ContentView: View {
                 Task { await executeLocalWorktreeCleanup(cardId: cardId, localPath: localPath) }
                 dismissDialog()
             }
-        case .confirmDeleteChannel(let name):
-            Button("Cancel", role: .cancel) { dismissDialog() }
-            Button("Delete #\(name)", role: .destructive) {
-                store.dispatch(.deleteChannel(name: name))
-                dismissDialog()
-            }
         }
     }
 
@@ -1272,8 +1173,6 @@ struct ContentView: View {
         case .confirmTrimSession:
             Text("Rewrite this session with only the most recent messages. The current session file is kept as a .bak backup, and any running terminal for this card will be restarted from the trimmed session.")
         case .remoteWorktreeCleanup(_, _, _, let errorMessage): Text(errorMessage)
-        case .confirmDeleteChannel(let name):
-            Text("This removes the channel and its membership metadata. Messages in \(name).jsonl are left on disk so you can recover them manually if needed.")
         case .confirmArchiveWithMachine(let cardId):
             Text("Are you sure? This destroys the boxd machine \(remoteMachineName(cardId: cardId)) and everything on it that was not pushed. The conversation stays on this Mac.")
         case .confirmDeleteColumn(_, let cardIds):
@@ -1421,7 +1320,6 @@ struct ContentView: View {
     private var boardWithHandlers: some View {
         boardWithPresence
             .task {
-                (NSApp.delegate as? AppDelegate)?.register(channelShareController: shareController)
                 // Show onboarding wizard on first launch
                 if let settings = try? await settingsStore.read(), !settings.hasCompletedOnboarding {
                     showOnboarding = true
@@ -1506,17 +1404,6 @@ struct ContentView: View {
             .task(id: "tmux-watch") {
                 await store.runTmuxWatch()
             }
-            .task(id: "channels-bootstrap") {
-                // Initial load + start the file-system watcher (no polling).
-                store.dispatch(.refreshChannels)
-                store.dispatch(.refreshChannelReadState)
-                store.dispatch(.loadDrafts)
-                channelsWatcher.start()
-                // Load one-shot: the watcher will push changes from here on.
-                for ch in store.state.channels {
-                    store.dispatch(.refreshChannelMessages(channelName: ch.name))
-                }
-            }
             .task(id: "self-compact-monitor") {
                 await engine.runSelfCompactMonitor()
             }
@@ -1529,47 +1416,10 @@ struct ContentView: View {
             .task(id: "rush-token-monitor") {
                 await engine.runRushTokenMonitor()
             }
-            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelsChanged).receive(on: RunLoop.main)) { _ in
-                store.dispatch(.refreshChannels)
-                channelsWatcher.syncChannelLogs(store.state.channels.map(\.name))
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeChannelMessagesChanged).receive(on: RunLoop.main)) { note in
-                if let name = note.userInfo?["channelName"] as? String {
-                    store.dispatch(.refreshChannelMessages(channelName: name))
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeDMLogsChanged).receive(on: RunLoop.main)) { _ in
-                if let other = store.state.selectedDMParticipant {
-                    store.dispatch(.refreshDMMessages(other: other))
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeReadStateChanged).receive(on: RunLoop.main)) { _ in
-                store.dispatch(.refreshChannelReadState)
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSelectChannel).receive(on: RunLoop.main)) { note in
-                if let name = note.userInfo?["channelName"] as? String {
-                    store.dispatch(.selectChannel(name: name))
-                }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeSelectDM).receive(on: RunLoop.main)) { note in
-                if let handle = note.userInfo?["dmHandle"] as? String {
-                    // Look up the card for this handle in any channel's membership.
-                    var cardId: String?
-                    for ch in store.state.channels {
-                        if let m = ch.members.first(where: { $0.handle == handle }), let cid = m.cardId {
-                            cardId = cid
-                            break
-                        }
-                    }
-                    let other = ChannelParticipant(cardId: cardId, handle: handle)
-                    store.dispatch(.selectDM(other: other))
-                }
-            }
             .onAppear { installKeyMonitor() }
             .onDisappear {
                 if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
                 keyMonitor = nil
-                channelsWatcher.stop()
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeToggleSearch).receive(on: RunLoop.main)) { _ in
                 if showSearch { closePalette() } else { openPalette() }
@@ -1618,7 +1468,6 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification).receive(on: RunLoop.main)) { _ in
                 store.appIsActive = true
-                store.dispatch(.setAppFrontmost(true))
                 Task {
                     await store.reconcile()
                     systemTray.update()
@@ -1626,7 +1475,6 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification).receive(on: RunLoop.main)) { _ in
                 store.appIsActive = false
-                store.dispatch(.setAppFrontmost(false))
             }
             .onReceive(NSWorkspace.shared.notificationCenter.publisher(for: NSWorkspace.willSleepNotification).receive(on: RunLoop.main)) { _ in
                 // Stop periodic work for the night: dark wakes fire the refresh
@@ -1671,11 +1519,6 @@ struct ContentView: View {
                             Image(systemName: "square.and.pencil")
                         }
                         .help("New task (⌘N)")
-
-                        Button { showCreateChannel = true } label: {
-                            Image(systemName: "number")
-                        }
-                        .help("New chat channel")
 
                         Button { Task { await store.reconcile() } } label: {
                             Image(systemName: "arrow.clockwise")
@@ -1869,14 +1712,6 @@ struct ContentView: View {
                 switchToProjectIfNeeded(for: card)
                 store.dispatch(.selectCard(cardId: card.id))
             },
-            channels: store.state.channels,
-            channelLastOpened: store.state.channelLastOpened,
-            channelLastActivity: store.state.channels.reduce(into: [String: Date]()) { acc, ch in
-                if let ts = store.state.channelMessages[ch.name]?.last?.ts { acc[ch.name] = ts }
-            },
-            onSelectChannel: { name in
-                store.dispatch(.selectChannel(name: name))
-            },
             commands: paletteCommands,
             initialQuery: searchInitialQuery,
             deepSearchTrigger: deepSearchTrigger
@@ -2047,11 +1882,6 @@ struct ContentView: View {
                 switchToProjectIfNeeded(for: card)
             }
             store.dispatch(.selectCard(cardId: id))
-        case .channel(let name):
-            store.dispatch(.selectChannel(name: name))
-            channelFocusRequestToken += 1
-        case .dm(let participant):
-            store.dispatch(.selectDM(other: participant))
         }
     }
 
@@ -2059,10 +1889,6 @@ struct ContentView: View {
         switch target {
         case .card(let id):
             return store.state.links[id] != nil
-        case .channel(let name):
-            return store.state.channels.contains { $0.name == name }
-        case .dm:
-            return true
         }
     }
 
@@ -3040,332 +2866,19 @@ struct ContentView: View {
         }
     }
 
-
-    // MARK: - Channels UI
-
-    private func onlineCount(for ch: Channel) -> Int {
-        let live = store.state.tmuxSessions
-        return ch.members.reduce(0) { acc, m in
-            guard let cardId = m.cardId, let link = store.state.links[cardId] else {
-                return acc + (m.cardId == nil ? 1 : 0)
-            }
-            if let sess = link.tmuxLink?.sessionName, live.contains(sess) {
-                return acc + 1
-            }
-            return acc
-        }
-    }
-
-    private func unreadCount(for ch: Channel) -> Int {
-        // If the user is actively looking at this channel, there are no unread
-        // messages — by definition.
-        if store.state.selectedChannelName == ch.name && store.state.appIsFrontmost {
-            return 0
-        }
-        let msgs = store.state.channelMessages[ch.name] ?? []
-        guard !msgs.isEmpty else { return 0 }
-        let myHandle = store.state.humanHandle
-
-        // Only real chat messages (not joins/leaves) count toward unread.
-        let realMsgs = msgs.filter { $0.type == .message }
-        guard !realMsgs.isEmpty else { return 0 }
-
-        // No marker = treat as fully read. The reducer seeds the marker on
-        // first-load to avoid blasting N unreads for pre-existing history.
-        guard let lastReadId = store.state.channelLastReadMessageId[ch.name] else {
-            return 0
-        }
-
-        // Count messages strictly after `lastReadId`, skipping my own.
-        if let idx = realMsgs.firstIndex(where: { $0.id == lastReadId }) {
-            return realMsgs[(idx + 1)...].filter {
-                !($0.from.cardId == nil && $0.from.handle == myHandle)
-            }.count
-        }
-        // lastReadId isn't in the current slice (rare — rotation, message
-        // deletion). Fall back to counting everything not from me.
-        return realMsgs.filter {
-            !($0.from.cardId == nil && $0.from.handle == myHandle)
-        }.count
-    }
-
-    @ViewBuilder
-    private func channelChatContent(channel: Channel) -> some View {
-        let msgs = store.state.channelMessages[channel.name] ?? []
-        let onlineMap = channelOnlineByHandle(channel)
-        let activityMap = channelActivityByHandle(channel)
-        let pullRequests = channelPullRequestReferences(channel: channel, messages: msgs)
-        let channelCardIds = channelParticipantCardIds(channel: channel, messages: msgs)
-        let baseURLs = Dictionary(uniqueKeysWithValues: channelCardIds.compactMap { cardId in
-            channelGithubBaseURLByCardId[cardId].map { (cardId, $0) }
-        })
-        ChannelChatView(
-            channel: channel,
-            messages: msgs,
-            onlineByHandle: onlineMap,
-            onSend: { body, imagePaths in
-                store.dispatch(.sendChannelMessage(channelName: channel.name, body: body, imagePaths: imagePaths))
-                channelDraftImages.removeValue(forKey: channel.name)
-            },
-            onClose: { store.dispatch(.selectChannel(name: nil)) },
-            onCopyDMCommand: { m in
-                let cmd = "kanban dm @\(m.handle) \"your message here\""
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(cmd, forType: .string)
-            },
-            onOpenDM: { m in
-                let other = ChannelParticipant(cardId: m.cardId, handle: m.handle)
-                store.dispatch(.selectDM(other: other))
-            },
-            onOpenCard: { cardId in
-                openCardFromChat(cardId)
-            },
-            onKickMember: { m in
-                let who = ChannelParticipant(cardId: m.cardId, handle: m.handle)
-                store.dispatch(.kickChannelMember(channelName: channel.name, member: who))
-            },
-            activityByHandle: activityMap,
-            myHandle: store.state.humanHandle,
-            pullRequests: pullRequests,
-            pullRequestBaseURLsByCardId: baseURLs,
-            focusRequestToken: channelFocusRequestToken,
-            onLoadSearchMessages: { limit in
-                let channelsStore = ChannelsStore()
-                return await channelsStore.loadMessages(channel: channel.name, limit: limit)
-            },
-            draft: Binding(
-                get: { store.state.channelDrafts[channel.name] ?? "" },
-                set: { store.dispatch(.setChannelDraft(channelName: channel.name, body: $0)) }
-            ),
-            draftImages: Binding(
-                get: { channelDraftImages[channel.name] ?? [] },
-                set: { newValue in
-                    if newValue.isEmpty {
-                        channelDraftImages.removeValue(forKey: channel.name)
-                    } else {
-                        channelDraftImages[channel.name] = newValue
-                    }
-                }
-            ),
-            shareController: shareController,
-            onCopyConversationMarkdown: {
-                copyChannelConversationMarkdown(channelName: channel.name)
-            }
-        )
-        .id("channel:\(channel.name)")
-        .task(id: channelGithubBaseURLResolutionKey(channel: channel, messages: msgs)) {
-            await resolveChannelGithubBaseURLs(channel: channel, messages: msgs)
-        }
-    }
-
-    private func channelParticipantCardIds(
-        channel: Channel,
-        messages: [ChannelMessage]
-    ) -> [String] {
-        var cardIds = Set<String>()
-        for member in channel.members {
-            if let cardId = member.cardId { cardIds.insert(cardId) }
-        }
-        for message in messages {
-            if let cardId = message.from.cardId { cardIds.insert(cardId) }
-        }
-        return cardIds.sorted()
-    }
-
-    private func channelGithubBaseURLResolutionKey(
-        channel: Channel,
-        messages: [ChannelMessage]
-    ) -> String {
-        let cardIds = channelParticipantCardIds(channel: channel, messages: messages)
-        let paths = cardIds.compactMap { store.state.links[$0]?.projectPath }
-        return ([channel.name] + cardIds + paths).joined(separator: "|")
-    }
-
-    @MainActor
-    private func resolveChannelGithubBaseURLs(
-        channel: Channel,
-        messages: [ChannelMessage]
-    ) async {
-        let missing = channelParticipantCardIds(channel: channel, messages: messages).compactMap { cardId -> (String, String)? in
-            guard channelGithubBaseURLByCardId[cardId] == nil,
-                  let projectPath = store.state.links[cardId]?.projectPath
-            else { return nil }
-            return (cardId, projectPath)
-        }
-        guard !missing.isEmpty else { return }
-
-        let resolved = await withTaskGroup(of: (String, String?).self) { group in
-            for (cardId, projectPath) in missing {
-                group.addTask {
-                    let base = await GitRemoteResolver.shared.githubBaseURL(for: projectPath)
-                    return (cardId, base)
-                }
-            }
-            var values: [(String, String?)] = []
-            for await value in group {
-                values.append(value)
-            }
-            return values
-        }
-
-        for (cardId, base) in resolved {
-            if let base {
-                channelGithubBaseURLByCardId[cardId] = base
-            }
-        }
-    }
-
-    private func channelPullRequestReferences(
-        channel: Channel,
-        messages: [ChannelMessage]
-    ) -> [ChannelPullRequestReference] {
-        var handlesByCardId: [String: String] = [:]
-        for member in channel.members {
-            if let cardId = member.cardId {
-                handlesByCardId[cardId] = member.handle
-            }
-        }
-        for message in messages {
-            if let cardId = message.from.cardId {
-                handlesByCardId[cardId] = message.from.handle
-            }
-        }
-
-        var refs: [ChannelPullRequestReference] = []
-        var seen: Set<String> = []
-        for cardId in handlesByCardId.keys.sorted() {
-            guard let link = store.state.links[cardId] else { continue }
-            let handle = handlesByCardId[cardId] ?? link.name ?? cardId
-            for pr in link.prLinks {
-                let key = pr.url ?? "\(link.projectPath ?? "")#\(pr.number)"
-                guard !seen.contains(key) else { continue }
-                seen.insert(key)
-                refs.append(ChannelPullRequestReference(
-                    id: key,
-                    number: pr.number,
-                    url: pr.url.flatMap(URL.init(string:)),
-                    status: pr.status,
-                    unresolvedThreads: pr.unresolvedThreads ?? 0,
-                    title: pr.title,
-                    handle: handle,
-                    cardId: cardId
-                ))
-            }
-        }
-        return refs.sorted {
-            let leftRank = prStatusDisplayRank($0.status)
-            let rightRank = prStatusDisplayRank($1.status)
-            if leftRank != rightRank { return leftRank < rightRank }
-            if $0.number != $1.number { return $0.number < $1.number }
-            return $0.handle < $1.handle
-        }
-    }
-
-    private func channelActivityByHandle(_ ch: Channel) -> [String: ActivityState] {
-        var out: [String: ActivityState] = [:]
-        for m in ch.members {
-            guard let cardId = m.cardId, let link = store.state.links[cardId],
-                  let sid = link.sessionLink?.sessionId,
-                  let state = store.state.activityMap[sid]
-            else { continue }
-            out[m.handle] = state
-        }
-        return out
-    }
-
-    @ViewBuilder
-    private func dmChatContent(other: ChannelParticipant) -> some View {
-        let key = Reducer.dmKey(other)
-        let msgs = store.state.dmMessages[key] ?? []
-        let online: Bool = {
-            guard let cid = other.cardId, let link = store.state.links[cid],
-                  let sess = link.tmuxLink?.sessionName else { return false }
-            return store.state.tmuxSessions.contains(sess)
-        }()
-        DMChatView(
-            other: other,
-            messages: msgs,
-            onlineForOther: online,
-            onSend: { body, imagePaths in
-                store.dispatch(.sendDirectMessage(to: other, body: body, imagePaths: imagePaths))
-                dmDraftImages.removeValue(forKey: key)
-            },
-            onClose: { store.dispatch(.selectDM(other: nil)) },
-            onOpenCard: { cardId in
-                openCardFromChat(cardId)
-            },
-            myHandle: store.state.humanHandle,
-            draft: Binding(
-                get: { store.state.dmDrafts[key] ?? "" },
-                set: { store.dispatch(.setDMDraft(other: other, body: $0)) }
-            ),
-            draftImages: Binding(
-                get: { dmDraftImages[key] ?? [] },
-                set: { newValue in
-                    if newValue.isEmpty {
-                        dmDraftImages.removeValue(forKey: key)
-                    } else {
-                        dmDraftImages[key] = newValue
-                    }
-                }
-            )
-        )
-        .id("dm:\(key)")
-    }
-
-    private func openCardFromChat(_ cardId: String) {
-        guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
-        switchToProjectIfNeeded(for: card)
-        store.dispatch(.selectChannel(name: nil))
-        store.dispatch(.selectDM(other: nil))
-        store.dispatch(.selectCard(cardId: cardId))
-    }
-
-    private func channelOnlineByHandle(_ ch: Channel) -> [String: Bool] {
-        let live = store.state.tmuxSessions
-        var out: [String: Bool] = [:]
-        for m in ch.members {
-            if let cardId = m.cardId, let link = store.state.links[cardId],
-               let sess = link.tmuxLink?.sessionName {
-                out[m.handle] = live.contains(sess)
-            } else {
-                // User / cardless: always "online" (the human is the app)
-                out[m.handle] = m.cardId == nil
-            }
-        }
-        return out
-    }
-
     @MainActor
     private func registerMemoryDiagnosticsProviders() {
         MemoryDiagnostics.shared.registerMainActorMetricProvider(name: "app-state") {
             let state = store.state
-            let channelMessageCounts = state.channelMessages.mapValues(\.count)
-            let totalChannelMessages = channelMessageCounts.values.reduce(0, +)
-            let largestChannel = channelMessageCounts.max { $0.value < $1.value }
-            let dmMessageCounts = state.dmMessages.mapValues(\.count)
-            let totalDMMessages = dmMessageCounts.values.reduce(0, +)
-            let largestDM = dmMessageCounts.max { $0.value < $1.value }
             let queuedPrompts = state.links.values.reduce(0) { $0 + ($1.queuedPrompts?.count ?? 0) }
             let browserTabLinks = state.links.values.reduce(0) { $0 + ($1.browserTabs?.count ?? 0) }
             let prLinks = state.links.values.reduce(0) { $0 + $1.prLinks.count }
-            let channelDraftChars = state.channelDrafts.values.reduce(0) { $0 + $1.count }
-            let dmDraftChars = state.dmDrafts.values.reduce(0) { $0 + $1.count }
             return [
                 "links=\(state.links.count)",
                 "cards=\(state.cards.count)",
                 "filtered=\(state.filteredCards.count)",
                 "sessions=\(state.sessions.count)",
                 "activity=\(state.activityMap.count)",
-                "channels=\(state.channels.count)",
-                "loadedChannels=\(state.channelMessages.count)",
-                "channelMessages=\(totalChannelMessages)",
-                "largestChannel=\(largestChannel.map { "#\($0.key):\($0.value)" } ?? "none")",
-                "loadedDMs=\(state.dmMessages.count)",
-                "dmMessages=\(totalDMMessages)",
-                "largestDM=\(largestDM.map { "\($0.key):\($0.value)" } ?? "none")",
-                "channelDrafts=\(state.channelDrafts.count)/\(channelDraftChars)chars",
-                "dmDrafts=\(state.dmDrafts.count)/\(dmDraftChars)chars",
                 "queuedPrompts=\(queuedPrompts)",
                 "browserTabLinks=\(browserTabLinks)",
                 "prLinks=\(prLinks)",
@@ -3376,27 +2889,9 @@ struct ContentView: View {
         MemoryDiagnostics.shared.registerMainActorMetricProvider(name: "ui-caches") {
             [
                 TerminalCache.shared.diagnosticSummary(),
-                BrowserTabCache.shared.diagnosticSummary(),
-                self.draftImageDiagnosticSummary()
+                BrowserTabCache.shared.diagnosticSummary()
             ].joined(separator: " ")
         }
-    }
-
-    @MainActor
-    private func draftImageDiagnosticSummary() -> String {
-        let channelImageCount = channelDraftImages.values.reduce(0) { $0 + $1.count }
-        let channelImageBytes = channelDraftImages.values.flatMap { $0 }.reduce(0) { $0 + $1.count }
-        let dmImageCount = dmDraftImages.values.reduce(0) { $0 + $1.count }
-        let dmImageBytes = dmDraftImages.values.flatMap { $0 }.reduce(0) { $0 + $1.count }
-        return "draftImages channels=\(channelDraftImages.count)/\(channelImageCount)/\(Self.formatBytes(channelImageBytes)) dms=\(dmDraftImages.count)/\(dmImageCount)/\(Self.formatBytes(dmImageBytes))"
-    }
-
-    nonisolated private static func formatBytes(_ bytes: Int) -> String {
-        let mib = Double(bytes) / 1024 / 1024
-        if mib >= 1024 {
-            return String(format: "%.2fGiB", mib / 1024)
-        }
-        return String(format: "%.1fMiB", mib)
     }
 
     // Launch, resume, fork, migration, worktree cleanup, and sync status

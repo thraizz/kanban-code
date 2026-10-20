@@ -184,14 +184,12 @@ Text the harness writes (task notifications, messages between Claude sessions, c
 
 | Marker | Sent by |
 |--------|---------|
-| `[DM from @x]:` | `kanban dm` |
-| `[Message from #c @x]:` | a channel message |
+| `[DM from @x]:` | `kanban parent dm` or `kanban subagent dm` |
 | `[Message from @x]:` | `kanban send` or `kanban subagent send` run inside card `@x` (on this master or forwarded to another) |
 | `[Message from NAME (remote agent)]:` | `POST /v1/cards/{id}/prompt` with an agent-scope device token |
 | `[Self-compact follow-up from this card]:` | the follow-up of `kanban self-compact` |
 | `You are running as subagent card` | the goal a parent agent gives its subagent |
-| `From NAME (Slack):` | the Slack bridge |
-| the public share link warning | a message through a shared channel link |
+| `[Message from #c @x]:`, `From NAME (Slack):`, the public share link warning | removed features (chat channels, the Slack bridge, channel share links); still recognized so older messages in a resumed session are not taken for Rogerio's |
 
 Assistant commands (text starting with `/`) are never marked. Prompts Rogerio sends from the app (chat box, queued prompts, the phone with a full-scope token) and `kanban send` from a shell outside any card stay unmarked. When the transcript is not on the master, Jev judges without prompts.
 
@@ -389,7 +387,7 @@ Plaintext that stays, and why:
 
 ## Pasted secrets
 
-The card chat composer, the queued prompt editor, channel composers and the iPhone composer check a prompt before sending it (`SecretDetector` in KanbanCodeRemoteKit, a port of LangWatch's redaction rules). When it holds a credential they offer to save it: one editable name per secret, taken from `NAME=value` / `NAME: value` / `"NAME": "value"` or the vendor (`OPENAI_API_KEY`, `GITHUB_TOKEN`...), with `_2`, `_3` when the vault already has that name. Yes adds each as a judged secret and sends the prompt with `{{vault:NAME}}` in its place plus a line telling the agent to use `kv run NAME -- <cmd>`; No sends it unchanged. On the Mac, Return or y is Yes, Esc or n is No. Placeholders (`sk-xxxx...`, `<your-key>`, AWS's `...EXAMPLE`) never ask.
+The card chat composer, the queued prompt editor and the iPhone composer check a prompt before sending it (`SecretDetector` in KanbanCodeRemoteKit, a port of LangWatch's redaction rules). When it holds a credential they offer to save it: one editable name per secret, taken from `NAME=value` / `NAME: value` / `"NAME": "value"` or the vendor (`OPENAI_API_KEY`, `GITHUB_TOKEN`...), with `_2`, `_3` when the vault already has that name. Yes adds each as a judged secret and sends the prompt with `{{vault:NAME}}` in its place plus a line telling the agent to use `kv run NAME -- <cmd>`; No sends it unchanged. On the Mac, Return or y is Yes, Esc or n is No. Placeholders (`sk-xxxx...`, `<your-key>`, AWS's `...EXAMPLE`) never ask.
 
 The name offered is always free, so saving it as offered asks no further question. A name you type is looked up first (`POST /v1/vault/compare`, which answers `absent`, `same` or `different` and writes no secret; a sealed value always reads as `different`):
 

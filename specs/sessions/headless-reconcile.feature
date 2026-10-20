@@ -125,9 +125,3 @@ Feature: Headless agent session reconciliation (CLI)
     When its host is changed back to tmux and the reconciler runs
     Then the rush host is stopped and the card names the tmux session again
 
-  Scenario: The Slack bridge reaches an agent through its card
-    Given an agent whose card names a rush host
-    When a person writes in the agent's channel
-    Then the message is sent to the rush host, not to a tmux session named after the slug
-    And when the host is blocked on a question, the message answers it with "rush session answer"
-    And the question itself is posted to the channel as text, since rush does not report its options

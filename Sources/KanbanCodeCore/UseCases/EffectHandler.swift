@@ -7,23 +7,13 @@ import UserNotifications
 /// Executes side effects produced by the Reducer.
 /// All async operations (disk, network, tmux) go through here.
 public actor EffectHandler {
-    private static let channelMessageTailLimit = 200
-
     private let coordinationStore: CoordinationStore
     private let tmuxAdapter: TmuxManagerPort?
     private let setClipboardImage: (@Sendable (Data) -> Void)?
-    private let channelsStore: ChannelsStore
     private let notifier: NotifierPort?
     private let queuedPromptJournal: QueuedPromptJournal
     private let humanMessageLog: HumanMessageLog
     private let remoteMachines: (any RemoteMachineControl)?
-    /// The channels home when it is another master: channel writes go there.
-    private var channelsHome: (@Sendable () async -> ChannelsHomeRoute?)?
-
-    public func setChannelsHome(_ route: (@Sendable () async -> ChannelsHomeRoute?)?) {
-        channelsHome = route
-    }
-
     /// Delivers attention requests to the Mac and the phone.
     private var attentionDelivery: (any AttentionDelivering)?
 
@@ -51,24 +41,6 @@ public actor EffectHandler {
             : .terminalFailed(cardId: cardId, error: error.localizedDescription)
     }
 
-    // MARK: - Chat notification burst throttler
-    //
-    // When N messages arrive in the same channel / DM within a short window,
-    // collapse them into one summary notification instead of spamming the
-    // system banner N times. First message fires immediately; subsequent
-    // arrivals within the window are buffered and flushed as a single
-    // "@sender sent K messages in #channel" banner when the window closes.
-    private struct Burst {
-        var windowEnd: Date
-        var extraCount: Int
-        var lastSender: String
-        var lastBody: String
-        var userInfo: [String: String]
-        var title: String // pre-computed for summary
-    }
-    private var bursts: [String: Burst] = [:]
-    private let burstWindow: TimeInterval = 2.0
-
     /// Writes a card title from a prompt.
     private let titleGenerator: @Sendable (String) async throws -> String
 
@@ -76,7 +48,6 @@ public actor EffectHandler {
         coordinationStore: CoordinationStore,
         tmuxAdapter: TmuxManagerPort? = nil,
         setClipboardImage: (@Sendable (Data) -> Void)? = nil,
-        channelsStore: ChannelsStore? = nil,
         notifier: NotifierPort? = nil,
         queuedPromptJournal: QueuedPromptJournal? = nil,
         remoteMachines: (any RemoteMachineControl)? = nil,
@@ -87,7 +58,6 @@ public actor EffectHandler {
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
         self.setClipboardImage = setClipboardImage
-        self.channelsStore = channelsStore ?? ChannelsStore()
         self.notifier = notifier
         self.queuedPromptJournal = queuedPromptJournal ?? QueuedPromptJournal()
         self.humanMessageLog = humanMessageLog ?? HumanMessageLog()
@@ -95,10 +65,6 @@ public actor EffectHandler {
     }
 
     public func execute(_ effect: Effect, dispatch: @MainActor @Sendable (Action) -> Void) async {
-        if let argvAndImages = Self.channelsHomeCommand(for: effect), let route = await channelsHome?() {
-            await runOnChannelsHome(argvAndImages, effect: effect, route: route, dispatch: dispatch)
-            return
-        }
         switch effect {
         case .persistLinks(let links):
             do {
@@ -322,341 +288,7 @@ public actor EffectHandler {
 
         case .withdrawAttention(let request):
             await attentionDelivery?.withdraw(request)
-
-        case .loadChannels:
-            let channels = await channelsStore.loadChannels()
-            await dispatch(.channelsLoaded(channels: channels))
-
-        case .loadChannelMessages(let name):
-            let msgs = await channelsStore.loadMessages(channel: name, limit: Self.channelMessageTailLimit)
-            await dispatch(.channelMessagesLoaded(channelName: name, messages: msgs))
-
-        case .createChannelOnDisk(let name, let by):
-            do {
-                _ = try await channelsStore.createChannel(name: name, by: by)
-            } catch {
-                KanbanCodeLog.warn("effect", "createChannelOnDisk failed: \(error)")
-                await dispatch(.setError("Failed to create channel: \(error.localizedDescription)"))
-            }
-
-        case .persistChannels(let channels):
-            do {
-                try await channelsStore.saveChannels(channels)
-            } catch {
-                KanbanCodeLog.warn("effect", "persistChannels failed: \(error)")
-            }
-
-        case .deleteChannelOnDisk(let name):
-            do {
-                try await channelsStore.deleteChannel(name: name)
-            } catch {
-                KanbanCodeLog.warn("effect", "deleteChannelOnDisk failed: \(error)")
-            }
-
-        case .renameChannelOnDisk(let old, let new):
-            do {
-                try await channelsStore.renameChannel(old: old, new: new)
-            } catch {
-                KanbanCodeLog.warn("effect", "renameChannelOnDisk failed: \(error)")
-                await dispatch(.setError("Rename failed: \(error.localizedDescription)"))
-            }
-
-        case .leaveChannelOnDisk(let name, let member):
-            do {
-                _ = try await channelsStore.leave(channel: name, member: member)
-            } catch {
-                KanbanCodeLog.warn("effect", "leaveChannelOnDisk failed: \(error)")
-                await dispatch(.setError("Couldn't remove @\(member.handle) from #\(name): \(error.localizedDescription)"))
-            }
-
-        case .sendChannelMessageToDisk(let channelName, let from, let body, let imagePaths, let memberTargets):
-            do {
-                let msg = try await channelsStore.send(
-                    channel: channelName,
-                    from: from,
-                    body: body,
-                    imagePaths: imagePaths
-                )
-                await dispatch(.channelMessageAppended(channelName: channelName, message: msg))
-                let persistedImages = msg.imagePaths ?? []
-                let bodyText = "[Message from #\(channelName) @\(from.handle)]: \(body)"
-                for target in memberTargets {
-                    await fanOutOneMessage(target: target, body: bodyText, imagePaths: persistedImages, dispatch: dispatch)
-                }
-            } catch {
-                KanbanCodeLog.warn("effect", "sendChannelMessageToDisk failed: \(error)")
-                await dispatch(.setError("Failed to send: \(error.localizedDescription)"))
-            }
-
-        case .loadChannelReadState:
-            let state = await channelsStore.loadReadState()
-            await dispatch(.channelReadStateLoaded(channels: state.channels, dms: state.dms))
-
-        case .persistChannelReadState(let channels, let dms):
-            do {
-                try await channelsStore.saveReadState(
-                    ChannelsStore.ReadState(channels: channels, dms: dms)
-                )
-            } catch {
-                KanbanCodeLog.warn("effect", "persistChannelReadState failed: \(error)")
-            }
-
-        case .loadDrafts:
-            let drafts = await channelsStore.loadDrafts()
-            await dispatch(.draftsLoaded(channels: drafts.channels, dms: drafts.dms))
-
-        case .persistDrafts(let channels, let dms):
-            do {
-                try await channelsStore.saveDrafts(
-                    ChannelsStore.DraftsState(channels: channels, dms: dms)
-                )
-            } catch {
-                KanbanCodeLog.warn("effect", "persistDrafts failed: \(error)")
-            }
-
-        case .loadDMMessages(let self_, let other):
-            let msgs = await channelsStore.loadDMMessages(between: self_, and: other, limit: Self.channelMessageTailLimit)
-            await dispatch(.dmMessagesLoaded(other: other, messages: msgs))
-
-        case .notifyDMReceived(let fromHandle, let body):
-            await notifyThrottled(
-                key: "dm:\(fromHandle)",
-                title: "DM from @\(fromHandle)",
-                sender: fromHandle,
-                body: body,
-                userInfo: ["chatKind": "dm", "dmHandle": fromHandle]
-            )
-
-        case .notifyChannelMessage(let channel, let fromHandle, let body):
-            await notifyThrottled(
-                key: "channel:\(channel)",
-                title: "#\(channel) · @\(fromHandle)",
-                sender: fromHandle,
-                body: body,
-                userInfo: ["chatKind": "channel", "channelName": channel]
-            )
-
-        case .sendDMToDisk(let from, let to, let body, let imagePaths, let toTarget):
-            do {
-                let msg = try await channelsStore.sendDirectMessage(
-                    from: from,
-                    to: to,
-                    body: body,
-                    imagePaths: imagePaths
-                )
-                await dispatch(.dmMessageAppended(other: to, message: msg))
-                if let target = toTarget {
-                    let persistedImages = msg.imagePaths ?? []
-                    let bodyText = "[DM from @\(from.handle)]: \(body)"
-                    await fanOutOneMessage(target: target, body: bodyText, imagePaths: persistedImages, dispatch: dispatch)
-                }
-            } catch {
-                KanbanCodeLog.warn("effect", "sendDMToDisk failed: \(error)")
-                await dispatch(.setError("Failed to DM: \(error.localizedDescription)"))
-            }
         }
-    }
-
-    // MARK: - Channels on another master
-
-    /// The `kanban` command that makes a channel write on the channels home,
-    /// with the images it attaches; nil for effects that are not channel
-    /// writes. Channel order is this master's own (it is not sent).
-    static func channelsHomeCommand(for effect: Effect) -> (argv: [String], images: [String], human: String?)? {
-        func speaker(_ p: ChannelParticipant) -> (args: [String], human: String?) {
-            if let cardId = p.cardId { return (["--as", p.handle, "--as-card-id", cardId], nil) }
-            return (["--as-user"], p.handle)
-        }
-        func imageArgs(_ paths: [String]) -> [String] {
-            paths.flatMap { ["--image", "/images/proxy/\(($0 as NSString).lastPathComponent)"] }
-        }
-        switch effect {
-        case .createChannelOnDisk(let name, let by):
-            let who = speaker(by)
-            return (["channel", "create", name] + who.args, [], who.human)
-        case .deleteChannelOnDisk(let name):
-            return (["channel", "delete", name], [], nil)
-        case .renameChannelOnDisk(let old, let new):
-            return (["channel", "rename", old, new], [], nil)
-        case .leaveChannelOnDisk(let name, let member):
-            let who = speaker(member)
-            return (["channel", "leave", name] + who.args, [], who.human)
-        case .sendChannelMessageToDisk(let channelName, let from, let body, let imagePaths, _):
-            let who = speaker(from)
-            return (["channel", "send", channelName] + who.args + imageArgs(imagePaths) + ["--", body], imagePaths, who.human)
-        case .sendDMToDisk(let from, let to, let body, let imagePaths, _):
-            let who = speaker(from)
-            let target = to.cardId.map { ["--to-card-id", $0] } ?? []
-            return (["dm", "send", to.handle] + target + who.args + imageArgs(imagePaths) + ["--", body], imagePaths, who.human)
-        case .persistChannels:
-            return ([], [], nil)
-        default:
-            return nil
-        }
-    }
-
-    private func runOnChannelsHome(
-        _ command: (argv: [String], images: [String], human: String?),
-        effect: Effect,
-        route: ChannelsHomeRoute,
-        dispatch: @MainActor @Sendable (Action) -> Void
-    ) async {
-        guard !command.argv.isEmpty else { return }
-        let id = UUID().uuidString.lowercased()
-        let images = command.images.compactMap { path -> RemoteCLIRequest.Image? in
-            guard let data = FileManager.default.contents(atPath: path) else { return nil }
-            return RemoteCLIRequest.Image(name: (path as NSString).lastPathComponent, base64: data.base64EncodedString())
-        }
-        let argv = command.argv.map { $0.hasPrefix("/images/proxy/") ? "~/.kanban-code/images/proxy/\(id)/" + ($0 as NSString).lastPathComponent : $0 }
-        var env: [String: String] = [:]
-        if let human = command.human { env["KANBAN_HUMAN_HANDLE"] = human }
-        let request = RemoteCLIRequest(id: id, argv: argv, env: env, images: images.isEmpty ? nil : images)
-        do {
-            let result = try await route.client.runCLI(request)
-            if result.code != 0 {
-                let reason = result.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
-                await dispatch(.setError("\(route.name): \(reason.isEmpty ? "kanban \(command.argv.prefix(2).joined(separator: " ")) failed" : reason)"))
-            }
-        } catch {
-            await dispatch(.setError("Channels live on \(route.name), which did not answer: \(error.localizedDescription)"))
-        }
-        route.poke()
-        await dispatch(.refreshChannels)
-        switch effect {
-        case .sendChannelMessageToDisk(let channelName, _, _, _, _):
-            await dispatch(.refreshChannelMessages(channelName: channelName))
-        default:
-            break
-        }
-    }
-
-    /// Fan out a single chat message to one target tmux session. When images
-    /// are attached AND the assistant supports image upload, stage the body
-    /// text first, paste images at `[Image #N]` marker positions, then submit
-    /// once. Assistants that don't support image upload receive markdown image
-    /// refs at those same marker positions.
-    private func fanOutOneMessage(target: ChannelMemberTarget, body: String, imagePaths: [String],
-                                  dispatch: @MainActor @Sendable (Action) -> Void) async {
-        let canSendImages = target.assistant.supportsImageUpload && !imagePaths.isEmpty
-        let bodyWithMarkdownImages = PromptImageLayout.replacingMarkersWithMarkdown(in: body, imagePaths: imagePaths)
-        if let cardId = target.foreignCardId {
-            // The owner master queues it (sent at once when the card is idle).
-            await dispatch(.addQueuedPrompt(cardId: cardId, prompt: QueuedPrompt(body: bodyWithMarkdownImages, sendAutomatically: true), placement: .back))
-            return
-        }
-        do {
-            if canSendImages, let tmux = tmuxAdapter,
-               let remotePaths = try await remoteMachines?.uploadImages(sessionName: target.sessionName, imagePaths: imagePaths) {
-                // The images go over the bridge; the prompt points at them by path.
-                let remoteBody = PromptImageLayout.replacingMarkersWithMarkdown(in: body, imagePaths: remotePaths)
-                try await tmux.pastePrompt(to: target.sessionName, text: remoteBody)
-            } else if canSendImages, let tmux = tmuxAdapter, let setClipboard = setClipboardImage {
-                let images = imagePaths.compactMap { ImageAttachment.fromPath($0) }
-                if !images.isEmpty {
-                    let sender = ImageSender(tmux: tmux)
-                    try await sender.waitForReady(sessionName: target.sessionName, assistant: target.assistant)
-                    try await sender.sendPromptWithImages(
-                        sessionName: target.sessionName,
-                        prompt: body,
-                        images: images,
-                        assistant: target.assistant,
-                        setClipboard: setClipboard
-                    )
-                } else {
-                    try await tmux.pastePrompt(to: target.sessionName, text: bodyWithMarkdownImages)
-                }
-            } else {
-                try await tmuxAdapter?.pastePrompt(to: target.sessionName, text: bodyWithMarkdownImages)
-            }
-        } catch {
-            KanbanCodeLog.warn("effect", "fanout to \(target.sessionName) failed: \(error)")
-        }
-    }
-
-    /// Per-key burst-throttler for chat notifications. First message fires
-    /// immediately; subsequent ones within `burstWindow` are buffered and
-    /// flushed as one summary notification.
-    private func notifyThrottled(
-        key: String,
-        title: String,
-        sender: String,
-        body: String,
-        userInfo: [String: String]
-    ) async {
-        let now = Date()
-        if let existing = bursts[key], existing.windowEnd > now {
-            // Inside an active window: buffer, don't fire. A scheduled flush
-            // already exists — it'll pick up the new count.
-            var updated = existing
-            updated.extraCount += 1
-            updated.lastSender = sender
-            updated.lastBody = body
-            bursts[key] = updated
-            return
-        }
-
-        // Fire the immediate banner for the first message of a new window.
-        await Self.postChatNotification(title: title, body: body, userInfo: userInfo)
-        bursts[key] = Burst(
-            windowEnd: now.addingTimeInterval(burstWindow),
-            extraCount: 0,
-            lastSender: sender,
-            lastBody: body,
-            userInfo: userInfo,
-            title: title
-        )
-        // Schedule a flush shortly after window-end; if nothing accumulated
-        // in the meantime, it's a no-op that just clears the entry.
-        let windowDuration = burstWindow
-        Task.detached { [weak self] in
-            try? await Task.sleep(for: .seconds(windowDuration + 0.05))
-            await self?.flushBurst(key: key)
-        }
-    }
-
-    private func flushBurst(key: String) {
-        guard let b = bursts.removeValue(forKey: key) else { return }
-        guard b.extraCount > 0 else { return }
-        let total = b.extraCount + 1
-        let summaryBody = "\(total) new messages — latest from @\(b.lastSender): \(b.lastBody)"
-        Task.detached { [title = b.title, userInfo = b.userInfo, summaryBody] in
-            await Self.postChatNotification(title: title, body: summaryBody, userInfo: userInfo)
-        }
-    }
-
-    /// Post a native macOS notification carrying enough routing info for the
-    /// delegate to open the right drawer when the user taps it.
-    ///
-    /// The identifier is derived per-channel/dm so the summary banner emitted
-    /// by `flushBurst` REPLACES the immediate banner in Notification Center
-    /// rather than stacking — which would otherwise look like a duplicate.
-    nonisolated static func postChatNotification(
-        title: String,
-        body: String,
-        userInfo: [String: String]
-    ) async {
-        #if canImport(UserNotifications)
-        let center = UNUserNotificationCenter.current()
-        let settings = await center.notificationSettings()
-        guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
-            KanbanCodeLog.info("notify", "chat notification skipped: authorization=\(settings.authorizationStatus.rawValue)")
-            return
-        }
-        let content = UNMutableNotificationContent()
-        content.title = title
-        content.body = body
-        content.sound = .default
-        content.userInfo = userInfo
-        // Use a key stable for the same chat target so the system dedups the
-        // immediate + summary banners within a burst window.
-        let kind = userInfo["chatKind"] ?? "chat"
-        let key = userInfo["channelName"] ?? userInfo["dmHandle"] ?? "unknown"
-        let identifier = "kanban-chat-\(kind)-\(key)"
-        let req = UNNotificationRequest(identifier: identifier, content: content, trigger: nil)
-        do { try await center.add(req) } catch {
-            KanbanCodeLog.info("notify", "chat notification failed: \(error)")
-        }
-        #endif
     }
 }
 

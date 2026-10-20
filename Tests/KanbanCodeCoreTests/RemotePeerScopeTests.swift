@@ -7,14 +7,12 @@ import Testing
 @Suite("Peer and terminal scopes")
 struct RemotePeerScopeTests {
     /// Every call a master makes on its peer: PeerSync, AgentSync, the
-    /// vault replica and token check, attention mirroring, channels, the
+    /// vault replica and token check, attention mirroring, the
     /// scrubber, and what MasterEngine forwards for a card the peer owns.
     static let peerCalls: [(String, [String])] = [
         ("GET", ["me"]), ("GET", ["board"]), ("GET", ["machines"]), ("GET", ["events"]),
         ("GET", ["links"]), ("POST", ["links", "changed"]), ("GET", ["peers"]),
         ("GET", ["sync", "state"]), ("GET", ["sync", "file"]), ("POST", ["sync", "changed"]), ("POST", ["optmem", "run"]),
-        ("POST", ["cli"]), ("GET", ["channels", "files"]), ("GET", ["channels", "files", "general", "log.jsonl"]),
-        ("PUT", ["channels", "files", "general", "log.jsonl"]),
         ("GET", ["attention"]), ("POST", ["attention", "presence"]), ("POST", ["attention", "att_1", "resolve"]),
         ("GET", ["vault", "replica"]), ("POST", ["vault", "replica"]), ("POST", ["vault", "card-token"]),
         ("GET", ["vault", "audit", "hashes"]), ("GET", ["vault", "audit", "mirror"]), ("POST", ["vault", "audit", "mirror"]),

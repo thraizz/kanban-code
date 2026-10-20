@@ -1,32 +1,13 @@
 use std::path::{Path, PathBuf};
 
-use crate::coordination_store::kanban_data_dir;
-
-/// One-shot, idempotent bootstrap for the chat channels feature:
-///   1. Ensures `<kanban_data_dir>/channels/` (+ `dm/`, `images/`) exists.
-///   2. Ensures `%USERPROFILE%\.claude\skills\kanban-code` points to the repo's
-///      kanban-code skill via a directory junction, so freshly-launched Claude
-///      sessions pick it up.
+/// One-shot, idempotent bootstrap: ensures `%USERPROFILE%\.claude\skills\kanban-code`
+/// points to the repo's kanban-code skill via a directory junction, so
+/// freshly-launched Claude sessions pick it up.
 ///
 /// Called on app launch. Failures are logged via the structured logger, not
-/// fatal — channel UI still works without the skill link; agents just don't
-/// auto-load the skill.
+/// fatal — agents just don't auto-load the skill.
 pub fn run() {
-    ensure_channels_dir();
     ensure_skill_link();
-}
-
-fn ensure_channels_dir() {
-    let base = kanban_data_dir().join("channels");
-    if let Err(e) = std::fs::create_dir_all(&base) {
-        crate::logging::warn(
-            "bootstrap",
-            &format!("ensureChannelsDir failed for {}: {e}", base.display()),
-        );
-        return;
-    }
-    let _ = std::fs::create_dir_all(base.join("dm"));
-    let _ = std::fs::create_dir_all(base.join("images"));
 }
 
 fn ensure_skill_link() {

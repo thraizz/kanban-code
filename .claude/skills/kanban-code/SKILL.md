@@ -1,6 +1,6 @@
 ---
 name: kanban-code
-description: Inspect cards, delegate work to subagents, orchestrate Claude sessions, and chat with other agents over Kanban Code's channels. Use whenever the user mentions Kanban Code, asks you to spawn or fork a subagent, asks you to coordinate with another running Claude, or is working inside a card's tmux session and wants to use the `kanban` CLI. Covers subagents, channels (Slack-like rooms), DMs, handles, and history.
+description: Inspect cards, delegate work to subagents, orchestrate Claude sessions, and message other agents' cards. Use whenever the user mentions Kanban Code, asks you to spawn or fork a subagent, asks you to coordinate with another running Claude, or is working inside a card's tmux session and wants to use the `kanban` CLI. Covers subagents, parent/child messages, handles, and steering other cards.
 ---
 
 # Kanban Code — Agent Skill
@@ -19,14 +19,6 @@ kanban subagent list                 # your children, with context usage + pane 
 kanban subagent model <card> opus    # switch an owned child to another model
 kanban parent dm "progress update"   # report to the card that owns you
 kanban send <card> "msg" --mode ...  # steer (default) | queue | interrupt
-kanban channel list                  # all channels + online count + last message
-kanban channel create <name>         # create channel (auto-joins you)
-kanban channel join <name>           # join channel (prints last 10 msgs as catch-up)
-kanban channel members <name>        # who's in a channel + online/offline
-kanban channel send <name> "message" # broadcast (goes to everyone but you)
-kanban channel history <name> -n 50  # last 50 messages
-kanban dm <handle> "message"         # direct message another agent
-kanban dm history <handle>           # DM history with that handle
 ```
 
 All commands accept `-j/--json` for machine-readable output.
@@ -35,8 +27,7 @@ All commands accept `-j/--json` for machine-readable output.
 
 - You are auto-identified from your tmux session — the CLI looks up the card you're in and derives a handle from the card's display name (e.g. `Alice card` → `@alice_card`, truncated to 24 chars). Dashes you typed survive, so `alice-card` stays `@alice-card`.
 - Handles disambiguate on collision (`@alice_card_2`, `@alice_card_3`…).
-- You don't pick or register your handle — it's derived at send time.
-- To see your handle: `kanban channel join <name> --json | jq '.channel.members'` after joining, or just send a message and look at the prefix.
+- You don't register your handle — it's derived at send time (a subagent's handle is the `--handle` its parent gave it).
 
 ## Subagents
 
@@ -81,74 +72,19 @@ As a child, report with `kanban parent dm "<message>"`. Use
 `kanban parent dm-and-self-archive "<result>"` **only when the goal is fully reached** — it
 archives you. If the parent wants you to stay available for follow-ups, keep using plain `dm`.
 
+These messages are pasted straight into the other card's tmux session; there is no DM history,
+so the receiving agent's transcript is the only record. A card without a live session misses them.
+
 Delivered DMs state the relationship, so `[DM from @coordinator (parent agent)]` is your
 owner talking, and `[DM from @parser-bug (subagent)]` is one of your children reporting.
 
-## Chat etiquette
-
-1. **Join before you send** — `kanban channel join <name>` registers you as a member. Until you join, `send` will auto-join you, but peers won't see you in `channel members`.
-2. **Read history on arrival** — `kanban channel history <name> -n 30` gives you context on what happened before you showed up. Broadcasts are **not replayed** to you after you join; only `history` shows past messages.
-3. **Prefix convention is automatic** — when you send `hello team`, peers receive `[Message from #general @your_handle]: hello team`. You don't add the prefix yourself.
-4. **Poll for new messages** — you will receive broadcasts pasted directly into your pane as `[Message from #… @…]: …`. Treat them like push notifications; reply via `kanban channel send` if relevant.
-5. **DMs are private** — use `kanban dm <handle> "..."` when you want to talk to one agent without spamming the room.
-6. **Echo skip** — you will never receive your own broadcasts. Don't infer message receipt from your own pane.
-
-## Coordinating work across cards
-
-When multiple Claudes are working on the same project:
-
-1. **Create a coordination channel**: `kanban channel create standup` (or whatever the team name is). Then tell each agent to join.
-2. **Announce what you're taking**: `kanban channel send standup "I'm taking cli/src/kanban.ts, leave it to me"`.
-3. **Post progress/blockers**: `kanban channel send standup "stuck on XYZ, can anyone review?"`.
-4. **Check who's online**: `kanban channel members standup` — `●` = online (live tmux), `○` = offline.
-
-## Gotchas
-
-- **No scrollback replay** — if you were offline when a broadcast happened, you won't receive it live. Use `kanban channel history` to catch up.
-- **Tmux paste lands at your prompt** — messages arrive formatted and prefixed, but in a raw shell they'd trip up zsh. Inside Claude Code, they're handled cleanly.
-- **Card must have a tmux session** — agents without a running Claude session won't receive broadcasts (but stay in membership).
-- **Channel names** must match `^[a-z0-9][a-z0-9_-]{0,63}$`. Stripped of leading `#` on input.
-
-## Storage (for debugging)
-
-```
-~/.kanban-code/channels/
-  channels.json           # metadata + membership
-  <name>.jsonl            # append-only message log (one JSON per line)
-  dm/<cardA>__<cardB>.jsonl  # DM logs (cardIds alphabetically sorted)
-```
-
-You can `tail -f ~/.kanban-code/channels/general.jsonl` to watch a channel live from a shell.
-
-## Common flows
-
-**Joining a new team channel:**
-```
-kanban channel join ops
-# Prints last 10 messages for catch-up.
-kanban channel members ops
-# See who's there.
-kanban channel send ops "just joined — what's the state of the rollout?"
-```
-
-**Asking a specific agent:**
-```
-kanban channel members ops           # see handles
-kanban dm wrapped_whenever "quick q — are you touching the migration file too?"
-```
-
-**Broadcasting a decision / state:**
-```
-kanban channel send standup "PR #42 merged. unblocks anyone waiting on the auth work."
-```
-
 ## Related CLI features
 
-- `kanban sessions` — all live tmux sessions with card associations. Useful for sanity-checking who's online before broadcasting.
+- `kanban sessions` — all live tmux sessions with card associations. Useful for sanity-checking who's online before messaging a card.
 - `kanban capture <card>` — peek at another card's tmux pane (without disturbing it).
 - `kanban transcript <card> -n 5` — see last N turns of that card's Claude conversation.
 - `kanban export [card] [--out file.md]`: the whole session as Markdown, the same text the app's "Copy conversation as Markdown" gives (user and assistant messages). No card means your own; also takes a `@handle` or a Claude session id. Prints to stdout unless `--out`.
-- `kanban send <card> "msg"` — send a prompt directly to a card's tmux session (bypasses channels; agent won't see it as a channel message). Prefer `kanban dm` instead for 1:1.
+- `kanban send <card> "msg"` — send a prompt directly to a card's tmux session Use it to talk to a card that is neither your parent nor your child.
   - `--mode steer` (default) pastes it now; the agent reads it between turns, so it lands mid-work but never cuts a turn short.
   - `--mode queue` (or `enqueue`) puts it in the card's prompt queue, sent once the agent goes idle. Use it when the message is "next up", not "right now".
   - `--mode interrupt` sends Escape first, so the agent stops what it is doing and reads the message immediately. Reserve it for genuine stop-work situations.
@@ -167,6 +103,4 @@ Secrets live in the Kanban Code vault; use `kv` instead of reading `.env` files 
 
 ## What NOT to do
 
-- Don't loop on polling `kanban channel history` — broadcasts are pushed to your pane automatically. Only poll history if you're debugging.
-- Don't create a new channel for every task — reuse existing ones. Use DMs for genuinely-1:1 conversations.
-- Don't spam — broadcasts paste into every member's pane, interrupting their current turn. Keep it relevant.
+- Don't spam — every message pastes into the other card's pane and lands in its current turn. Keep it relevant.

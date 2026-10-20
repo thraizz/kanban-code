@@ -129,8 +129,8 @@ public struct LastHumanMessage: Sendable, Equatable {
 ///
 /// The records of the harnesses decide: rush's own record for a rush
 /// session whose rush keeps one, together with Kanban's record, which also
-/// tells when a queued prompt was written. A user record with a delivery marker (`kanban send`, a DM,
-/// a channel, a remote agent, a self-compact follow-up), a task
+/// tells when a queued prompt was written. A user record with a delivery marker (`kanban send`, a
+/// parent/subagent DM, a remote agent, a self-compact follow-up), a task
 /// notification or a harness wrapper is never his. Where no record covers
 /// the session, the user records left after that are taken as typed.
 public enum HumanMessageFinder {

@@ -3,26 +3,23 @@ import SwiftUI
 /// Sidebar-only drag items. Keep these separate from kanban card drags so
 /// reordering a pin cannot accidentally move or merge its underlying card.
 enum SidebarReorderItem: Equatable {
-    case channel(String)
     case pinnedCard(String)
 
     var id: String {
         switch self {
-        case .channel(let id), .pinnedCard(let id): id
+        case .pinnedCard(let id): id
         }
     }
 
     var payload: String {
         switch self {
-        case .channel(let id): "sidebar-channel:\(id)"
         case .pinnedCard(let id): "sidebar-pinned-card:\(id)"
         }
     }
 
     func hasSameKind(as other: SidebarReorderItem) -> Bool {
         switch (self, other) {
-        case (.channel, .channel), (.pinnedCard, .pinnedCard): true
-        default: false
+        case (.pinnedCard, .pinnedCard): true
         }
     }
 }

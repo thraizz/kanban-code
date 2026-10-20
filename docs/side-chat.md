@@ -62,7 +62,7 @@ A request the phone makes to a card keeps a Mac awake for 10 minutes, so a run t
 
 ## Your last message
 
-A message is yours when you typed and sent it yourself: in the Kanban chat (Mac or phone), in the rush composer, or straight into the terminal of a tmux card. Messages from `kanban send`, DMs, channels, remote agents, prompts an agent queued, self-compact follow-ups and task notifications are not, even though the session stores them as user messages.
+A message is yours when you typed and sent it yourself: in the Kanban chat (Mac or phone), in the rush composer, or straight into the terminal of a tmux card. Messages from `kanban send`, parent/subagent DMs, remote agents, prompts an agent queued, self-compact follow-ups and task notifications are not, even though the session stores them as user messages.
 
 Kanban records what its chat sends in `~/.kanban-code/human-messages/<cardId>.jsonl`, one `{"at", "sessionId", "text"}` per line, at the time you wrote it. A prompt you queued is recorded when it joined the queue, so a catch-up also covers what happened while it waited. A card's first prompt is recorded when you start the card from the app.
 

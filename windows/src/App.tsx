@@ -1,8 +1,7 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import BoardView from "./components/BoardView";
 import ListBoardView from "./components/ListBoardView";
 import CardDetailView from "./components/CardDetailView";
-import Channels from "./components/Channels";
 import NewTaskDialog from "./components/NewTaskDialog";
 import OnboardingWizard from "./components/OnboardingWizard";
 import ProcessManagerView from "./components/ProcessManagerView";
@@ -10,7 +9,6 @@ import ProjectSwitcher from "./components/ProjectSwitcher";
 import SearchOverlay from "./components/SearchOverlay";
 import SettingsView from "./components/SettingsView";
 import { getSettings, initBoardEventListener, useBoardStore } from "./store/boardStore";
-import { useChannelsStore } from "./store/channelsStore";
 import { useTheme, t } from "./theme";
 import { installAppScaleShortcuts } from "./appScale";
 
@@ -23,7 +21,6 @@ export default function App() {
     selectedCardId,
     searchOpen,
     settingsOpen,
-    chatOpen,
     newTaskOpen,
     error,
     clearError,
@@ -32,34 +29,12 @@ export default function App() {
     setSearchOpen,
     setNewTaskOpen,
     setSettingsOpen,
-    setChatOpen,
     syncStatus,
     viewMode,
     setViewMode,
   } = useBoardStore();
 
   const [processManagerOpen, setProcessManagerOpen] = useState(false);
-
-  const channels = useChannelsStore((s) => s.channels);
-  const messagesByChannel = useChannelsStore((s) => s.messagesByChannel);
-  const readState = useChannelsStore((s) => s.readState);
-  const initChannels = useChannelsStore((s) => s.init);
-
-  const totalUnread = useMemo(() => {
-    let total = 0;
-    for (const ch of channels) {
-      const msgs = messagesByChannel[ch.name] ?? [];
-      if (msgs.length === 0) continue;
-      const lastReadId = readState.channels[ch.name];
-      if (!lastReadId) {
-        total += msgs.length;
-        continue;
-      }
-      const idx = msgs.findIndex((m) => m.id === lastReadId);
-      total += idx < 0 ? msgs.length : msgs.length - 1 - idx;
-    }
-    return total;
-  }, [channels, messagesByChannel, readState]);
 
   const [showOnboarding, setShowOnboarding] = useState<boolean | null>(null);
 
@@ -108,7 +83,6 @@ export default function App() {
   useEffect(() => {
     refresh();
     initBoardEventListener();
-    initChannels();
     const teardownScale = installAppScaleShortcuts();
     getSettings()
       .then((s) => setShowOnboarding(!s.hasCompletedOnboarding))
@@ -264,35 +238,6 @@ export default function App() {
           </button>
 
           <button
-            onClick={() => setChatOpen(!chatOpen)}
-            className="relative p-2 rounded-lg transition-colors"
-            style={{
-              color: chatOpen ? c.textPrimary : c.textMuted,
-              background: chatOpen ? c.hoverBg : "",
-            }}
-            onMouseEnter={(e) => { if (!chatOpen) e.currentTarget.style.background = c.hoverBg; }}
-            onMouseLeave={(e) => { if (!chatOpen) e.currentTarget.style.background = ""; }}
-            title="Channels"
-          >
-            <svg className="w-[18px] h-[18px]" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-              <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H8.25m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0H12m4.125 0a.375.375 0 1 1-.75 0 .375.375 0 0 1 .75 0Zm0 0h-.375m-13.5 3.01c0 1.6 1.123 2.994 2.707 3.227 1.087.16 2.185.283 3.293.369V21l4.184-4.183a1.14 1.14 0 0 1 .778-.332 48.294 48.294 0 0 0 5.83-.498c1.585-.233 2.708-1.626 2.708-3.228V6.741c0-1.602-1.123-2.995-2.707-3.228A48.394 48.394 0 0 0 12 3c-2.392 0-4.744.175-7.043.513C3.373 3.746 2.25 5.14 2.25 6.741v6.018Z" />
-            </svg>
-            {totalUnread > 0 && (
-              <span
-                className="absolute -top-0.5 -right-0.5 inline-flex items-center justify-center text-[10px] font-semibold rounded-full px-1"
-                style={{
-                  background: "#4f8ef7",
-                  color: "white",
-                  minWidth: 16,
-                  height: 16,
-                }}
-              >
-                {totalUnread > 99 ? "99+" : totalUnread}
-              </span>
-            )}
-          </button>
-
-          <button
             onClick={() => setSettingsOpen(!settingsOpen)}
             className="p-2 rounded-lg transition-colors"
             style={{
@@ -324,8 +269,6 @@ export default function App() {
       <div className="flex flex-1 overflow-hidden">
         {settingsOpen ? (
           <SettingsView />
-        ) : chatOpen ? (
-          <Channels />
         ) : (
           <>
             {viewMode === "list" ? <ListBoardView /> : <BoardView />}

@@ -1,7 +1,7 @@
 /**
  * rush routing: a card whose Claude session runs on a rush host is named
  * `rush-<id>` (`agtop-<id>` for hosts started before the rename). Every tmux
- * helper the CLI uses on it becomes a `rush session` command, so DMs, channels and self-compact reach it.
+ * helper the CLI uses on it becomes a `rush session` command, so messages and self-compact reach it.
  */
 
 import { strict as assert } from "node:assert";

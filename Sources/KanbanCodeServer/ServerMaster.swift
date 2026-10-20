@@ -68,7 +68,7 @@ final class ServerMaster {
         self.settingsStore = settingsStore
 
         var identity = MachineIdentityStore(basePath: home).loadOrCreate()
-        // A server runs all the time: it keeps the channels and polls GitHub.
+        // A server runs all the time: it polls GitHub.
         identity.alwaysOn = true
         self.identity = identity
 

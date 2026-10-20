@@ -26,29 +26,11 @@ struct PaletteRecentsTests {
         )
     }
 
-    private static func channel(_ name: String) -> Channel {
-        Channel(
-            id: "chan_\(name)",
-            name: name,
-            createdAt: epoch,
-            createdBy: ChannelParticipant(cardId: nil, handle: "someone")
-        )
-    }
-
     private static func merged(
         cards: [KanbanCodeCard],
-        channels: [Channel] = [],
-        opened: [String: Date] = [:],
-        activity: [String: Date] = [:],
         limit: Int = 24
     ) -> [String] {
-        SearchOverlay.mergedRecent(
-            cards: cards,
-            channels: channels,
-            channelLastOpened: opened,
-            channelLastActivity: activity,
-            limit: limit
-        ).map(\.id)
+        SearchOverlay.mergedRecent(cards: cards, limit: limit).map(\.id)
     }
 
     @Test("the most recently opened comes first")
@@ -74,28 +56,6 @@ struct PaletteRecentsTests {
         ])
 
         #expect(ids == ["only-updated", "active", "opened"])
-    }
-
-    @Test("channels and cards share one ordering")
-    func mergesChannelsWithCards() {
-        let ids = Self.merged(
-            cards: [Self.card("before", opened: 100), Self.card("after", opened: 300)],
-            channels: [Self.channel("general")],
-            opened: ["general": Self.epoch.addingTimeInterval(200)]
-        )
-
-        #expect(ids == ["after", "channel:general", "before"])
-    }
-
-    @Test("a channel nobody has opened sorts on its last message")
-    func channelFallsBackToActivity() {
-        let ids = Self.merged(
-            cards: [Self.card("card", opened: 100)],
-            channels: [Self.channel("general")],
-            activity: ["general": Self.epoch.addingTimeInterval(200)]
-        )
-
-        #expect(ids == ["channel:general", "card"])
     }
 
     /// The board this was written against holds a few thousand cards and shows

@@ -6,8 +6,7 @@ import { isValidSlug } from "./identity.js";
 import { Runtime, isRuntime } from "./runtime.js";
 
 /// One long-lived agent, defined declaratively. Used by the reconciler (slug,
-/// repos, model), the scheduler (schedule, dailyPrompt) and the Slack bridge
-/// (slackChannel). Prompts live here so the whole agent is one config object.
+/// repos, model) and the scheduler (schedule, dailyPrompt). Prompts live here so the whole agent is one config object.
 /// Where an agent's process runs: a tmux session named after the slug, or a
 /// rush host, which keeps several Claude accounts signed in and moves the
 /// session to another one when the current account runs low.
@@ -28,8 +27,6 @@ export interface AgentConfig {
   repos: string[];
   /// Model alias or full name (claude --model). Optional.
   model?: string;
-  /// Slack channel id or name this agent mirrors to / is steered from.
-  slackChannel?: string;
   /// Daily nudge schedule. "HH:MM" (box-local) or a systemd OnCalendar string.
   schedule?: string;
   /// System/init context, sent once when the session is first created.
@@ -97,7 +94,6 @@ export function parseAgentsConfig(text: string): AgentsFile {
       host,
       repos,
       model: a.model,
-      slackChannel: a.slackChannel,
       schedule: a.schedule,
       initPrompt: a.initPrompt,
       dailyPrompt: a.dailyPrompt,

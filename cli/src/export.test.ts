@@ -49,7 +49,7 @@ describe("resolveExportTarget", () => {
     }
   });
 
-  test("a @handle goes through the channel members", () => {
+  test("a @handle goes through the handle lookup", () => {
     const cardForHandle = (handle: string) => (handle === "judge" ? judge : undefined);
     assert.deepEqual(resolveExportTarget("@judge", { links, cardForHandle }), { kind: "card", card: judge });
     assert.throws(() => resolveExportTarget("@nobody", { links, cardForHandle }), /No card with handle/);

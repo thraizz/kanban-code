@@ -39,7 +39,7 @@ public struct MachineIdentity: Codable, Sendable, Equatable, Hashable {
     public var id: String
     public var name: String
     /// Set by a master that runs all the time (`kanban-code-server`). Such a
-    /// master is the channels home and polls pull requests while it is online.
+    /// master polls pull requests while it is online.
     public var alwaysOn: Bool?
 
     public init(id: String = KSUID.generate(prefix: "machine"), name: String, alwaysOn: Bool? = nil) {
@@ -65,16 +65,6 @@ public enum MasterRoles {
         }!.id
     }
 
-    /// The master that keeps channels and direct messages: an always-on
-    /// peer, online or not, when this master is not always-on itself; nil
-    /// when that is this master. Channel data lives in one place, so a home
-    /// that is offline makes channel writes fail rather than fork.
-    public static func channelsHome(local: MachineIdentity, peers: [PeerStatus]) -> PeerStatus? {
-        guard local.alwaysOn != true else { return nil }
-        return peers
-            .filter { $0.machine?.alwaysOn == true }
-            .min { ($0.machine?.id ?? "") < ($1.machine?.id ?? "") }
-    }
 }
 
 // MARK: - Peers

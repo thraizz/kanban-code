@@ -1,4 +1,4 @@
-.PHONY: build test run app app-debug run-app run-release clean cli install-cli web ios-project ios ios-run ios-test ios-device ios-autoinstall ios-autoinstall-remove rush-plugins
+.PHONY: build test run app app-debug run-app run-release clean cli install-cli ios-project ios ios-run ios-test ios-device ios-autoinstall ios-autoinstall-remove rush-plugins
 
 BUNDLE_NAME = KanbanCode.app
 BUNDLE_DIR = build/$(BUNDLE_NAME)
@@ -27,7 +27,7 @@ test:
 run:
 	swift run KanbanCode
 
-app: build cli install-cli web
+app: build cli install-cli
 	@mkdir -p $(BUNDLE_DIR)/Contents/MacOS
 	@mkdir -p $(BUNDLE_DIR)/Contents/Resources
 	@cp $(BUILD_DIR)/KanbanCode $(BUNDLE_DIR)/Contents/MacOS/KanbanCode
@@ -66,13 +66,9 @@ app: build cli install-cli web
 		cp -R $(BUILD_DIR)/KanbanCode_KanbanCode.bundle $(BUNDLE_DIR)/Contents/Resources/; \
 	fi
 	@# Bundle the kanban CLI inside the app so it's always available.
-	@# cloudflared is NOT bundled — the bundled copy gets quarantined by
-	@# macOS Gatekeeper (unsigned-by-us origin binary), which then breaks
-	@# its outbound network. The CLI uses an installed cloudflared when
-	@# available and falls back to `npx -y cloudflared`.
 	@# Ship only runtime artifacts:
 	@#  • the whole compiled dist tree (dist/**/*.js + .d.ts, including the
-	@#    agents/ and slack/ subdirs) minus the *.test.* files
+	@#    agents/ subdir) minus the *.test.* files
 	@#  • package.json + lockfile so pnpm can reinstall deterministically
 	@#  • a PROD-only node_modules (no typescript/tsx/esbuild/@types/supertest —
 	@#    those are ~50 MB of dev-time tooling that has no business shipping)
@@ -84,9 +80,6 @@ app: build cli install-cli web
 		cli/dist/ $(BUNDLE_DIR)/Contents/Resources/cli/dist/
 	@cp cli/package.json cli/pnpm-lock.yaml $(BUNDLE_DIR)/Contents/Resources/cli/
 	@cd $(BUNDLE_DIR)/Contents/Resources/cli && $(PNPM) install --prod --frozen-lockfile --ignore-scripts --reporter=silent
-	@# Bundle the built web client — served by the share-server at `/`.
-	@rm -rf $(BUNDLE_DIR)/Contents/Resources/share-web
-	@cp -R web/dist $(BUNDLE_DIR)/Contents/Resources/share-web
 	@# Code sign so macOS grants notification permissions and Web Inspector can attach
 	@echo "Code signing with: $(CODESIGN_IDENTITY)"
 	@codesign --force --sign "$(CODESIGN_IDENTITY)" --entitlements KanbanCode.entitlements $(BUNDLE_DIR)
@@ -106,9 +99,6 @@ run-release: app
 
 cli:
 	@cd cli && $(PNPM) install --frozen-lockfile --reporter=silent && $(PNPM) run build
-
-web:
-	@cd web && $(PNPM) install --frozen-lockfile --reporter=silent && $(PNPM) run build
 
 
 install-cli: cli

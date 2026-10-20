@@ -473,8 +473,8 @@ function pasteSteps(sessionName: string, text: string): TmuxStep[] {
 
 /// Send a single keystroke (e.g. the digit "1") to a tmux session WITHOUT a
 /// trailing Enter. Claude Code's numbered picker accepts a bare digit and
-/// commits the choice immediately, so the Slack bridge uses this for picker
-/// button clicks. The bare-digit-no-Enter behavior is why we cannot reuse
+/// commits the choice immediately, so this answers a picker with one
+/// keystroke. The bare-digit-no-Enter behavior is why we cannot reuse
 /// sendTmuxKeys (which always appends Enter).
 export function sendTmuxKey(sessionName: string, key: string): { ok: boolean; error?: string } {
   try {

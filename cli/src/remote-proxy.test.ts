@@ -55,11 +55,11 @@ afterEach(() => {
 
 describe("proxy gate", () => {
   test("stays off without KANBAN_REMOTE_PROXY", () => {
-    assert.equal(shouldProxy(["channel", "send", "team", "hi"], {}), false);
+    assert.equal(shouldProxy(["send", "card-1", "hi"], {}), false);
   });
 
   test("hands an ordinary command to the Mac", () => {
-    assert.equal(shouldProxy(["channel", "send", "team", "hi"], { KANBAN_REMOTE_PROXY: "1" }), true);
+    assert.equal(shouldProxy(["send", "card-1", "hi"], { KANBAN_REMOTE_PROXY: "1" }), true);
     assert.equal(shouldProxy(["list", "--json"], { KANBAN_REMOTE_PROXY: "1" }), true);
   });
 
@@ -79,12 +79,10 @@ describe("proxy gate", () => {
 describe("proxy refusals", () => {
   test("refuses the commands that belong to the Mac alone", () => {
     for (const argv of [
-      ["slack", "bridge"],
       ["daemon"],
       ["launch", "card"],
       ["reconcile"],
       ["open", "card"],
-      ["channel", "share", "team"],
     ]) {
       assert.ok(proxyRefusalReason(argv), `${argv.join(" ")} should be refused`);
     }
@@ -103,8 +101,8 @@ describe("proxy refusals", () => {
   });
 
   test("allows the rest", () => {
-    assert.equal(proxyRefusalReason(["channel", "send", "team", "hi"]), undefined);
-    assert.equal(proxyRefusalReason(["channel", "list"]), undefined);
+    assert.equal(proxyRefusalReason(["send", "card-1", "hi"]), undefined);
+    assert.equal(proxyRefusalReason(["list"]), undefined);
     assert.equal(proxyRefusalReason(["subagent", "spawn", "--handle", "x"]), undefined);
   });
 
@@ -127,13 +125,13 @@ describe("image attachments", () => {
     const source = join(home, "shot.png");
     writeFileSync(source, "png-bytes");
     const { argv, images } = inlineProxyImages(
-      ["channel", "send", "team", "look", "--image", source],
+      ["remote", "send", "card-1", "look", "--image", source],
       "req-1"
     );
     assert.deepEqual(argv, [
-      "channel",
+      "remote",
       "send",
-      "team",
+      "card-1",
       "look",
       "--image",
       "~/.kanban-code/images/proxy/req-1/shot.png",
@@ -151,7 +149,7 @@ describe("image attachments", () => {
     writeFileSync(first, "one");
     writeFileSync(second, "two");
     const { argv, images } = inlineProxyImages(
-      ["dm", "send", "@bob", "hi", `--image=${first}`, "--image", second],
+      ["remote", "send", "card-1", "hi", `--image=${first}`, "--image", second],
       "req-2"
     );
     assert.deepEqual(argv.slice(-3), [
@@ -166,15 +164,15 @@ describe("image attachments", () => {
   });
 
   test("leaves an argv without images alone", () => {
-    const { argv, images } = inlineProxyImages(["channel", "send", "team", "hi"], "req-3");
-    assert.deepEqual(argv, ["channel", "send", "team", "hi"]);
+    const { argv, images } = inlineProxyImages(["send", "card-1", "hi"], "req-3");
+    assert.deepEqual(argv, ["send", "card-1", "hi"]);
     assert.deepEqual(images, []);
   });
 });
 
 describe("request shape", () => {
   test("carries the card id, the working directory and the stdin", () => {
-    const request = buildProxyRequest(["channel", "send", "team", "hi"], {
+    const request = buildProxyRequest(["send", "card-1", "hi"], {
       id: "req-4",
       cwd: "/home/boxd/app",
       stdin: "piped body",
@@ -182,7 +180,7 @@ describe("request shape", () => {
     });
     assert.deepEqual(request, {
       id: "req-4",
-      argv: ["channel", "send", "team", "hi"],
+      argv: ["send", "card-1", "hi"],
       cwd: "/home/boxd/app",
       stdin: "piped body",
       env: { KANBAN_CARD_ID: "card-9" },
@@ -231,7 +229,7 @@ describe("round trip", () => {
         await new Promise((resolve) => setTimeout(resolve, 10));
       }
       const request = JSON.parse(readFileSync(requestPath, "utf-8"));
-      assert.deepEqual(request.argv, ["channel", "send", "team", "hi"]);
+      assert.deepEqual(request.argv, ["send", "card-1", "hi"]);
       assert.equal(request.env.KANBAN_CARD_ID, "card-9");
       writeFileSync(
         responsePath,
@@ -241,7 +239,7 @@ describe("round trip", () => {
 
     const out: string[] = [];
     const errors: string[] = [];
-    const code = await runProxiedCommand(["channel", "send", "team", "hi"], {
+    const code = await runProxiedCommand(["send", "card-1", "hi"], {
       id: "req-5",
       cwd: "/home/boxd/app",
       stdin: "",
@@ -262,7 +260,7 @@ describe("round trip", () => {
 
   test("reports a timeout instead of hanging", async () => {
     const errors: string[] = [];
-    const code = await runProxiedCommand(["channel", "list"], {
+    const code = await runProxiedCommand(["list"], {
       id: "req-6",
       stdin: "",
       pollIntervalMs: 10,

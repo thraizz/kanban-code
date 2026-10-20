@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import { execSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync, writeSync } from "node:fs";
-import { homedir, userInfo } from "node:os";
+import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import { markCardMessage, markSelfCompactFollowUp } from "./delivery-marker.js";
 import {
@@ -43,44 +43,20 @@ import { runtimeSpec } from "./agents/runtime.js";
 import { installHooks } from "./hooks.js";
 import { runRemoteAgent } from "./remote-agent.js";
 import { runProxiedCommand, shouldProxy } from "./remote-proxy.js";
-import { localCallerCardId, routesToChannelsHome, runOnChannelsHome } from "./channels-home.js";
 import {
   collectForeignResponses,
   enqueueForeignPrompt,
   isForeignCard,
   machineLabel,
-  readChannelsHome,
   readLocalMachine,
 } from "./machines.js";
 import { registerRemoteCommands } from "./remote-client.js";
 import { Daemon } from "./agents/daemon.js";
-import { slackAppManifest, MANIFEST_INSTRUCTIONS } from "./slack/manifest.js";
-import { runSlackBridge } from "./slack/bridge.js";
-import { announceToSlack, announceRawToSlack } from "./slack/announce.js";
-import { SlackClient } from "./slack/client.js";
-import { postToSlack } from "./slack/post.js";
 import type { KanbanColumn, Link } from "./types.js";
-import {
-  createChannel,
-  deleteChannel,
-  renameChannel,
-  getChannel,
-  joinChannel,
-  leaveChannel,
-  listChannels,
-  normalizeChannelName,
-  readMessages,
-  readTail,
-  readDirectMessages,
-  statChannel,
-} from "./channels.js";
 import {
   cardForTmuxSession,
   cardFromEnvironment,
   currentTmuxSessionName,
-  formatChannelBroadcast,
-  formatDirectMessage,
-  sendAndFanOut,
   sendDirectMessage,
 } from "./broadcast.js";
 import { deriveHandle, formatHandle, stripAt } from "./handles.js";
@@ -95,7 +71,6 @@ import {
   runExport,
   type ExportTarget,
 } from "./export.js";
-import { parseDuration, runShare } from "./share-cli.js";
 import {
   assertOwnedSubagent,
   buildSubagentPrompt,
@@ -514,7 +489,7 @@ const FOREIGN_SEND_TIMEOUT_MS = 10_000;
 
 program
   .command("send")
-  .description("Low-level: deliver a message to one card's session (not channel chat)")
+  .description("Low-level: deliver a message to one card's session")
   .argument("<card>", "Card ID, ID prefix, or name search")
   .argument("<message>", "Message to send")
   .option(
@@ -523,7 +498,6 @@ program
     "steer"
   )
   .option("--keys", "Use send-keys instead of paste-buffer (for short single-line)")
-  .option("--announce", "(deprecated, no-op: prompts are mirrored to Slack on confirmed receipt by the daemon)")
   .option("-j, --json", "Output as JSON")
   .action(async (cardQuery: string, message: string, opts) => {
     const mode = deliveryModeOrExit(opts.mode);
@@ -558,11 +532,6 @@ program
     const result = mode === "interrupt"
       ? interruptTmuxPrompt(card.tmuxLink.sessionName, message, send)
       : send(card.tmuxLink.sessionName, message);
-
-    // No announce here: the prompt is mirrored to Slack only once the agent's
-    // UserPromptSubmit hook confirms it was actually received (the daemon does
-    // it), so a paste that never becomes a submitted prompt is never falsely
-    // announced as received.
 
     if (opts.json) {
       output(
@@ -717,11 +686,6 @@ program
     const daemon = new Daemon({
       pollIntervalMs: parseInt(opts.pollInterval, 10),
       selfCompact: { enabled: opts.selfCompact },
-      announce: process.env.SLACK_BOT_TOKEN
-        ? (slug, text) => {
-            void announceToSlack(slug, text);
-          }
-        : undefined,
     });
     daemon.start();
     process.stdout.write(
@@ -733,70 +697,6 @@ program
     };
     process.on("SIGINT", shutdown);
     process.on("SIGTERM", shutdown);
-  });
-
-// ── kanban slack ─────────────────────────────────────────────────────
-
-const slackCmd = program.command("slack").description("Slack bridge for observing and steering agents");
-slackCmd
-  .command("manifest")
-  .description("Print a Slack app manifest (Socket Mode) plus setup instructions")
-  .action(() => {
-    process.stdout.write(slackAppManifest() + "\n# ---\n" + MANIFEST_INSTRUCTIONS + "\n");
-  });
-slackCmd
-  .command("bridge")
-  .description("Run the bidirectional Slack <-> agent bridge (needs SLACK_BOT_TOKEN and SLACK_APP_TOKEN)")
-  .option(
-    "--config <path>",
-    "Path to agents.yaml",
-    process.env.KANBAN_AGENTS_CONFIG || join(homedir(), ".kanban-code", "agents.yaml")
-  )
-  .action(async (opts) => {
-    const botToken = process.env.SLACK_BOT_TOKEN;
-    const appToken = process.env.SLACK_APP_TOKEN;
-    if (!botToken || !appToken) {
-      process.stderr.write("Error: SLACK_BOT_TOKEN and SLACK_APP_TOKEN must be set\n");
-      process.exit(1);
-    }
-    await runSlackBridge({ botToken, appToken, configPath: opts.config });
-  });
-slackCmd
-  .command("post")
-  .description("Post a message to a Slack channel as the bot (needs SLACK_BOT_TOKEN)")
-  .argument("<channel>", "Channel name (e.g. #dev) or id")
-  .argument("<message>", "Message text (Slack mrkdwn)")
-  .option("-f, --file <path>", "Attach a file to the message (repeatable, needs the files:write scope)", (p: string, all: string[]) => [...all, p], [] as string[])
-  .option("-j, --json", "Output as JSON")
-  .action(async (channel: string, message: string, opts) => {
-    const token = process.env.SLACK_BOT_TOKEN;
-    if (!token) {
-      process.stderr.write("Error: SLACK_BOT_TOKEN must be set\n");
-      process.exit(1);
-    }
-    const missing = (opts.file as string[]).filter((p) => !existsSync(p));
-    if (missing.length) {
-      process.stderr.write(`Error: file not found: ${missing.join(", ")}\n`);
-      process.exit(1);
-    }
-    const result = await postToSlack(new SlackClient(token), channel, message, opts.file);
-    if (opts.json) {
-      output(result, { json: true });
-      if (!result.ok) process.exit(1);
-      return;
-    }
-    if (result.ok) {
-      process.stdout.write(`Posted to ${channel} (${result.channelId})\n`);
-    } else {
-      process.stderr.write(`Failed to post to ${channel}: ${result.error}\n`);
-      if (String(result.error).includes("not_in_channel")) {
-        process.stderr.write("The bot is not a member of that channel — invite it there first.\n");
-      }
-      if (String(result.error).includes("missing_scope")) {
-        process.stderr.write("The Slack app lacks a scope: attaching files needs files:write. Add it and reinstall the app.\n");
-      }
-      process.exit(1);
-    }
   });
 
 // ── kanban self-compact [follow-up] ─────────────────────────────────
@@ -942,19 +842,6 @@ Examples:
         scheduleTmuxSelfCompact(tmuxSession, markSelfCompactFollowUp(followUp), Number.isFinite(followUpDelay) ? followUpDelay : 1)
       );
 
-      // Surface the compact in Slack — the bridge's buffer-until-next-text
-      // would otherwise hold the agent's "I'm compacting" Bash tool entry
-      // until the post-compact session produces a fresh text post, leaving
-      // the channel silent for the entire compact + warm-up window. Also
-      // opens a new thread anchor for the resumed session and lights the
-      // pill so the post-compact tool calls don't end up under a stale
-      // pre-compact thread. Fire-and-forget; the CLI exits when scheduling
-      // is done, the announce flushes in the background.
-      const announceText = followUp.trim()
-        ? `:arrows_counterclockwise: Self-compact triggered — context refresh, resuming with: _${followUp.trim()}_`
-        : ":arrows_counterclockwise: Self-compact triggered — context refresh in progress.";
-      void announceRawToSlack(tmuxSession, announceText);
-
       const result = {
         ok: true,
         cardId: card.id,
@@ -1085,7 +972,10 @@ Examples:
       target = resolveExportTarget(cardRef, {
         links: readLinks(),
         tmuxSession: currentTmuxSessionName,
-        cardForHandle: findCardByHandle,
+        cardForHandle: (handle) => {
+          const links = readLinks();
+          return links.find((link) => deriveHandle(link.name ?? link.id, new Set()) === stripAt(handle));
+        },
         sessionFile: claudeSessionFile,
       });
     } catch (e) {
@@ -1217,99 +1107,7 @@ program
     }
   });
 
-// ── kanban channel ... ──────────────────────────────────────────────
-
-/**
- * Resolve the caller's card + handle via $TMUX autodetect, or a --as override,
- * or --as-user. Returns { cardId, handle }. cardId=null represents the user.
- */
-function humanHandle(): string {
-  const slugify = (name: string) =>
-    name.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || "user";
-  // A channels home runs commands for paired machines, whose human is the
-  // person at that machine rather than the account the home runs as.
-  const declared = process.env.KANBAN_HUMAN_HANDLE?.trim();
-  if (declared) return slugify(declared);
-  try {
-    return slugify(userInfo().username);
-  } catch {
-    return "user";
-  }
-}
-
-function resolveCaller(
-  opts: { as?: string; asUser?: boolean; asCardId?: string },
-  channelName: string | undefined
-): { cardId: string | null; handle: string } {
-  if (opts.asUser) return { cardId: null, handle: humanHandle() };
-  const links = readLinks();
-  const declared = cardFromEnvironment(links);
-  if (opts.as) {
-    const handle = stripAt(opts.as);
-    // Explicit cardId override wins.
-    if (opts.asCardId) {
-      return { cardId: opts.asCardId, handle };
-    }
-    if (declared) return { cardId: declared.id, handle };
-    // `--as` is a handle override, not a request to become a userlike
-    // participant. When an agent runs inside its Kanban tmux session, preserve
-    // that card identity so channel fanout and mention navigation keep working.
-    const session = currentTmuxSessionName();
-    if (session) {
-      const card = cardForTmuxSession(links, session);
-      if (card) return { cardId: card.id, handle };
-    }
-    // Outside tmux, prefer an existing channel member for this handle so
-    // helper scripts can keep posting as the same card-backed participant.
-    if (channelName) {
-      const ch = getChannel(channelName);
-      const m = ch?.members.find((x) => x.handle === handle);
-      if (m) return { cardId: m.cardId, handle };
-    }
-    // Fallback: no specific card, just the chosen handle.
-    return { cardId: null, handle };
-  }
-  let card = declared;
-  if (!card) {
-    const session = currentTmuxSessionName();
-    if (!session) {
-      throw new Error(
-        "Could not detect your tmux session. Run inside tmux or pass --as <handle> / --as-user."
-      );
-    }
-    card = cardForTmuxSession(links, session);
-    if (!card) {
-      throw new Error(
-        `Tmux session "${session}" is not linked to any kanban card. Pass --as <handle> or --as-user.`
-      );
-    }
-  }
-  // Handle: prefer the already-registered handle for this channel, else derive.
-  if (channelName) {
-    const ch = getChannel(channelName);
-    const m = ch?.members.find((x) => x.cardId === card.id);
-    if (m) return { cardId: card.id, handle: m.handle };
-    const taken = new Set((ch?.members ?? []).map((x) => x.handle));
-    const handle = deriveHandle(card.name ?? card.id, taken);
-    return { cardId: card.id, handle };
-  }
-  // No channel context — generate handle from display name alone.
-  const handle = deriveHandle(card.name ?? card.id, new Set());
-  return { cardId: card.id, handle };
-}
-
-function relativeTime(iso: string): string {
-  const then = new Date(iso).getTime();
-  const now = Date.now();
-  const secs = Math.max(1, Math.round((now - then) / 1000));
-  if (secs < 60) return `${secs}s ago`;
-  const mins = Math.round(secs / 60);
-  if (mins < 60) return `${mins}m ago`;
-  const hrs = Math.round(mins / 60);
-  if (hrs < 24) return `${hrs}h ago`;
-  const days = Math.round(hrs / 24);
-  return `${days}d ago`;
-}
+// ── Card identity ──────────────────────────────────────────────────────
 
 /// Live terminals: the local tmux server plus every session that lives on a
 /// boxd machine, which a local `tmux list-sessions` cannot see.
@@ -1334,10 +1132,6 @@ function callerCard(links: Link[]): Link | undefined {
 }
 
 function cardParticipant(card: Link): { cardId: string; handle: string } {
-  for (const channel of listChannels()) {
-    const member = channel.members.find((candidate) => candidate.cardId === card.id);
-    if (member) return { cardId: card.id, handle: member.handle };
-  }
   return { cardId: card.id, handle: deriveHandle(card.name ?? card.id, new Set()) };
 }
 
@@ -1770,7 +1564,7 @@ subagentCmd
       const links = readLinks();
       const caller = currentCardOrThrow(links);
       const target = requireSubagentTarget(caller, query, links);
-      await deliverCardDirectMessage(caller, target, await readMessageFromArgsOrStdin(message), links);
+      deliverCardDirectMessage(caller, target, await readMessageFromArgsOrStdin(message), links);
       console.log(`DM delivered to ${target.id}`);
     } catch (error) {
       console.error(String(error instanceof Error ? error.message : error));
@@ -1786,46 +1580,17 @@ async function sendToParent(messageArgs: string[]): Promise<{ child: Link; paren
   if (!parent) throw new Error(`Parent card ${child.parentCardId} no longer exists.`);
   const body = await readMessageFromArgsOrStdin(messageArgs);
   if (!body.trim()) throw new Error("A parent message is required.");
-  await deliverCardDirectMessage(child, parent, body, links);
+  deliverCardDirectMessage(child, parent, body, links);
   return { child, parent, body };
 }
 
-/**
- * A DM between two cards. Paired with a channels home, the DM log lives there,
- * so the message is sent as the equivalent `kanban dm send` on the home; the
- * local copy of the channels is read-only.
- */
-async function deliverCardDirectMessage(from: Link, to: Link, body: string, links: Link[]): Promise<void> {
-  const sender = cardParticipant(from);
-  const recipient = cardParticipant(to);
-  if (readChannelsHome() && !process.env.KANBAN_CHANNELS_LOCAL) {
-    let errorText = "";
-    const outcome = await runOnChannelsHome(
-      [
-        "dm", "send", recipient.handle,
-        "--to-card-id", to.id,
-        "--as", sender.handle,
-        "--as-card-id", from.id,
-        "--", body,
-      ],
-      {
-        humanHandle: humanHandle(),
-        cardId: from.id,
-        write: () => {},
-        writeError: (text) => { errorText += text; },
-      }
-    );
-    if (outcome === 0) return;
-    if (outcome !== "local") {
-      throw new Error(errorText.trim().replace(/^Error: /, "") || "message was not delivered");
-    }
-  }
+/** A DM between two cards, pasted straight into the recipient's session. */
+function deliverCardDirectMessage(from: Link, to: Link, body: string, links: Link[]): void {
   const result = sendDirectMessage(
-    sender,
-    recipient,
+    cardParticipant(from),
+    cardParticipant(to),
     body,
     links,
-    undefined,
     { liveSessionProbe: (session) => liveTmuxSet().has(session) }
   );
   if (!result.delivered) throw new Error(result.error ?? "message was not delivered");
@@ -1864,506 +1629,6 @@ parentCmd
     } catch (error) {
       console.error(String(error instanceof Error ? error.message : error));
       process.exitCode = 1;
-    }
-  });
-
-const channelCmd = program.command("channel").description(
-  "Shared channel chat for room-visible agent updates; use `kanban channel --help`"
-);
-
-channelCmd
-  .command("list")
-  .description("List all channels with member count and last activity")
-  .option("-j, --json", "Output as JSON")
-  .action((opts) => {
-    const channels = listChannels();
-    const live = liveTmuxSet();
-    const links = readLinks();
-    const localMachineId = readLocalMachine()?.id;
-    const rows = channels.map((ch) => {
-      const st = statChannel(ch.name);
-      const onlineCount = ch.members.filter((m) => {
-        if (m.cardId === null) return true;
-        const link = links.find((l) => l.id === m.cardId);
-        if (isForeignCard(link, localMachineId)) return true;
-        return link?.tmuxLink?.sessionName && live.has(link.tmuxLink.sessionName);
-      }).length;
-      return {
-        name: ch.name,
-        members: ch.members.length,
-        online: onlineCount,
-        lastMessageAt: st?.lastMessageAt,
-        lastMessagePreview: st?.lastMessage?.body?.slice(0, 80),
-      };
-    });
-    if (opts.json) {
-      output(rows, { json: true });
-      return;
-    }
-    if (rows.length === 0) {
-      console.log("No channels yet. Create one: kanban channel create <name>");
-      return;
-    }
-    for (const r of rows) {
-      const ago = r.lastMessageAt ? relativeTime(r.lastMessageAt) : "—";
-      console.log(`#${r.name.padEnd(20)} ${r.online}/${r.members} online  ${ago.padEnd(10)} ${r.lastMessagePreview ?? ""}`);
-    }
-  });
-
-channelCmd
-  .command("create")
-  .description("Create a new channel")
-  .argument("<name>", "Channel name (letters, digits, _ -)")
-  .option("--as <handle>", "Act as this handle")
-    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
-  .option("--as-user", "Act as the human user")
-  .option("-j, --json", "Output as JSON")
-  .action((name: string, opts) => {
-    try {
-      const clean = normalizeChannelName(name);
-      const caller = resolveCaller(opts, undefined);
-      const ch = createChannel(clean, { createdBy: caller });
-      // Auto-join the creator.
-      joinChannel(clean, caller);
-      if (opts.json) {
-        output({ channel: ch, joined: caller }, { json: true });
-      } else {
-        console.log(`Created #${clean} (joined as ${formatHandle(caller.handle)})`);
-      }
-    } catch (e) {
-      console.error(String(e instanceof Error ? e.message : e));
-      process.exit(1);
-    }
-  });
-
-channelCmd
-  .command("join")
-  .description("Join a channel")
-  .argument("<name>", "Channel name")
-  .option("--as <handle>", "Act as this handle")
-    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
-  .option("--as-user", "Act as the human user")
-  .option("-n, --tail <N>", "Print the last N messages as catch-up", "10")
-  .option("-j, --json", "Output as JSON")
-  .action((name: string, opts) => {
-    try {
-      const clean = normalizeChannelName(name);
-      const ch = getChannel(clean);
-      if (!ch) {
-        console.error(`Channel "#${clean}" does not exist`);
-        process.exit(1);
-      }
-      const caller = resolveCaller(opts, clean);
-      const { alreadyMember, channel } = joinChannel(clean, caller);
-      const tailN = parseInt(String(opts.tail ?? "10"), 10);
-      const tail = readTail(clean, isNaN(tailN) ? 10 : tailN);
-      if (opts.json) {
-        output({ alreadyMember, channel, tail }, { json: true });
-        return;
-      }
-      if (alreadyMember) {
-        console.log(`Already a member of #${clean} as ${formatHandle(caller.handle)}`);
-      } else {
-        console.log(`Joined #${clean} as ${formatHandle(caller.handle)}`);
-      }
-      if (tail.length > 0) {
-        console.log(`\nRecent (${tail.length}):`);
-        for (const m of tail) {
-          console.log(`  ${formatHandle(m.from.handle)}: ${m.body}`);
-        }
-      }
-    } catch (e) {
-      console.error(String(e instanceof Error ? e.message : e));
-      process.exit(1);
-    }
-  });
-
-channelCmd
-  .command("leave")
-  .description("Leave a channel")
-  .argument("<name>", "Channel name")
-  .option("--as <handle>", "Act as this handle")
-    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
-  .option("--as-user", "Act as the human user")
-  .option("-j, --json", "Output as JSON")
-  .action((name: string, opts) => {
-    try {
-      const clean = normalizeChannelName(name);
-      const caller = resolveCaller(opts, clean);
-      const ch = leaveChannel(clean, { cardId: caller.cardId, handle: caller.handle });
-      if (!ch) {
-        console.error(`Channel "#${clean}" does not exist`);
-        process.exit(1);
-      }
-      if (opts.json) {
-        output({ channel: ch }, { json: true });
-      } else {
-        console.log(`Left #${clean}`);
-      }
-    } catch (e) {
-      console.error(String(e instanceof Error ? e.message : e));
-      process.exit(1);
-    }
-  });
-
-channelCmd
-  .command("members")
-  .description("List members of a channel with online status")
-  .argument("<name>", "Channel name")
-  .option("-j, --json", "Output as JSON")
-  .action((name: string, opts) => {
-    const clean = normalizeChannelName(name);
-    const ch = getChannel(clean);
-    if (!ch) {
-      console.error(`Channel "#${clean}" does not exist`);
-      process.exit(1);
-    }
-    const live = liveTmuxSet();
-    const links = readLinks();
-    const localMachineId = readLocalMachine()?.id;
-    const rows = ch.members.map((m) => {
-      let online = false;
-      if (m.cardId === null) online = true;
-      else {
-        const link = links.find((l) => l.id === m.cardId);
-        const s = link?.tmuxLink?.sessionName;
-        // Another master runs this card; its tmux session is not visible here.
-        online = isForeignCard(link, localMachineId) || !!(s && live.has(s));
-      }
-      return { handle: m.handle, cardId: m.cardId, online, joinedAt: m.joinedAt };
-    });
-    if (opts.json) {
-      output(rows, { json: true });
-      return;
-    }
-    console.log(`#${clean} — ${rows.length} member(s)`);
-    for (const r of rows) {
-      const dot = r.online ? "●" : "○";
-      console.log(`  ${dot} ${formatHandle(r.handle).padEnd(24)} ${r.cardId ?? "(user)"}`);
-    }
-  });
-
-channelCmd
-  .command("send")
-  .description("Send a room-visible message to a channel (broadcasts to all members)")
-  .argument("<name>", "Channel name")
-  .argument("<message...>", "Message body (joined with spaces)")
-  .option("--as <handle>", "Act as this handle")
-    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
-  .option("--as-user", "Act as the human user")
-  .option("--no-fanout", "Write to log but do not tmux-broadcast")
-  .option(
-    "--image <path>",
-    "Attach an image (repeat to attach multiple)",
-    (v: string, acc: string[]) => (acc ? [...acc, v] : [v]),
-    [] as string[]
-  )
-  .option("-j, --json", "Output as JSON")
-  .action((name: string, message: string[], opts) => {
-    try {
-      const clean = normalizeChannelName(name);
-      const ch = getChannel(clean);
-      if (!ch) {
-        console.error(`Channel "#${clean}" does not exist`);
-        process.exit(1);
-      }
-      const caller = resolveCaller(opts, clean);
-      // Auto-join on first send so we stay consistent.
-      joinChannel(clean, caller);
-      const links = readLinks();
-      const body = message.join(" ");
-      const live = liveTmuxSet();
-      const imagePaths: string[] = Array.isArray(opts.image) ? opts.image : [];
-      const { msg, result } = sendAndFanOut(
-        clean,
-        caller,
-        body,
-        links,
-        undefined,
-        {
-          sender: opts.fanout === false ? () => ({ ok: true }) : undefined,
-          liveSessionProbe: (s) => live.has(s),
-        },
-        imagePaths
-      );
-      if (opts.json) {
-        output({ msg, result }, { json: true });
-      } else {
-        console.log(`${formatHandle(caller.handle)} → #${clean}: ${body}`);
-        if (result.delivered.length > 0) {
-          console.log(`  delivered to: ${result.delivered.map((d) => formatHandle(d.handle) + (d.via ? ` (via ${d.via})` : "")).join(", ")}`);
-        }
-        if (result.skippedOffline.length > 0) {
-          console.log(`  skipped: ${result.skippedOffline.map((d) => `${formatHandle(d.handle)} (${d.reason})`).join(", ")}`);
-        }
-      }
-    } catch (e) {
-      console.error(String(e instanceof Error ? e.message : e));
-      process.exit(1);
-    }
-  });
-
-channelCmd
-  .command("history")
-  .description("Show channel message history")
-  .argument("<name>", "Channel name")
-  .option("-n, --tail <N>", "Show last N messages (default all)", "50")
-  .option("-j, --json", "Output as JSON")
-  .action((name: string, opts) => {
-    const clean = normalizeChannelName(name);
-    const ch = getChannel(clean);
-    if (!ch) {
-      console.error(`Channel "#${clean}" does not exist`);
-      process.exit(1);
-    }
-    const n = parseInt(String(opts.tail ?? "50"), 10);
-    const msgs = isNaN(n) ? readMessages(clean) : readTail(clean, n);
-    if (opts.json) {
-      output(msgs, { json: true });
-      return;
-    }
-    for (const m of msgs) {
-      const ago = relativeTime(m.ts);
-      const tag = m.type === "message" ? "" : `[${m.type}] `;
-      console.log(`  ${ago.padEnd(10)} ${formatHandle(m.from.handle).padEnd(20)} ${tag}${m.body}`);
-    }
-  });
-
-channelCmd
-  .command("delete")
-  .description("Delete a channel and its history log")
-  .argument("<name>", "Channel name")
-  .option("-j, --json", "Output as JSON")
-  .action((name: string, opts) => {
-    const clean = normalizeChannelName(name);
-    const ok = deleteChannel(clean);
-    if (opts.json) {
-      output({ deleted: ok }, { json: true });
-      return;
-    }
-    if (ok) console.log(`Deleted #${clean}`);
-    else {
-      console.error(`Channel "#${clean}" does not exist`);
-      process.exit(1);
-    }
-  });
-
-channelCmd
-  .command("open")
-  .description("Open a channel in the Kanban Code app via kanbancode:// deep link.")
-  .argument("<name>", "Channel name (with or without leading #)")
-  .action((name: string) => {
-    const clean = normalizeChannelName(name);
-    try {
-      execSync(`open "kanbancode://channel/${clean}"`, { stdio: "ignore" });
-      console.log(`Opened #${clean}`);
-    } catch (err) {
-      console.error(`Failed to open app: ${(err as Error).message ?? err}`);
-      process.exit(1);
-    }
-  });
-
-channelCmd
-  .command("rename")
-  .description("Rename a channel. Moves the .jsonl log file to the new name.")
-  .argument("<old>", "Current channel name")
-  .argument("<new>", "New channel name")
-  .option("-j, --json", "Output as JSON")
-  .action((oldName: string, newName: string, opts) => {
-    try {
-      const ok = renameChannel(oldName, newName);
-      const oldClean = normalizeChannelName(oldName);
-      const newClean = normalizeChannelName(newName);
-      if (opts.json) {
-        output({ renamed: ok, from: oldClean, to: newClean }, { json: true });
-        return;
-      }
-      if (ok) console.log(`Renamed #${oldClean} → #${newClean}`);
-      else {
-        console.error(`Channel "#${oldClean}" does not exist`);
-        process.exit(1);
-      }
-    } catch (err) {
-      console.error(String((err as Error).message ?? err));
-      process.exit(1);
-    }
-  });
-
-// ── kanban channel share ────────────────────────────────────────────
-
-channelCmd
-  .command("share")
-  .description(
-    "Start a public share link for a channel. Runs a local Express server, " +
-      "opens a cloudflared tunnel, and keeps running until the duration expires. " +
-      "Writes url/token/port/expiresAt on stdout (one per line) for parent processes.",
-  )
-  .argument("<name>", "Channel name to share")
-  .option("-d, --duration <d>", "How long the link stays live (e.g. 5m, 1h)", "15m")
-  .option("--web-dist <path>", "Directory with the built web client to serve at /")
-  .action(async (name: string, opts: { duration: string; webDist?: string }) => {
-    const clean = normalizeChannelName(name);
-    const ch = getChannel(clean);
-    if (!ch) {
-      console.error(`Channel "#${clean}" does not exist`);
-      process.exit(1);
-    }
-    let durationMs: number;
-    try { durationMs = parseDuration(opts.duration); } catch (err) {
-      console.error(String(err instanceof Error ? err.message : err));
-      process.exit(1);
-    }
-
-    // Bundled with the app? Default web dist lives alongside the CLI bundle.
-    // Swift passes --web-dist explicitly so we only fall through to the
-    // next lookup when run standalone.
-    const webDist = opts.webDist;
-
-    let handle: Awaited<ReturnType<typeof runShare>>;
-    try {
-      handle = await runShare({
-        channelName: clean,
-        durationMs,
-        loadLinks: () => readLinks(),
-        sender: pasteTmuxPrompt,
-        liveSessionProbe: (s) => listTmuxSessions().some((t) => t.name === s),
-        baseDir: join(homedir(), ".kanban-code"),
-        webDistDir: webDist,
-      });
-    } catch (err) {
-      console.error(`Failed to start share: ${err instanceof Error ? err.message : err}`);
-      process.exit(1);
-    }
-
-    // Teardown on parent-initiated signals so the tunnel doesn't outlive us.
-    const shutdown = async (): Promise<void> => {
-      await handle.stop();
-      await handle.done;
-      process.exit(0);
-    };
-    process.on("SIGTERM", () => { void shutdown(); });
-    process.on("SIGINT", () => { void shutdown(); });
-    // Parent (Swift app) closes our stdin when it quits — treat as shutdown.
-    process.stdin.on("end", () => { void shutdown(); });
-    process.stdin.resume();
-
-    await handle.done;
-    process.exit(0);
-  });
-
-// ── kanban dm ───────────────────────────────────────────────────────
-
-function findCardByHandle(handle: string): Link | undefined {
-  const want = stripAt(handle);
-  const channels = listChannels();
-  for (const ch of channels) {
-    const m = ch.members.find((x) => x.handle === want);
-    if (m && m.cardId) {
-      const l = readLinks().find((x) => x.id === m.cardId);
-      if (l) return l;
-    }
-  }
-  return undefined;
-}
-
-const dmCmd = program.command("dm").description("Send/read direct messages between agents (private, not channel chat)");
-
-dmCmd
-  .command("send", { isDefault: true })
-  .description("Send a DM (default action)")
-  .argument("<handle>", "Target handle (with or without @)")
-  .argument("<message...>", "Message body")
-  .option("--to-card-id <id>", "Recipient card id, for a card that is in no channel yet")
-  .option("--as <handle>", "Act as this handle")
-    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
-  .option("--as-user", "Act as the human user")
-  .option(
-    "--image <path>",
-    "Attach an image (repeat to attach multiple)",
-    (v: string, acc: string[]) => (acc ? [...acc, v] : [v]),
-    [] as string[]
-  )
-  .option("-j, --json", "Output as JSON")
-  .action((handle: string, message: string[], opts) => {
-    try {
-      const caller = resolveCaller(opts, undefined);
-      const target = opts.toCardId
-        ? readLinks().find((link) => link.id === opts.toCardId)
-        : findCardByHandle(handle);
-      if (!target) {
-        console.error(opts.toCardId ? `Card not found: ${opts.toCardId}` : `Unknown handle "${handle}"`);
-        process.exit(1);
-      }
-      const body = message.join(" ");
-      const live = liveTmuxSet();
-      const links = readLinks();
-      const imagePaths: string[] = Array.isArray(opts.image) ? opts.image : [];
-      const { msg, delivered, error, via } = sendDirectMessage(
-        caller,
-        { cardId: target.id, handle: stripAt(handle) },
-        body,
-        links,
-        undefined,
-        { liveSessionProbe: (s) => live.has(s) },
-        imagePaths
-      );
-      if (opts.json) {
-        output({ msg, delivered, error, ...(via ? { via } : {}) }, { json: true });
-      } else {
-        const tag = delivered ? (via ? `delivered (via ${via})` : "delivered") : (error ?? "not delivered");
-        console.log(`${formatHandle(caller.handle)} → ${formatHandle(stripAt(handle))}: ${body} [${tag}]`);
-      }
-      if (!delivered) process.exit(2);
-    } catch (e) {
-      console.error(String(e instanceof Error ? e.message : e));
-      process.exit(1);
-    }
-  });
-
-dmCmd
-  .command("history")
-  .description("Show DM history with another handle")
-  .argument("<handle>", "Other party's handle")
-  .option("--as <handle>", "Act as this handle")
-    .option("--as-card-id <id>", "Explicit card id for the --as handle (testing + overrides)")
-  .option("--as-user", "Act as the human user")
-  .option("-j, --json", "Output as JSON")
-  .action((handle: string, opts) => {
-    try {
-      const caller = resolveCaller(opts, undefined);
-      const target = findCardByHandle(handle);
-      const other = target ? target.id : `@${stripAt(handle)}`;
-      const self = caller.cardId ?? `@${caller.handle}`;
-      const msgs = readDirectMessages(self, other);
-      if (opts.json) {
-        output(msgs, { json: true });
-        return;
-      }
-      for (const m of msgs) {
-        console.log(`  ${relativeTime(m.ts).padEnd(10)} ${formatHandle(m.from.handle)}: ${m.body}`);
-      }
-    } catch (e) {
-      console.error(String(e instanceof Error ? e.message : e));
-      process.exit(1);
-    }
-  });
-
-dmCmd
-  .command("open")
-  .description("Open a DM with another handle in the Kanban Code app.")
-  .argument("<handle>", "Other party's handle (with or without @)")
-  .action((handle: string) => {
-    const clean = stripAt(handle);
-    const card = findCardByHandle(handle);
-    const url = card
-      ? `kanbancode://dm/${clean}?cardId=${card.id}`
-      : `kanbancode://dm/${clean}`;
-    try {
-      execSync(`open "${url}"`, { stdio: "ignore" });
-      console.log(`Opened DM with @${clean}`);
-    } catch (err) {
-      console.error(`Failed to open app: ${(err as Error).message ?? err}`);
-      process.exit(1);
     }
   });
 
@@ -2415,8 +1680,6 @@ sortTopLevelCommands([
   "show",
   "sessions",
   "capture",
-  "channel",
-  "dm",
   "subagent",
   "parent",
   "send",
@@ -2439,21 +1702,6 @@ if (shouldProxy(proxyArgv)) {
     writeError: (text) => writeSyncToFd(2, text),
   });
   process.exit(code);
-}
-
-// ── Channels home gate ───────────────────────────────────────────────
-
-// Paired with a channels home, channel and DM commands run there, where the
-// channel data lives. The caller card is resolved here first: only this
-// machine knows which tmux session the command was typed in.
-if (routesToChannelsHome(proxyArgv)) {
-  const outcome = await runOnChannelsHome(proxyArgv, {
-    humanHandle: humanHandle(),
-    cardId: localCallerCardId(proxyArgv),
-    write: (text) => writeSyncToFd(1, text),
-    writeError: (text) => writeSyncToFd(2, text),
-  });
-  if (outcome !== "local") process.exit(outcome);
 }
 
 await program.parseAsync();

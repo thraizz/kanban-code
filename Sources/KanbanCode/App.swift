@@ -113,7 +113,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     private var terminationReplyPending = false
     private var quitConfirmationPanel: NSPanel?
     private var pausingMachinesPanel: NSPanel?
-    private weak var channelShareController: ChannelShareController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         // Disable macOS smart substitutions app-wide (smart quotes, dashes, autocorrect).
@@ -212,7 +211,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     /// relaunch the app (which would trip the quit-protection dialog).
     func applicationDidBecomeActive(_ notification: Notification) {
         checkPendingOpenProject()
-        checkPendingFocusChannel()
     }
 
     /// Check for a pending project open request from the CLI.
@@ -240,34 +238,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         return raw
     }
 
-    /// Check for a pending channel-focus request: select the channel the
-    /// gateway wrote to ~/.kanban-code/focus-channel when a room spawned, so
-    /// the board snaps to the room's channel without a relaunching deep link.
-    private func checkPendingFocusChannel() {
-        Task.detached(priority: .utility) {
-            guard let raw = Self.consumeMarkerFile(named: "focus-channel") else { return }
-            let name = raw.hasPrefix("#") ? String(raw.dropFirst()) : raw
-            await MainActor.run {
-                NotificationCenter.default.post(
-                    name: .kanbanCodeSelectChannel, object: nil,
-                    userInfo: ["channelName": name]
-                )
-            }
-        }
-    }
-
     /// Prevent Cmd+W from closing the single window — close terminal tab instead.
     func windowShouldClose(_ sender: NSWindow) -> Bool {
         NotificationCenter.default.post(name: .kanbanCloseTerminalTab, object: nil)
         return false
-    }
-
-    func register(channelShareController: ChannelShareController) {
-        self.channelShareController = channelShareController
-    }
-
-    func applicationWillTerminate(_ notification: Notification) {
-        channelShareController?.terminateAllImmediately()
     }
 
     /// Kanban Code keeps running from the system tray with its managed tmux
@@ -621,32 +595,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                     userInfo: ["path": path]
                 )
             }
-            // kanbancode://channel/<name> — from `kanban channel open <name>` CLI.
-            if url.host == "channel",
-               let name = url.pathComponents.dropFirst().first, !name.isEmpty {
-                shouldActivate = true
-                let normalized = name.hasPrefix("#") ? String(name.dropFirst()) : name
-                NotificationCenter.default.post(
-                    name: .kanbanCodeSelectChannel, object: nil,
-                    userInfo: ["channelName": normalized]
-                )
-            }
-            // kanbancode://dm/<handle> or ?handle=<h>&cardId=<c>
-            if url.host == "dm" {
-                let components = URLComponents(url: url, resolvingAgainstBaseURL: false)
-                let pathHandle = url.pathComponents.dropFirst().first
-                let queryHandle = components?.queryItems?.first(where: { $0.name == "handle" })?.value
-                let cardId = components?.queryItems?.first(where: { $0.name == "cardId" })?.value
-                if let handle = (queryHandle?.isEmpty == false ? queryHandle : pathHandle),
-                   !handle.isEmpty {
-                    shouldActivate = true
-                    var info: [String: String] = ["handle": handle.hasPrefix("@") ? String(handle.dropFirst()) : handle]
-                    if let cardId, !cardId.isEmpty { info["cardId"] = cardId }
-                    NotificationCenter.default.post(
-                        name: .kanbanCodeSelectDM, object: nil, userInfo: info
-                    )
-                }
-            }
             // kanbancode://command/<id> from the CLI command mailbox.
             if url.host == "command",
                let requestId = url.pathComponents.dropFirst().first,
@@ -702,25 +650,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             NotificationCenter.default.post(name: .kanbanCodeShowAttention, object: nil, userInfo: ["id": attentionId])
         } else if let cardId = info["cardId"] as? String {
             NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
-        } else if let kind = info["chatKind"] as? String {
-            switch kind {
-            case "channel":
-                if let name = info["channelName"] as? String {
-                    NotificationCenter.default.post(
-                        name: .kanbanCodeSelectChannel, object: nil,
-                        userInfo: ["channelName": name]
-                    )
-                }
-            case "dm":
-                if let handle = info["dmHandle"] as? String {
-                    NotificationCenter.default.post(
-                        name: .kanbanCodeSelectDM, object: nil,
-                        userInfo: ["dmHandle": handle]
-                    )
-                }
-            default:
-                break
-            }
         }
         MainActor.assumeIsolated {
             NSApp.activate(ignoringOtherApps: true)
@@ -737,11 +666,6 @@ extension AppDelegate {
         guard context.canEvaluatePolicy(.deviceOwnerAuthentication, error: &error) else { return false }
         return (try? await context.evaluatePolicy(.deviceOwnerAuthentication, localizedReason: reason)) ?? false
     }
-}
-
-extension Notification.Name {
-    static let kanbanCodeSelectChannel = Notification.Name("kanbanCodeSelectChannel")
-    static let kanbanCodeSelectDM = Notification.Name("kanbanCodeSelectDM")
 }
 
 

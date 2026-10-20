@@ -149,43 +149,19 @@ describe("currentCardOrThrow", () => {
   });
 });
 
-describe("channel identity outside tmux", () => {
-  test("joins as the card named by KANBAN_CARD_ID", () => {
+describe("parent dm identity outside tmux", () => {
+  test("resolves the caller from KANBAN_CARD_ID", () => {
     seedLinks([card("card_alice", "alice-card", "kc-remote")]);
-    runCli(["channel", "create", "general", "--as-user"], { HOME: home });
-
-    let r = runCli(["channel", "join", "general", "--as", "alice"], {
-      HOME: home,
-      KANBAN_CARD_ID: "card_alice",
-    });
-    assert.equal(r.code, 0, r.stderr);
-
-    r = runCli(["channel", "members", "general", "--json"], { HOME: home });
-    const members = JSON.parse(r.stdout);
-    assert.equal(members.find((m: any) => m.handle === "alice")?.cardId, "card_alice");
-  });
-
-  test("derives the handle from the card when no --as is given", () => {
-    seedLinks([card("card_alice", "alice-card", "kc-remote")]);
-    runCli(["channel", "create", "general", "--as-user"], { HOME: home });
-
-    let r = runCli(["channel", "join", "general"], { HOME: home, KANBAN_CARD_ID: "card_alice" });
-    assert.equal(r.code, 0, r.stderr);
-
-    r = runCli(["channel", "members", "general", "--json"], { HOME: home });
-    const members = JSON.parse(r.stdout);
-    assert.ok(
-      members.some((m: any) => m.cardId === "card_alice"),
-      r.stdout
-    );
+    const r = runCli(["parent", "dm", "hello"], { HOME: home, KANBAN_CARD_ID: "card_alice" });
+    assert.notEqual(r.code, 0);
+    assert.match(r.stderr + r.stdout, /Card card_alice is not a subagent/);
   });
 
   test("still refuses an unknown caller without the variable", () => {
     seedLinks([card("card_alice", "alice-card", "kc-remote")]);
-    runCli(["channel", "create", "general", "--as-user"], { HOME: home });
-    const r = runCli(["channel", "join", "general"], { HOME: home });
+    const r = runCli(["parent", "dm", "hello"], { HOME: home });
     assert.notEqual(r.code, 0);
-    assert.match(r.stderr + r.stdout, /Could not detect your tmux session/);
+    assert.match(r.stderr + r.stdout, /Could not detect the current tmux session/);
   });
 });
 

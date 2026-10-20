@@ -9,16 +9,6 @@ struct SearchOverlay: View {
     var onResumeCard: (KanbanCodeCard) -> Void = { _ in }
     var onForkCard: (KanbanCodeCard) -> Void = { _ in }
     var onCheckpointCard: (KanbanCodeCard) -> Void = { _ in }
-    var channels: [Channel] = []
-    /// Map from channel name → last-opened timestamp (bumped on drawer selection).
-    /// Sorted alongside `card.link.lastOpenedAt` so the palette orders both by
-    /// recency-of-attention.
-    var channelLastOpened: [String: Date] = [:]
-    /// Map from channel name → last message timestamp. Used only for the
-    /// "3m ago" subtitle on the channel row.
-    var channelLastActivity: [String: Date] = [:]
-    var onSelectChannel: (String) -> Void = { _ in }
-
     // Command palette actions
     var commands: [CommandItem] = []
     var initialQuery: String = ""
@@ -154,7 +144,7 @@ struct SearchOverlay: View {
             "SearchOverlay.appear",
             since: started,
             thresholdMs: 8,
-            metadata: "cards=\(cards.count) channels=\(channels.count)"
+            metadata: "cards=\(cards.count)"
         )
     }
 
@@ -222,31 +212,26 @@ struct SearchOverlay: View {
         }
     }
 
-    /// Single merged list of channels + cards, sorted by recency-of-attention
-    /// (last opened) so Cmd+K → Enter returns the user to whatever drawer they
-    /// were last in, regardless of whether that was a chat or a card.
+    /// Cards sorted by recency-of-attention (last opened) so Cmd+K → Enter
+    /// returns the user to whatever drawer they were last in.
     enum RecentItem: Identifiable {
-        case channel(Channel, opened: Date?, lastActivity: Date?)
         case card(KanbanCodeCard)
 
         var id: String {
             switch self {
-            case .channel(let ch, _, _): return "channel:\(ch.name)"
             case .card(let c): return c.id
             }
         }
 
         var sortKey: Date {
             switch self {
-            case .channel(_, let opened, let activity):
-                return opened ?? activity ?? .distantPast
             case .card(let c):
                 return c.link.lastOpenedAt ?? c.link.lastActivity ?? c.link.updatedAt
             }
         }
     }
 
-    /// Sorting every card and channel by recency, kept rather than recomputed.
+    /// Sorting every card by recency, kept rather than recomputed.
     /// This is read from the body, from the row builders and from the keyboard
     /// handlers, so as a computed property it re-sorted the whole board several
     /// times per render.
@@ -256,50 +241,22 @@ struct SearchOverlay: View {
     /// reading it back out on each of the tens of thousands of comparisons, to
     /// then throw all but the two dozen rows that are shown away.
     private func computeMergedRecent() -> [RecentItem] {
-        Self.mergedRecent(
-            cards: snapshotCards,
-            channels: channels,
-            channelLastOpened: channelLastOpened,
-            channelLastActivity: channelLastActivity
-        )
+        Self.mergedRecent(cards: snapshotCards)
     }
 
     static func mergedRecent(
         cards: [KanbanCodeCard],
-        channels: [Channel],
-        channelLastOpened: [String: Date],
-        channelLastActivity: [String: Date],
         limit: Int = recentLimit
     ) -> [RecentItem] {
-        enum Source {
-            case card(Int)
-            case channel(Int)
-        }
-        var keyed: [(key: Date, source: Source)] = []
-        keyed.reserveCapacity(cards.count + channels.count)
+        var keyed: [(key: Date, offset: Int)] = []
+        keyed.reserveCapacity(cards.count)
         for (offset, card) in cards.enumerated() {
             let key = card.link.lastOpenedAt ?? card.link.lastActivity ?? card.link.updatedAt
-            keyed.append((key, .card(offset)))
-        }
-        for (offset, channel) in channels.enumerated() {
-            let key = channelLastOpened[channel.name] ?? channelLastActivity[channel.name] ?? .distantPast
-            keyed.append((key, .channel(offset)))
+            keyed.append((key, offset))
         }
         keyed.sort { $0.key > $1.key }
 
-        return keyed.prefix(limit).map { entry in
-            switch entry.source {
-            case .card(let offset):
-                return RecentItem.card(cards[offset])
-            case .channel(let offset):
-                let channel = channels[offset]
-                return RecentItem.channel(
-                    channel,
-                    opened: channelLastOpened[channel.name],
-                    lastActivity: channelLastActivity[channel.name]
-                )
-            }
-        }
+        return keyed.prefix(limit).map { RecentItem.card(cards[$0.offset]) }
     }
 
     private static let recentLimit = 24
@@ -367,15 +324,12 @@ struct SearchOverlay: View {
     private static let maxQuickResults = 80
     private static let maxDeepResults = 80
 
-    /// When the user types a query, match against channel names + card fields and
-    /// interleave both in a single recency-ordered list. This is materialized
-    /// during query changes so selection and rendering use the same snapshot.
+    /// When the user types a query, match against card fields in a single
+    /// recency-ordered list. This is materialized during query changes so
+    /// selection and rendering use the same snapshot.
     private func computeFilteredItems(query: String, cards: [KanbanCodeCard]) -> [RecentItem] {
-        let channelMatches = matchedChannelsForQuery(query).map {
-            RecentItem.channel($0, opened: channelLastOpened[$0.name], lastActivity: channelLastActivity[$0.name])
-        }
         let cardMatches = cards.map(RecentItem.card)
-        return Array((channelMatches + cardMatches).sorted { $0.sortKey > $1.sortKey }.prefix(Self.maxQuickResults))
+        return Array(cardMatches.sorted { $0.sortKey > $1.sortKey }.prefix(Self.maxQuickResults))
     }
 
     private func moveSelection(by offset: Int) {
@@ -397,14 +351,6 @@ struct SearchOverlay: View {
 
     private func selectCurrentItem() {
         guard let currentId = selectedId else { return }
-
-        // Channels share the "channel:<name>" id scheme everywhere.
-        if currentId.hasPrefix("channel:") {
-            let name = String(currentId.dropFirst("channel:".count))
-            onSelectChannel(name)
-            isPresented = false
-            return
-        }
 
         if isCommandMode {
             if let cmd = filteredCommands.first(where: { $0.id == currentId }) {
@@ -443,14 +389,6 @@ struct SearchOverlay: View {
     @ViewBuilder
     private func mergedItemRow(_ item: RecentItem, queryTerms: [String]) -> some View {
         switch item {
-        case .channel(let ch, _, let lastActivity):
-            let id = "channel:\(ch.name)"
-            ChannelSearchRow(channel: ch, lastActivity: lastActivity, isHighlighted: id == selectedId)
-                .id(id)
-                .onTapGesture {
-                    onSelectChannel(ch.name)
-                    isPresented = false
-                }
         case .card(let card):
             let cardId = card.id
             SearchCardRow(card: card, queryTerms: queryTerms, isHighlighted: cardId == selectedId)
@@ -508,13 +446,6 @@ struct SearchOverlay: View {
                 }
             }
         }
-    }
-
-    private func matchedChannelsForQuery(_ rawQuery: String) -> [Channel] {
-        let q = rawQuery.trimmingCharacters(in: .whitespaces).lowercased()
-            .replacingOccurrences(of: "#", with: "")
-        guard !q.isEmpty else { return [] }
-        return channels.filter { $0.name.contains(q) }
     }
 
     private func computeFilteredCards(query: String) -> [KanbanCodeCard] {
@@ -983,63 +914,6 @@ struct HighlightedText: View {
             }
         }
         return attr
-    }
-}
-
-struct ChannelSearchRow: View {
-    let channel: Channel
-    var lastActivity: Date? = nil
-    let isHighlighted: Bool
-
-    private var relativeTime: String? {
-        guard let ts = lastActivity else { return nil }
-        let secs = Date().timeIntervalSince(ts)
-        switch secs {
-        case ..<60: return "just now"
-        case ..<3600: return "\(Int(secs / 60))m ago"
-        case ..<86400: return "\(Int(secs / 3600))h ago"
-        default: return "\(Int(secs / 86400))d ago"
-        }
-    }
-
-    // Mirrors `SearchCardRow`: two-line layout, title on top, metadata
-    // (icon + member count + time) on a secondary line.
-    var body: some View {
-        HStack {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("#\(channel.name)")
-                    .font(.app(.body))
-                    .lineLimit(1)
-
-                HStack(spacing: 6) {
-                    Image(systemName: "number")
-                        .font(.app(.caption))
-                        .foregroundStyle(.secondary)
-                        .opacity(0.6)
-
-                    Text("\(channel.members.count) member\(channel.members.count == 1 ? "" : "s")")
-                        .font(.app(.caption))
-                        .foregroundStyle(.secondary)
-
-                    if let rel = relativeTime {
-                        Text(rel)
-                            .font(.app(.caption))
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-            }
-            Spacer()
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 6)
-        .contentShape(Rectangle())
-        .background(isHighlighted ? Color.accentColor.opacity(0.18) : Color.clear, in: RoundedRectangle(cornerRadius: 6))
-        .overlay {
-            if isHighlighted {
-                RoundedRectangle(cornerRadius: 6)
-                    .stroke(Color.accentColor.opacity(0.45), lineWidth: 1)
-            }
-        }
     }
 }
 

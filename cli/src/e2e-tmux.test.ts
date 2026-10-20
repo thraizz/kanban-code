@@ -1,6 +1,6 @@
 /**
- * Real tmux integration test for channel fan-out.
- * Spins up 2 real tmux sessions, routes a broadcast through the CLI, and
+ * Real tmux integration test for card-to-card delivery.
+ * Spins up 2 real tmux sessions, routes messages through the CLI, and
  * captures each pane to verify the prefixed message arrived and the sender
  * did NOT echo back.
  *
@@ -64,7 +64,7 @@ const skipReason = !hasTmux()
     : false;
 const skipIfNoTmux = { skip: skipReason };
 
-describe("broadcast fan-out (real tmux)", skipIfNoTmux, () => {
+describe("card delivery (real tmux)", skipIfNoTmux, () => {
   let home: string;
   const sess = {
     alice: `kanban-e2e-alice-${Date.now()}`,
@@ -101,6 +101,7 @@ describe("broadcast fan-out (real tmux)", skipIfNoTmux, () => {
               createdAt: new Date().toISOString(),
               updatedAt: new Date().toISOString(),
               tmuxLink: { sessionName: sess.bob },
+              parentCardId: "card_alice",
               isRemote: false,
               prLinks: [],
               manualOverrides: {},
@@ -119,46 +120,6 @@ describe("broadcast fan-out (real tmux)", skipIfNoTmux, () => {
     tmuxKill(sess.alice);
     tmuxKill(sess.bob);
     rmSync(home, { recursive: true, force: true });
-  });
-
-  test("user broadcast reaches both agents' panes with #channel @user prefix", () => {
-    const env = { HOME: home };
-    runCli(["channel", "create", "demo", "--as-user"], env);
-    runCli(["channel", "join", "demo", "--as", "alice", "--as-card-id", "card_alice"], env);
-    runCli(["channel", "join", "demo", "--as", "bob", "--as-card-id", "card_bob"], env);
-
-    const r = runCli(["channel", "send", "demo", "standup at 10", "--as-user"], env);
-    assert.equal(r.code, 0, r.stderr);
-
-    // Give tmux a beat to process the paste+Enter.
-    execSync("sleep 0.5");
-
-    const a = tmuxCapture(sess.alice);
-    const b = tmuxCapture(sess.bob);
-
-    // Human handle is derived from the system user (NSUserName / os.userInfo)
-    // so the prefix can be any slug. Just match any handle.
-    assert.match(a, /Message from #demo @\w+[\s\S]*standup at 10/);
-    assert.match(b, /Message from #demo @\w+[\s\S]*standup at 10/);
-  });
-
-  test("agent broadcast does not echo back to sender", () => {
-    const env = { HOME: home };
-    // Alice sends as herself via --as. Fan-out should reach bob only.
-    runCli(
-      ["channel", "send", "demo", "hey bob", "--as", "alice", "--as-card-id", "card_alice"],
-      env
-    );
-    execSync("sleep 0.5");
-
-    const a = tmuxCapture(sess.alice);
-    const b = tmuxCapture(sess.bob);
-
-    // Bob receives
-    assert.match(b, /Message from #demo @alice[\s\S]*hey bob/);
-    // Alice does NOT see her own broadcast in her pane
-    const echoed = /Message from #demo @alice[\s\S]*hey bob/.test(a);
-    assert.equal(echoed, false, "sender received their own broadcast back (should be skipped)");
   });
 
   test("concurrent `kanban send` to two cards never crosses the prompts", async () => {
@@ -196,18 +157,15 @@ describe("broadcast fan-out (real tmux)", skipIfNoTmux, () => {
     }
   });
 
-  test("DM reaches only the recipient", () => {
-    const env = { HOME: home };
-    runCli(
-      ["dm", "send", "alice", "private hi", "--as", "bob", "--as-card-id", "card_bob"],
-      env
-    );
+  test("a subagent's parent DM reaches only the parent", () => {
+    const env = { HOME: home, KANBAN_CODE_HOME: join(home, ".kanban-code"), KANBAN_CARD_ID: "card_bob" };
+    const r = runCli(["parent", "dm", "private hi"], env);
+    assert.equal(r.code, 0, r.stderr);
     execSync("sleep 0.5");
     const a = tmuxCapture(sess.alice);
     const b = tmuxCapture(sess.bob);
-    assert.match(a, /DM from @bob.*private hi/);
-    const bot = b.split("\n");
-    const echoedOnBob = bot.some((l) => /DM from @bob.*private hi/.test(l));
+    assert.match(a, /DM from @bob-card \(subagent\).*private hi/);
+    const echoedOnBob = b.split("\n").some((l) => /DM from @bob-card.*private hi/.test(l));
     assert.equal(echoedOnBob, false);
   });
 });

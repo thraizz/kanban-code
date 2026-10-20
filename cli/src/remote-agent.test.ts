@@ -371,7 +371,7 @@ describe("remote agent protocol", () => {
 
     const request = {
       id: "req-1",
-      argv: ["channel", "send", "team", "hello"],
+      argv: ["send", "card-2", "hello"],
       cwd: "/home/boxd/app",
       env: { KANBAN_CARD_ID: "card-1" },
       images: [],

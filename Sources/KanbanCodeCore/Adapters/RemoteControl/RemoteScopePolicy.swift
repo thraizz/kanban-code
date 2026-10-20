@@ -6,7 +6,7 @@ import KanbanCodeRemoteKit
 /// added later is refused for them until it is listed here.
 enum RemoteScopePolicy {
     /// A route as the lists name it: `cards/search`, `cards/*/queue/*`, `attention/*/resolve`,
-    /// `channels/files`, `vault/replica`.
+    /// `vault/replica`.
     static func shape(_ rest: [String]) -> String {
         guard let first = rest.first else { return "" }
         switch first {
@@ -18,8 +18,6 @@ enum RemoteScopePolicy {
         case "attention":
             if rest.count == 3 { return "attention/*/\(rest[2])" }
             return rest.joined(separator: "/")
-        case "channels":
-            return rest.prefix(2).joined(separator: "/")
         default:
             return rest.joined(separator: "/")
         }
@@ -27,12 +25,11 @@ enum RemoteScopePolicy {
 
     /// What a paired master calls on its peer: card sync, forwarding of what
     /// the human does to a card the peer owns, moves between masters,
-    /// approvals, channels, agent sync, the vault replica and the scrubber.
+    /// approvals, agent sync, the vault replica and the scrubber.
     /// No terminal, and no vault route that asks for or edits a secret.
     static let peer: Set<String> = [
         "GET me", "GET board", "GET machines", "GET events", "GET peers", "GET links", "POST links/changed",
         "GET sync/state", "GET sync/file", "POST sync/changed", "POST optmem/run",
-        "POST cli", "GET channels/files", "PUT channels/files",
         "GET attention", "POST attention/presence", "POST attention/*/resolve", "POST attention/*/note",
         "GET vault/replica", "POST vault/replica", "POST vault/card-token",
         "GET vault/audit/hashes", "GET vault/audit/mirror", "POST vault/audit/mirror",

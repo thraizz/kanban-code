@@ -1,6 +1,6 @@
 # Boxd remote mode
 
-Kanban Code can run a card on its own boxd cloud machine. The tmux session, the coding assistant and the repository checkout live on the machine. The Mac keeps the board, the channels, the DMs and a mirror of every transcript.
+Kanban Code can run a card on its own boxd cloud machine. The tmux session, the coding assistant and the repository checkout live on the machine. The Mac keeps the board and a mirror of every transcript.
 
 This document describes the file layout on the machine and the bridge protocol between the Mac app and the machine. Settings and user flows are in `specs/remote/boxd.feature`.
 
@@ -87,7 +87,7 @@ When `KANBAN_REMOTE_PROXY` is set, the CLI does not run the command on the machi
 
 Commands that always run on the machine: `remote-agent`, `hooks install`.
 
-Commands refused in proxy mode: `channel share`, `slack *`, `daemon`, `launch`, `reconcile`, `open`, and any command with a `--project <path>` option.
+Commands refused in proxy mode: `daemon`, `launch`, `reconcile`, `open`, and any command with a `--project <path>` option.
 
 On the Mac the app runs the bundled CLI with the same arguments and `KANBAN_CARD_ID` set. The CLI uses `KANBAN_CARD_ID` as the caller identity before it looks at the tmux session.
 

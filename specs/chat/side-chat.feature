@@ -203,7 +203,7 @@ Feature: Side chat (/btw and /catchup)
     And a rush that lists `--human` gets the flag
 
   Scenario: What agents send is not recorded
-    When a prompt arrives from `kanban send`, a DM, a channel, a remote agent or a self-compact follow-up
+    When a prompt arrives from `kanban send`, a parent or subagent DM, a remote agent or a self-compact follow-up
     Then it is not written to the record
     And an agent-scope device cannot mark a prompt as mine
 

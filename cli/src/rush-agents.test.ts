@@ -20,7 +20,6 @@ import { agentIdentity } from "./agents/identity.js";
 import { ensureAgentSession } from "./agents/launch.js";
 import { rushHostId, rushPendingQuestion } from "./agents/rush-host.js";
 import { agentSessionName, deliverAgentMessage } from "./agents/session-name.js";
-import { rushQuestionText } from "./slack/bridge.js";
 import { listRushSessions, readLinks, setRushPath } from "./data.js";
 import { upsertCard, isoNow } from "./cards.js";
 
@@ -124,10 +123,6 @@ describe("rush questions", () => {
     assert.equal(rushPendingQuestion({ id: "x", sessionId: "s", state: "blocked", needs: "asks: Which DB?" }), "Which DB?");
     assert.equal(rushPendingQuestion({ id: "x", sessionId: "s", state: "blocked", needs: "Bash rm -rf /" }), undefined);
     assert.equal(rushPendingQuestion({ id: "x", sessionId: "s", state: "idle", needs: "asks: stale" }), undefined);
-  });
-
-  test("the Slack text names the agent and says how to answer", () => {
-    assert.equal(rushQuestionText("scout", "Which DB?"), ":question: *scout* asks: *Which DB?*\nReply in this channel to answer.");
   });
 });
 

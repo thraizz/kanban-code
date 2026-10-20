@@ -9,12 +9,6 @@ struct ListBoardView: View {
     @State private var sidebarReorderState = SidebarReorderState()
     @State private var renamingPinnedCardId: String?
     @State private var collapsedPinnedSubagentParents: Set<String> = []
-    var onOpenChannel: (String) -> Void = { _ in }
-    var onNewChannel: () -> Void = {}
-    var onDeleteChannel: (String) -> Void = { _ in }
-    var onRenameChannel: (String) -> Void = { _ in }
-    var unreadCountForChannel: (Channel) -> Int = { _ in 0 }
-    var onlineCountForChannel: (Channel) -> Int = { _ in 0 }
     var onStartCard: (String) -> Void = { _ in }
     var onResumeCard: (String) -> Void = { _ in }
     var onForkCard: (String, Bool) -> Void = { _, _ in }
@@ -100,7 +94,6 @@ struct ListBoardView: View {
             // engine while it reconciles the row across section boundaries.
             // There are only a handful of sections; row bodies remain lazy.
             VStack(alignment: .leading, spacing: 0) {
-                channelsSection
                 pinnedCardsSection
                 ForEach(sections, id: \.column) { section in
                     sectionView(for: section)
@@ -197,65 +190,6 @@ struct ListBoardView: View {
             onMigrateAssistant: { target in onMigrateAssistant(card.id, target) },
             onRenameRequest: { renamingPinnedCardId = card.id }
         )
-    }
-
-    @ViewBuilder
-    private var channelsSection: some View {
-        let channels = store.state.channels
-        if !channels.isEmpty {
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 6) {
-                    Text("Channels")
-                        .font(.app(.caption, weight: .semibold))
-                        .foregroundStyle(.tertiary)
-                        .textCase(.uppercase)
-                    Spacer()
-                    Button(action: onNewChannel) {
-                        Image(systemName: "plus")
-                            .font(.app(.caption))
-                    }
-                    .buttonStyle(.plain)
-                    .foregroundStyle(.secondary)
-                    .help("New chat channel")
-                }
-                .padding(.horizontal, 18)
-                .padding(.top, 8)
-                ForEach(channels) { ch in
-                    let msgs = store.state.channelMessages[ch.name]
-                    let last = msgs?.last
-                    SidebarReorderableRow(
-                        item: .channel(ch.id),
-                        reorderState: sidebarReorderState,
-                        onMove: reorderChannel
-                    ) {
-                        ChannelTile(
-                            channel: ch,
-                            onlineCount: onlineCountForChannel(ch),
-                            lastMessageAt: last?.ts,
-                            lastMessageBody: last?.body,
-                            isSelected: store.state.selectedChannelName == ch.name,
-                            unreadCount: unreadCountForChannel(ch),
-                            onOpen: { onOpenChannel(ch.name) },
-                            onDelete: { onDeleteChannel(ch.name) },
-                            onRename: { onRenameChannel(ch.name) }
-                        )
-                        .padding(.horizontal, 10)
-                    }
-                }
-                if channels.count > 1 {
-                    SidebarReorderEndTarget(
-                        kind: .channel(""),
-                        reorderState: sidebarReorderState,
-                        onMove: reorderChannel
-                    )
-                }
-            }
-            .padding(.bottom, 8)
-        }
-    }
-
-    private func reorderChannel(_ channelId: String, _ targetChannelId: String?, _ above: Bool) {
-        store.dispatch(.reorderChannel(channelId: channelId, targetChannelId: targetChannelId, above: above))
     }
 
     private func reorderPinnedCard(_ cardId: String, _ targetCardId: String?, _ above: Bool) {

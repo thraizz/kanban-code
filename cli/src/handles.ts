@@ -1,9 +1,8 @@
 /**
- * Handle generation for chat participants.
+ * Handle generation for cards.
  *
  * A handle is a short human-readable `@name` derived from a card's display
- * title. Handles are scoped per-channel; the same card may have different
- * handles in different channels only when a collision forces disambiguation.
+ * title, used to name the sender of a card-to-card message.
  */
 
 const MAX_HANDLE_LEN = 24;

@@ -56,9 +56,9 @@ struct ChatTextHighlight: Hashable {
 
 /// Links laid over the built text.
 ///
-/// References arrive already resolved rather than as a closure: the channel
-/// resolves them against the pull requests it knows about, which a cache key
-/// could never describe.
+/// References arrive already resolved rather than as a closure: the caller
+/// resolves them against what it knows about, which a cache key could never
+/// describe.
 struct ChatTextLinks: Hashable {
     /// Reference to destination, keyed by the reference exactly as written.
     var issueRefs: [String: URL] = [:]

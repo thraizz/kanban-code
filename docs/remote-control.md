@@ -71,9 +71,6 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `GET /v1/links?since=&epoch=`, `POST /v1/links/changed`, `GET /v1/peers` | any | peer sync |
 | `GET /v1/sync/state`, `GET /v1/sync/file?entry=&path=`, `POST /v1/sync/changed?machine=&what=` | full, peer | agent sync (Settings > Sync) |
 | `POST /v1/optmem/run` | full, peer | `{"id", "argv", "date"}` → `{"status", "stdout", "stderr"}`: a memo command on the OptMem home |
-| `POST /v1/cli` | full, peer | `RemoteCLIRequest` → `RemoteCLIResult` (`kanban channel`/`dm` only) |
-| `GET /v1/channels/files`, `GET /v1/channels/files/{path}?offset=` | any | channel files, for the mirror |
-| `PUT /v1/channels/files/{path}` | full, peer | creates a missing channel file, 204 or 409 |
 | `GET /v1/scrub/status`, `GET /v1/scrub/index`, `POST /v1/scrub/run`, `PUT /v1/scrub/schedule` | full, peer | the secret scrubber (see [`vault.md`](vault.md)) |
 | `GET /v1/events?all=1` (WebSocket) | any | `RemoteEvent` text frames |
 | `GET /v1/cards/{id}/terminal?session=<name>&cols=80&rows=24` (WebSocket) | full, terminal | terminal bytes |
@@ -114,7 +111,6 @@ The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: 
 - A card archived on one master has its sessions ended by the master that owns it, when that master reads the archive. Removing its worktree (the cleanup offered after an archive) runs on the owner too, through `worktree/remove`.
 - Liveness, turn state and the queue of a foreign card (rush's queue included) come from its owner's board, read every few seconds. Send now, edit (`PATCH /queue/{promptId}`), remove and new prompts go to the owner.
 - A master that runs all the time (`kanban-code-server`, `alwaysOn` in its identity) polls GitHub for the pull requests of every card while it is online, and writes them on cards other masters own; the others do not poll. With no such master online, the master with the lowest machine id polls. Masters send the repository (`host/owner/name`) of their project paths with the links, so the poller needs no checkout of them.
-- The always-on master is the channels home: channels and DMs live in its `~/.kanban-code/channels/`. Another master mirrors that directory (appends by offset, the rest whole, deletions follow; `read-state.json` and `drafts.json` stay local), writes `channels-home.json` for its CLI, and sends every channel write there: its `kanban channel`/`kanban dm` commands and its UI go through `POST /v1/cli`. The first time a Mac pairs with a home that has no channels, it copies its own there. Channel messages for a card another master runs are queued on that master (through the command inbox from the CLI).
 - `kanban subagent` and the other command inbox operations run on the master whose CLI wrote them, the box included.
 
 ### Peer scope
@@ -125,7 +121,6 @@ The token a master holds for its peer has the `peer` scope, in both directions. 
 - What the human does to a card the peer owns: `POST /v1/tasks`, `GET /v1/cards/search`, and on `/v1/cards/{id}`: `GET`, `PATCH`, `DELETE`, `transcript`, `transcript/raw`, `prompt`, `queue/{promptId}`, `interrupt`, `resume`, `side-chat`, `slash-commands`, `pasted-image`, `discover`, `worktree/remove`.
 - Moves between masters: `POST /v1/cards/{id}/move`, `GET /v1/cards/{id}/handover`.
 - Approvals: `GET /v1/attention`, `POST /v1/attention/presence`, `POST /v1/attention/{id}/resolve`, `POST /v1/attention/{id}/note` (the note of a refused vault request, see [vault.md](vault.md)).
-- Channels: `POST /v1/cli` (`kanban channel` and `dm` only), `GET` and `PUT /v1/channels/files`.
 - Agent sync: `/v1/sync/state`, `/v1/sync/file`, `/v1/sync/changed`, `POST /v1/optmem/run` (memo `note`, `nap`, `forget`, `wake`, `recall`, `zoom` only).
 - Vault: `GET` and `POST /v1/vault/replica` (the encrypted file), `POST /v1/vault/card-token`, and the audit log mirror (`GET /v1/vault/audit/hashes`, `GET` and `POST /v1/vault/audit/mirror`).
 - Scrubber: `/v1/scrub/status`, `/v1/scrub/index`, `/v1/scrub/run`, `/v1/scrub/schedule`.

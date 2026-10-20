@@ -194,9 +194,6 @@ final class AppComposition {
         Task { await engine.runOwnershipLoop() }
         let mirror = PeerTranscriptMirror(engine: engine)
         Task { await mirror.run() }
-        // Channels live on the channels home when it is another master.
-        Task { await effectHandler.setChannelsHome { [weak engine] in await engine?.channelsHomeRoute() } }
-        Task { await engine.runChannelsMirror() }
         NotificationCenter.default.addObserver(forName: .kanbanCodeSettingsChanged, object: nil, queue: .main) { _ in
             let peers = Self.readPeers()
             Task { await peerSync.setPeers(peers) }

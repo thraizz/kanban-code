@@ -22,7 +22,6 @@ public enum DialogState: Equatable, Sendable {
     case confirmMigration(cardId: String, targetAssistant: CodingAssistant, recentTurnLimit: Int?)
     case confirmTrimSession(cardId: String)
     case remoteWorktreeCleanup(cardId: String, remotePath: String, localPath: String, errorMessage: String)
-    case confirmDeleteChannel(name: String)
     /// Archive a card that has a boxd machine: the machine is destroyed too.
     case confirmArchiveWithMachine(cardId: String)
     /// Destroy the boxd machine of a card and keep the card.
@@ -34,11 +33,6 @@ public enum DialogState: Equatable, Sendable {
 
 // MARK: - AppState
 
-/// A single chat-broadcast target: a tmux session and the assistant running
-/// in it. Used by the reducer to describe fan-out targets for channel/DM
-/// message effects; the effect handler uses `assistant` to decide whether
-/// to paste images via `ImageSender` (Claude/Gemini) or fall back to a
-/// text-only notification.
 /// A card another master owns, as its owner reports it.
 public struct PeerCardState: Sendable, Equatable {
     public var isLive: Bool
@@ -56,27 +50,10 @@ public struct PeerCardState: Sendable, Equatable {
     }
 }
 
-public struct ChannelMemberTarget: Sendable, Equatable {
-    public let sessionName: String
-    public let assistant: CodingAssistant
-    /// Set when another master runs the card: the message goes to that
-    /// master as a queued prompt instead of a local tmux paste.
-    public let foreignCardId: String?
-    public init(sessionName: String, assistant: CodingAssistant, foreignCardId: String? = nil) {
-        self.sessionName = sessionName
-        self.assistant = assistant
-        self.foreignCardId = foreignCardId
-    }
-}
-
-/// Which drawer (if any) is currently open. The enum makes it impossible to
-/// have a card AND a channel (or DM) selected at the same time — a family of
-/// bugs that existed with three independent `Optional` fields.
+/// Which drawer (if any) is currently open.
 public enum Drawer: Equatable, Sendable {
     case none
     case card(String)
-    case channel(String)
-    case dm(ChannelParticipant)
 }
 
 /// Single source of truth for the entire board.
@@ -125,8 +102,7 @@ public final class AppState: @unchecked Sendable {
     public var failedPrompts: [String: [FailedPrompt]] = [:]
     /// Single source of truth for which drawer is open. Only ONE thing can be
     /// selected at a time; the type system enforces that invariant. The legacy
-    /// `selectedCardId` / `selectedChannelName` / `selectedDMParticipant`
-    /// fields are kept as computed accessors that read/write this enum.
+    /// `selectedCardId` field is kept as a computed accessor over this enum.
     public var openDrawer: Drawer = .none { didSet { cardInputsVersion &+= 1 } }
     public var selectedProjectPath: String? { didSet { cardInputsVersion &+= 1 } }
     public var paletteOpen: Bool = false
@@ -267,46 +243,8 @@ public final class AppState: @unchecked Sendable {
     /// `syncSeq` of the last change of each card or tombstone.
     @ObservationIgnored public var linkSeqs: [String: Int] = [:]
 
-    // MARK: - Chat channels
-
-    /// All known channels (loaded from ~/.kanban-code/channels/channels.json).
-    public var channels: [Channel] = []
-
-    /// Messages per channel, keyed by channel name. Populated lazily when a channel is selected.
-    public var channelMessages: [String: [ChannelMessage]] = [:]
-
-    /// Is the "create channel" dialog open?
-    public var createChannelDialogOpen: Bool = false
-
-    /// Per-channel "I have read up to this message id". Simpler than timestamps
-    /// because message ids are unambiguous — no same-ts collisions, no
-    /// `.distantPast` / `.now` guessing, no races with the reducer's clock.
-    /// Persisted under `read-state.json`.
-    public var channelLastReadMessageId: [String: String] = [:]
-
-    /// Same idea for DM threads, keyed by `Reducer.dmKey(other)`.
-    public var dmLastReadMessageId: [String: String] = [:]
-
-    /// Per-channel last-opened timestamp — bumped when the drawer is selected.
-    /// Used to order channels in Cmd+K by recency-of-attention (just like
-    /// `Link.lastOpenedAt` does for cards).
-    public var channelLastOpened: [String: Date] = [:]
-
-    /// Per-channel draft text — preserved across drawer switches so the user
-    /// doesn't lose in-progress typing. Keyed by channel name.
-    public var channelDrafts: [String: String] = [:]
-
-    /// Per-DM draft text — keyed by `Reducer.dmKey(other)`.
-    public var dmDrafts: [String: String] = [:]
-
-    /// DM messages keyed by the other party's handle (or "@handle" for userlike).
-    public var dmMessages: [String: [ChannelMessage]] = [:]
-
-    /// Latest DM message id seen per pair key — used to suppress duplicate system notifications.
-    public var dmLastSeenMessageId: [String: String] = [:]
-
     // MARK: - Legacy selected* accessors (shim over `openDrawer`)
-    // These preserve the original API so existing views/tests keep working while
+    // This preserves the original API so existing views/tests keep working while
     // the single-source-of-truth invariant is enforced by `openDrawer`.
 
     public var selectedCardId: String? {
@@ -320,35 +258,6 @@ public final class AppState: @unchecked Sendable {
         }
     }
 
-    public var selectedChannelName: String? {
-        get {
-            if case .channel(let name) = openDrawer { return name }
-            return nil
-        }
-        set {
-            if let name = newValue { openDrawer = .channel(name) }
-            else if case .channel = openDrawer { openDrawer = .none }
-        }
-    }
-
-    public var selectedDMParticipant: ChannelParticipant? {
-        get {
-            if case .dm(let p) = openDrawer { return p }
-            return nil
-        }
-        set {
-            if let p = newValue { openDrawer = .dm(p) }
-            else if case .dm = openDrawer { openDrawer = .none }
-        }
-    }
-
-    /// Latest channel message id seen per channel name — same idea for channel notifications.
-    public var channelLastSeenMessageId: [String: String] = [:]
-
-    /// True when the app is frontmost (visible & focused). When true, notifications
-    /// for new messages are suppressed — the unread badges are enough.
-    public var appIsFrontmost: Bool = true
-
     /// Decisions agents wait on (questions, plans, permissions, vault
     /// releases), by id. Open ones plus the recently resolved, which stay a
     /// short while so every device learns they were resolved.
@@ -357,23 +266,6 @@ public final class AppState: @unchecked Sendable {
     /// Open attention requests, oldest first.
     public var openAttentionRequests: [AttentionRequest] {
         attentionRequests.values.filter(\.isOpen).sorted { $0.createdAt < $1.createdAt }
-    }
-
-    /// The human's handle, derived from `NSUserName()` (slugified, fallback "user").
-    public var humanHandle: String = AppState.defaultHumanHandle()
-
-    /// Participant representing the human (cardId=nil).
-    public var humanParticipant: ChannelParticipant {
-        ChannelParticipant(cardId: nil, handle: humanHandle)
-    }
-
-    static func defaultHumanHandle() -> String {
-        // Swift on macOS: NSUserName() is available via Foundation.
-        let raw = NSUserName()
-        let lower = raw.lowercased()
-        let slug = lower.replacingOccurrences(of: #"[^a-z0-9]+"#, with: "_", options: .regularExpression)
-            .trimmingCharacters(in: CharacterSet(charactersIn: "_"))
-        return slug.isEmpty ? "user" : slug
     }
 
     // MARK: - Derived
@@ -838,21 +730,6 @@ public enum Action: Sendable {
     // Drawer (single source of truth — closes whichever is open)
     case closeDrawer
 
-    // Chat channels
-    case refreshChannels
-    case refreshChannelMessages(channelName: String)
-    case channelsLoaded(channels: [Channel])
-    case channelMessagesLoaded(channelName: String, messages: [ChannelMessage])
-    case selectChannel(name: String?)
-    case createChannel(name: String)
-    case reorderChannel(channelId: String, targetChannelId: String?, above: Bool)
-    case sendChannelMessage(channelName: String, body: String, imagePaths: [String] = [])
-    case channelMessageAppended(channelName: String, message: ChannelMessage)
-    case markChannelRead(name: String)
-    case channelReadStateLoaded(channels: [String: String], dms: [String: String])
-    case refreshChannelReadState
-    case setAppFrontmost(Bool)
-
     // Attention (decisions an agent waits on)
     /// A request is raised, or an open one is updated (same id).
     case attentionRaised(AttentionRequest)
@@ -866,23 +743,6 @@ public enum Action: Sendable {
     case attentionNoteAwaited(id: String, until: Date)
     /// Resolved requests older than `before` are dropped.
     case attentionPruned(before: Date)
-    case deleteChannel(name: String)
-    case renameChannel(old: String, new: String)
-    /// Kick a member out of a channel (e.g. a dead agent whose card no longer
-    /// exists). Persists to channels.json and appends a leave event.
-    case kickChannelMember(channelName: String, member: ChannelParticipant)
-    case draftsLoaded(channels: [String: String], dms: [String: String])
-    case setChannelDraft(channelName: String, body: String)
-    case setDMDraft(other: ChannelParticipant, body: String)
-    case loadDrafts
-
-    // DMs
-    case selectDM(other: ChannelParticipant?)
-    case refreshDMMessages(other: ChannelParticipant)
-    case dmMessagesLoaded(other: ChannelParticipant, messages: [ChannelMessage])
-    case sendDirectMessage(to: ChannelParticipant, body: String, imagePaths: [String] = [])
-    case dmMessageAppended(other: ChannelParticipant, message: ChannelMessage)
-
     public enum LinkType: Sendable {
         case pr(number: Int), issue, worktree, tmux
     }
@@ -977,23 +837,6 @@ public enum Effect: Sendable {
     case stopRemoteMachine(machineName: String, reason: RemotePausedReason)
     case destroyRemoteMachine(machineName: String)
 
-    // Channels
-    case loadChannels
-    case loadChannelMessages(channelName: String)
-    case createChannelOnDisk(name: String, by: ChannelParticipant)
-    case persistChannels([Channel])
-    case sendChannelMessageToDisk(channelName: String, from: ChannelParticipant, body: String, imagePaths: [String], memberTargets: [ChannelMemberTarget])
-    case loadChannelReadState
-    case persistChannelReadState(channels: [String: String], dms: [String: String])
-    case loadDrafts
-    case persistDrafts(channels: [String: String], dms: [String: String])
-    case loadDMMessages(self_: ChannelParticipant, other: ChannelParticipant)
-    case sendDMToDisk(from: ChannelParticipant, to: ChannelParticipant, body: String, imagePaths: [String], toTarget: ChannelMemberTarget?)
-    case notifyDMReceived(fromHandle: String, body: String)
-    case notifyChannelMessage(channel: String, fromHandle: String, body: String)
-    case deleteChannelOnDisk(name: String)
-    case renameChannelOnDisk(old: String, new: String)
-    case leaveChannelOnDisk(name: String, member: ChannelParticipant)
 }
 
 // MARK: - Reducer
@@ -1001,28 +844,6 @@ public enum Effect: Sendable {
 /// Pure function: (state, action) → (state', effects).
 /// No async. No side effects. Fully testable.
 public enum Reducer {
-    /// DM state is keyed by a stable identifier for the OTHER party.
-    /// Uses cardId when present, else `@handle`.
-    public static func dmKey(_ p: ChannelParticipant) -> String {
-        p.cardId ?? "@\(p.handle)"
-    }
-
-    /// Snapshot of current read-state as a disk-persistable effect.
-    static func persistReadState(_ state: AppState) -> Effect {
-        .persistChannelReadState(channels: state.channelLastReadMessageId, dms: state.dmLastReadMessageId)
-    }
-
-    /// Id of the latest *real* chat message in a channel.
-    /// Pinning the read-marker to the last entry of any type was a subtle bug:
-    /// when the last line in the jsonl is a join / leave / system event,
-    /// `unreadCount` filters it out before searching, can't locate the marker,
-    /// and falls back to "count every real message as unread" — so opening the
-    /// channel appeared to clear the badge but it came back on the next render.
-    /// Always pin to the last `.message`, skipping metadata events.
-    static func latestReadableMessageId(in messages: [ChannelMessage]) -> String? {
-        messages.last(where: { $0.type == .message })?.id
-    }
-
     private static func tmuxLinkScore(_ link: Link, sessionName: String, liveTmuxNames: Set<String>) -> Int {
         var score = 0
         if sessionName.contains(link.id) { score += 1000 }
@@ -1560,180 +1381,6 @@ public enum Reducer {
             state.activeDialog = .none
             return []
 
-        // MARK: Channels
-
-        case .refreshChannels:
-            return [.loadChannels]
-
-        case .refreshChannelMessages(let name):
-            return [.loadChannelMessages(channelName: name)]
-
-        case .channelsLoaded(let channels):
-            let sortedChannels = channels.sorted {
-                switch ($0.sortOrder, $1.sortOrder) {
-                case (let a?, let b?) where a != b: return a < b
-                case (_?, nil): return true
-                case (nil, _?): return false
-                default:
-                    if $0.createdAt != $1.createdAt { return $0.createdAt < $1.createdAt }
-                    return $0.id < $1.id
-                }
-            }
-            if state.channels != sortedChannels {
-                state.channels = sortedChannels
-            }
-            // Initial channel discovery needs message tails for sidebar
-            // timestamps. Later metadata refreshes must not reload every
-            // channel tail: that fans out into many channelMessagesLoaded
-            // mutations and can make SwiftUI relayout the whole channel UI.
-            return sortedChannels.compactMap { channel in
-                state.channelMessages[channel.name] == nil
-                    ? .loadChannelMessages(channelName: channel.name)
-                    : nil
-            }
-
-        case .reorderChannel(let channelId, let targetChannelId, let above):
-            guard let draggedChannel = state.channels.first(where: { $0.id == channelId }) else {
-                return []
-            }
-            var channels = state.channels.filter { $0.id != channelId }
-            let insertIndex: Int
-            if let targetChannelId,
-               let targetIndex = channels.firstIndex(where: { $0.id == targetChannelId }) {
-                insertIndex = above ? targetIndex : targetIndex + 1
-            } else {
-                insertIndex = channels.count
-            }
-            channels.insert(draggedChannel, at: insertIndex)
-            for index in channels.indices {
-                channels[index].sortOrder = index
-            }
-            state.channels = channels
-            return [.persistChannels(channels)]
-
-        case .channelMessagesLoaded(let name, let messages):
-            let existingMessages = state.channelMessages[name]
-            let isFirstLoad = existingMessages == nil
-            if !isFirstLoad, messages.isEmpty, existingMessages?.isEmpty == false {
-                KanbanCodeLog.warn("channels", "Ignoring empty reload for #\(name); preserving existing messages")
-                return []
-            }
-            let messagesChanged = existingMessages != messages
-            if messagesChanged {
-                state.channelMessages[name] = messages
-                Self.logChannelPayloadIfLarge(kind: "channel", name: name, messages: messages)
-            }
-            var effects: [Effect] = []
-
-            // First time ever loading this channel (and there's no persisted
-            // marker either): treat everything as read so the tile doesn't
-            // blast a badge for pre-existing history.
-            if isFirstLoad, state.channelLastReadMessageId[name] == nil,
-               let latestId = Self.latestReadableMessageId(in: messages) {
-                state.channelLastReadMessageId[name] = latestId
-                effects.append(Self.persistReadState(state))
-            }
-
-            // Notify only if: not first load, message is from someone else,
-            // drawer isn't focused on this channel, AND app isn't frontmost.
-            if messagesChanged,
-               !isFirstLoad,
-               !state.appIsFrontmost,
-               let latest = messages.last(where: { $0.type == .message }),
-               latest.id != state.channelLastSeenMessageId[name],
-               latest.from.handle != state.humanHandle,
-               state.selectedChannelName != name {
-                effects.append(.notifyChannelMessage(channel: name, fromHandle: latest.from.handle, body: latest.body))
-            }
-            if let latest = messages.last, state.channelLastSeenMessageId[name] != latest.id {
-                state.channelLastSeenMessageId[name] = latest.id
-            }
-
-            // If this channel's drawer is open, auto-mark-read so inbound
-            // messages don't resurrect the unread badge.
-            if state.selectedChannelName == name,
-               let latestId = Self.latestReadableMessageId(in: messages) {
-                if state.channelLastReadMessageId[name] != latestId {
-                    state.channelLastReadMessageId[name] = latestId
-                    effects.append(Self.persistReadState(state))
-                }
-            }
-            return effects
-
-        case .selectChannel(let name):
-            state.selectedChannelName = name
-            // Mutual exclusion is enforced by the `openDrawer` enum.
-            if let name = name {
-                state.channelLastOpened[name] = .now
-                var effects: [Effect] = [.loadChannelMessages(channelName: name)]
-                // Mark-as-read: pin lastRead to the latest real message id. If
-                // messages haven't loaded yet, the subsequent
-                // `channelMessagesLoaded` path will pin it to the real latest.
-                if let latestId = Self.latestReadableMessageId(in: state.channelMessages[name] ?? []) {
-                    if state.channelLastReadMessageId[name] != latestId {
-                        state.channelLastReadMessageId[name] = latestId
-                        effects.append(Self.persistReadState(state))
-                    }
-                }
-                return effects
-            }
-            return []
-
-        case .markChannelRead(let name):
-            guard let latestId = Self.latestReadableMessageId(in: state.channelMessages[name] ?? []) else { return [] }
-            if state.channelLastReadMessageId[name] != latestId {
-                state.channelLastReadMessageId[name] = latestId
-                return [Self.persistReadState(state)]
-            }
-            return []
-
-        case .channelReadStateLoaded(let channelIds, let dmIds):
-            guard state.channelLastReadMessageId != channelIds || state.dmLastReadMessageId != dmIds else {
-                return []
-            }
-            state.channelLastReadMessageId = channelIds
-            state.dmLastReadMessageId = dmIds
-            return []
-
-        case .refreshChannelReadState:
-            return [.loadChannelReadState]
-
-        case .loadDrafts:
-            return [.loadDrafts]
-
-        case .draftsLoaded(let channels, let dms):
-            guard state.channelDrafts != channels || state.dmDrafts != dms else {
-                return []
-            }
-            state.channelDrafts = channels
-            state.dmDrafts = dms
-            return []
-
-        case .setChannelDraft(let name, let body):
-            let current = state.channelDrafts[name] ?? ""
-            guard current != body else { return [] }
-            if body.isEmpty {
-                state.channelDrafts.removeValue(forKey: name)
-            } else {
-                state.channelDrafts[name] = body
-            }
-            return [.persistDrafts(channels: state.channelDrafts, dms: state.dmDrafts)]
-
-        case .setDMDraft(let other, let body):
-            let key = Self.dmKey(other)
-            let current = state.dmDrafts[key] ?? ""
-            guard current != body else { return [] }
-            if body.isEmpty {
-                state.dmDrafts.removeValue(forKey: key)
-            } else {
-                state.dmDrafts[key] = body
-            }
-            return [.persistDrafts(channels: state.channelDrafts, dms: state.dmDrafts)]
-
-        case .setAppFrontmost(let active):
-            state.appIsFrontmost = active
-            return []
-
         // MARK: Attention
 
         case .attentionRaised(let request):
@@ -1771,216 +1418,6 @@ public enum Reducer {
             state.attentionRequests = state.attentionRequests.filter { _, request in
                 guard let resolvedAt = request.resolvedAt else { return true }
                 return resolvedAt >= before
-            }
-            return []
-
-        // MARK: DMs
-
-        case .selectDM(let other):
-            state.selectedDMParticipant = other
-            if let other = other {
-                let me = state.humanParticipant
-                var effects: [Effect] = [.loadDMMessages(self_: me, other: other)]
-                let key = Self.dmKey(other)
-                if let latestId = state.dmMessages[key]?.last?.id {
-                    if state.dmLastReadMessageId[key] != latestId {
-                        state.dmLastReadMessageId[key] = latestId
-                        effects.append(Self.persistReadState(state))
-                    }
-                }
-                return effects
-            }
-            return []
-
-        case .refreshDMMessages(let other):
-            return [.loadDMMessages(self_: state.humanParticipant, other: other)]
-
-        case .dmMessagesLoaded(let other, let messages):
-            let key = Self.dmKey(other)
-            let existingMessages = state.dmMessages[key]
-            let isFirstLoad = existingMessages == nil
-            if !isFirstLoad, messages.isEmpty, existingMessages?.isEmpty == false {
-                KanbanCodeLog.warn("channels", "Ignoring empty DM reload for @\(other.handle); preserving existing messages")
-                return []
-            }
-            let messagesChanged = existingMessages != messages
-            if messagesChanged {
-                state.dmMessages[key] = messages
-                Self.logChannelPayloadIfLarge(kind: "dm", name: key, messages: messages)
-            }
-            var effects: [Effect] = []
-
-            // Seed lastRead to the latest id on first-ever load so we don't
-            // blast unreads for pre-existing history.
-            if isFirstLoad, state.dmLastReadMessageId[key] == nil,
-               let latestId = messages.last?.id {
-                state.dmLastReadMessageId[key] = latestId
-                effects.append(Self.persistReadState(state))
-            }
-
-            if messagesChanged,
-               !isFirstLoad,
-               !state.appIsFrontmost,
-               let latest = messages.last(where: { $0.type == .message }),
-               latest.id != state.dmLastSeenMessageId[key],
-               latest.from.handle != state.humanHandle,
-               state.selectedDMParticipant != other {
-                effects.append(.notifyDMReceived(fromHandle: latest.from.handle, body: latest.body))
-            }
-            if let latest = messages.last {
-                state.dmLastSeenMessageId[key] = latest.id
-            }
-
-            // Auto-mark-read if the drawer is focused on this DM.
-            if state.selectedDMParticipant == other, let latestId = messages.last?.id {
-                if state.dmLastReadMessageId[key] != latestId {
-                    state.dmLastReadMessageId[key] = latestId
-                    effects.append(Self.persistReadState(state))
-                }
-            }
-            return effects
-
-        case .sendDirectMessage(let to, let body, let imagePaths):
-            let from = state.humanParticipant
-            let target: ChannelMemberTarget? = {
-                guard let cid = to.cardId,
-                      let link = state.links[cid],
-                      let sess = link.tmuxLink?.sessionName
-                else { return nil }
-                return ChannelMemberTarget(sessionName: sess, assistant: link.effectiveAssistant,
-                                           foreignCardId: state.isOwnedLocally(link) ? nil : link.id)
-            }()
-            return [.sendDMToDisk(from: from, to: to, body: body, imagePaths: imagePaths, toTarget: target)]
-
-        case .dmMessageAppended(let other, let message):
-            let key = Self.dmKey(other)
-            var msgs = state.dmMessages[key] ?? []
-            if !msgs.contains(where: { $0.id == message.id }) {
-                msgs.append(message)
-                msgs.sort { $0.ts < $1.ts }
-            }
-            state.dmMessages[key] = msgs
-            let mine = message.from.cardId == nil && message.from.handle == state.humanHandle
-            let focused = state.selectedDMParticipant == other
-            if mine || focused {
-                state.dmLastReadMessageId[key] = message.id
-                return [Self.persistReadState(state)]
-            }
-            return []
-
-        case .deleteChannel(let name):
-            let clean = name.replacingOccurrences(of: "#", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard !clean.isEmpty else { return [] }
-            state.channels.removeAll { $0.name == clean }
-            state.channelMessages.removeValue(forKey: clean)
-            state.channelLastSeenMessageId.removeValue(forKey: clean)
-            state.channelLastReadMessageId.removeValue(forKey: clean)
-            state.channelLastOpened.removeValue(forKey: clean)
-            state.channelDrafts.removeValue(forKey: clean)
-            if state.selectedChannelName == clean {
-                state.selectedChannelName = nil
-            }
-            return [.deleteChannelOnDisk(name: clean), .loadChannels]
-
-        case .renameChannel(let old, let new):
-            let oldName = old.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let newName = new
-                .replacingOccurrences(of: "#", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard !oldName.isEmpty, !newName.isEmpty, oldName != newName else { return [] }
-            guard state.channels.contains(where: { $0.name == oldName }) else { return [] }
-            guard !state.channels.contains(where: { $0.name == newName }) else {
-                state.notice = Notice("Channel #\(newName) already exists")
-                return []
-            }
-            // Carry in-memory state over to the new key so the UI updates instantly;
-            // disk rename happens asynchronously and triggers a refresh.
-            if let idx = state.channels.firstIndex(where: { $0.name == oldName }) {
-                state.channels[idx].name = newName
-            }
-            if let msgs = state.channelMessages.removeValue(forKey: oldName) {
-                state.channelMessages[newName] = msgs
-            }
-            if let seen = state.channelLastSeenMessageId.removeValue(forKey: oldName) {
-                state.channelLastSeenMessageId[newName] = seen
-            }
-            if let read = state.channelLastReadMessageId.removeValue(forKey: oldName) {
-                state.channelLastReadMessageId[newName] = read
-            }
-            if let opened = state.channelLastOpened.removeValue(forKey: oldName) {
-                state.channelLastOpened[newName] = opened
-            }
-            if let draft = state.channelDrafts.removeValue(forKey: oldName) {
-                state.channelDrafts[newName] = draft
-            }
-            if state.selectedChannelName == oldName {
-                state.selectedChannelName = newName
-            }
-            return [.renameChannelOnDisk(old: oldName, new: newName), .loadChannels]
-
-        case .createChannel(let rawName):
-            let name = rawName
-                .replacingOccurrences(of: "#", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard !name.isEmpty else { return [] }
-            let by = state.humanParticipant
-            return [.createChannelOnDisk(name: name, by: by), .loadChannels]
-
-        case .kickChannelMember(let channelName, let member):
-            let clean = channelName
-                .replacingOccurrences(of: "#", with: "")
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-                .lowercased()
-            guard !clean.isEmpty,
-                  let idx = state.channels.firstIndex(where: { $0.name == clean })
-            else { return [] }
-            // Optimistic removal so the UI chip disappears immediately; the
-            // disk effect + watcher refresh will re-confirm.
-            state.channels[idx].members.removeAll { m in
-                if let cA = m.cardId, let cB = member.cardId { return cA == cB }
-                return m.handle == member.handle
-            }
-            return [.leaveChannelOnDisk(name: clean, member: member), .loadChannels]
-
-        case .sendChannelMessage(let channelName, let body, let imagePaths):
-            let from = state.humanParticipant
-            let memberTargets: [ChannelMemberTarget] = {
-                guard let ch = state.channels.first(where: { $0.name == channelName }) else { return [] }
-                return ch.members.compactMap { m -> ChannelMemberTarget? in
-                    guard let cardId = m.cardId,
-                          let link = state.links[cardId],
-                          let sess = link.tmuxLink?.sessionName
-                    else { return nil }
-                    return ChannelMemberTarget(sessionName: sess, assistant: link.effectiveAssistant,
-                                           foreignCardId: state.isOwnedLocally(link) ? nil : link.id)
-                }
-            }()
-            return [.sendChannelMessageToDisk(channelName: channelName, from: from, body: body, imagePaths: imagePaths, memberTargets: memberTargets)]
-
-        case .channelMessageAppended(let channelName, let msg):
-            var msgs = state.channelMessages[channelName] ?? []
-            let didAppend = !msgs.contains(where: { $0.id == msg.id })
-            if didAppend {
-                msgs.append(msg)
-                msgs.sort { $0.ts < $1.ts }
-                state.channelMessages[channelName] = msgs
-            }
-            // If I sent this message OR I'm currently looking at this channel,
-            // bump the read marker — but ONLY for real chat messages. Joins /
-            // leaves / system events don't count as "read content", and pinning
-            // to them makes the unread counter's lookup miss (→ every real
-            // message re-counts as unread).
-            let mine = msg.from.cardId == nil && msg.from.handle == state.humanHandle
-            let focused = state.selectedChannelName == channelName
-            if (mine || focused), msg.type == .message {
-                if state.channelLastReadMessageId[channelName] != msg.id {
-                    state.channelLastReadMessageId[channelName] = msg.id
-                    return [Self.persistReadState(state)]
-                }
             }
             return []
 
@@ -3125,16 +2562,6 @@ public enum Reducer {
             state.isRefreshingBacklog = refreshing
             return []
         }
-    }
-
-    private static func logChannelPayloadIfLarge(kind: String, name: String, messages: [ChannelMessage]) {
-        let bodyChars = messages.reduce(0) { $0 + $1.body.count }
-        let imageCount = messages.reduce(0) { $0 + ($1.imagePaths?.count ?? 0) }
-        guard messages.count >= 250 || bodyChars >= 250_000 || imageCount >= 25 else { return }
-        KanbanCodeLog.info(
-            "memory-context",
-            "\(kind)MessagesLoaded name=\(name) messages=\(messages.count) bodyChars=\(bodyChars) images=\(imageCount)"
-        )
     }
 }
 

@@ -62,11 +62,6 @@ public final class MasterEngine {
     /// request resolves.
     public var vaultUnsealed: (@Sendable (String, VaultUnsealed) async -> Void)?
 
-    /// Wakes the channels mirror after a channel write.
-    let channelsPoke = AsyncSignal()
-    /// Display name of the channels home while it is another master.
-    public internal(set) var channelsHomeName: String?
-
     /// The side chats (`/btw`, `/catchup`) running for this master's cards.
     public lazy var sideChat = SideChatService(runner: ClaudeSideChatRunner(kanbanHome: platform.kanbanHome))
     /// What the human typed and sent from a Kanban chat, by card.

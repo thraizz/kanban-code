@@ -873,7 +873,7 @@ struct MasterHandoverTests {
     }
 }
 
-// MARK: - Roles, channels and commands across masters
+// MARK: - Roles across masters
 
 @Suite("Masters share the work only one of them does", .serialized)
 @MainActor
@@ -891,15 +891,6 @@ struct MasterRolesTests {
         #expect(MasterRoles.prPollingLeader(local: mac, peers: [peer("machine_x", online: true)]) == "machine_m")
         let box = MachineIdentity(id: "machine_z", name: "box", alwaysOn: true)
         #expect(MasterRoles.prPollingLeader(local: box, peers: [peer("machine_m", online: true)]) == "machine_z")
-    }
-
-    @Test("the channels home is the always-on master, online or not")
-    func channelsHome() {
-        let mac = MachineIdentity(id: "machine_m", name: "mac")
-        #expect(MasterRoles.channelsHome(local: mac, peers: [peer("machine_a", online: true)]) == nil)
-        #expect(MasterRoles.channelsHome(local: mac, peers: [peer("machine_z", online: false, alwaysOn: true)])?.machine?.id == "machine_z")
-        let box = MachineIdentity(id: "machine_z", name: "box", alwaysOn: true)
-        #expect(MasterRoles.channelsHome(local: box, peers: [peer("machine_m", online: true)]) == nil)
     }
 
     @Test("the polling master writes pull requests on cards another master runs; the other master does not")
@@ -953,81 +944,6 @@ struct MasterRolesTests {
         #expect(state.cards.first { $0.id == "card_o" }?.link.projectPath == "/root/Projects/other")
         // The stored card keeps its owner's path, for the owner and handovers.
         #expect(state.links["card_b"]?.projectPath == "/root/Projects/widgets")
-    }
-
-    @Test("a Mac mirrors the channels of an always-on master, after copying its own there once")
-    func channelsMirror() async throws {
-        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("channels-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let mac = try TestMaster(name: "mac", root: root)
-        let box = try TestMaster(name: "box", root: root, alwaysOn: true)
-        try await mac.serve()
-        try await box.serve()
-        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
-        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
-        defer { mac.server.stop(); box.server.stop() }
-        box.store.dispatch(.localMachineLoaded(box.identity))
-        await mac.peerSync.pullAll()
-        #expect(mac.store.state.peerStatuses.values.first?.machine?.alwaysOn == true)
-
-        let fm = FileManager.default
-        let macChannels = "\(mac.home)/channels"
-        let boxChannels = "\(box.home)/channels"
-        try fm.createDirectory(atPath: "\(macChannels)/dm", withIntermediateDirectories: true)
-        try Data(#"{"channels":[{"id":"ch_1","name":"general","createdAt":"2026-09-28T00:00:00Z","createdBy":{"cardId":null,"handle":"acme"},"members":[]}]}"#.utf8)
-            .write(to: URL(fileURLWithPath: "\(macChannels)/channels.json"))
-        try Data("{\"id\":\"m1\"}\n".utf8).write(to: URL(fileURLWithPath: "\(macChannels)/general.jsonl"))
-        try Data("{\"id\":\"d1\"}\n".utf8).write(to: URL(fileURLWithPath: "\(macChannels)/dm/a_b.jsonl"))
-        try Data("{}".utf8).write(to: URL(fileURLWithPath: "\(macChannels)/read-state.json"))
-
-        var mirror = ChannelsMirror(home: mac.home)
-        await mac.engine.syncChannelsOnce(&mirror)
-        // First pairing: the Mac's channels were copied to the home, not what it read.
-        #expect(fm.fileExists(atPath: "\(boxChannels)/channels.json"))
-        #expect(fm.contents(atPath: "\(boxChannels)/dm/a_b.jsonl") == Data("{\"id\":\"d1\"}\n".utf8))
-        #expect(!fm.fileExists(atPath: "\(boxChannels)/read-state.json"))
-        let info = try #require(fm.contents(atPath: "\(mac.home)/channels-home.json"))
-        #expect(String(decoding: info, as: UTF8.self).contains(box.identity.id))
-
-        // The home writes; the mirror follows: appends, new files, deletions.
-        let log = try FileHandle(forWritingTo: URL(fileURLWithPath: "\(boxChannels)/general.jsonl"))
-        try log.seekToEnd()
-        try log.write(contentsOf: Data("{\"id\":\"m2\"}\n".utf8))
-        try log.close()
-        try Data("{\"id\":\"n1\"}\n".utf8).write(to: URL(fileURLWithPath: "\(boxChannels)/new.jsonl"))
-        try fm.removeItem(atPath: "\(boxChannels)/dm/a_b.jsonl")
-        await mac.engine.syncChannelsOnce(&mirror)
-        #expect(fm.contents(atPath: "\(macChannels)/general.jsonl") == Data("{\"id\":\"m1\"}\n{\"id\":\"m2\"}\n".utf8))
-        #expect(fm.contents(atPath: "\(macChannels)/new.jsonl") == Data("{\"id\":\"n1\"}\n".utf8))
-        #expect(!fm.fileExists(atPath: "\(macChannels)/dm/a_b.jsonl"))
-        #expect(fm.fileExists(atPath: "\(macChannels)/read-state.json"))
-
-        // A file the home never had is never deleted here, nor copied again.
-        try Data("{}\n".utf8).write(to: URL(fileURLWithPath: "\(macChannels)/local-only.jsonl"))
-        await mac.engine.syncChannelsOnce(&mirror)
-        #expect(fm.fileExists(atPath: "\(macChannels)/local-only.jsonl"))
-        #expect(!fm.fileExists(atPath: "\(boxChannels)/local-only.jsonl"))
-
-        // A second pairing does not copy again: the home's channels stand.
-        try fm.removeItem(atPath: "\(boxChannels)")
-        await mac.engine.syncChannelsOnce(&mirror)
-        #expect(!fm.fileExists(atPath: "\(boxChannels)/channels.json"))
-
-        // Paths that leave the channels directory are refused.
-        #expect(MasterEngine.channelFilePath(home: box.home, relative: "../links.json") == nil)
-        #expect(MasterEngine.channelFilePath(home: box.home, relative: "read-state.json") == nil)
-    }
-
-    @Test("the home runs only channel and DM commands for other masters")
-    func cliAllowlist() async throws {
-        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("cli-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let box = try TestMaster(name: "box", root: root, alwaysOn: true)
-        let refused = await box.engine.runCLI(RemoteCLIRequest(argv: ["launch", "--prompt", "x"]))
-        #expect(refused.code == 2)
-        let missing = await box.engine.runCLI(RemoteCLIRequest(argv: ["channel", "list"]))
-        #expect(missing.code == 1)
-        #expect(missing.stderr.contains("not installed"))
     }
 
     @Test("a queued prompt the CLI writes for a card another master runs reaches that master")

@@ -19,8 +19,8 @@ export const HOOK_EVENTS = [
 ];
 
 /// Codex hook events we register (Codex exposes the same names; we only need the
-/// subset that drives the daemon: Stop for auto-send, UserPromptSubmit for the
-/// Slack receipt mirror, SessionStart/Stop for activity).
+/// subset that drives the daemon: Stop for auto-send, UserPromptSubmit to note
+/// user prompts, SessionStart/Stop for activity).
 export const CODEX_HOOK_EVENTS = ["SessionStart", "UserPromptSubmit", "Stop"];
 
 function codexConfigDir(): string {
@@ -178,9 +178,8 @@ export function installHooks(opts: InstallHooksOptions = {}): InstallHooksResult
   // NOTE: Codex hooks are intentionally NOT installed here. Codex 0.134.0 gates
   // command hooks behind an interactive trust prompt that --dangerously-bypass-
   // hook-trust does not reliably suppress in the inline TUI, which hangs the
-  // headless session on a modal. Codex agents are instead mirrored to Slack via
-  // their rollout transcript (see findCodexRollout / formatCodexRolloutLines in
-  // the bridge), and steered via tmux paste, so no Codex hooks are needed.
+  // headless session on a modal. Codex agents are instead steered via tmux
+  // paste, so no Codex hooks are needed.
   // installCodexHooks() remains available for when Codex honors trust bypass.
 
   return { settingsPath, hookScriptPath, statuslinePath, events: HOOK_EVENTS };

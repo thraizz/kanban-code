@@ -417,38 +417,8 @@ public final class RemoteControlServer: Sendable {
                    method: method, rest: rest, query: request.query, body: request.body, device: device, engine: syncEngine) {
                 return .response(response)
             }
-            if rest.first == "cli" {
-                guard method == "POST" else { return .response(.error(405, "use POST")) }
-                guard device.scope.actsForOwner else {
-                    return .response(.error(403, "the \(device.scope.rawValue) scope cannot run commands"))
-                }
-                guard let body = try? JSONDecoder.remote.decode(RemoteCLIRequest.self, from: request.body) else {
-                    return .response(.error(400, "body must be {\"argv\": [...], \"env\", \"images\", ...}"))
-                }
-                return .response(.json(try await host.runCLI(body)))
-            }
             if rest.first == "attention" {
                 return .response(try await routeAttention(method: method, rest: rest, body: request.body, device: device))
-            }
-            if rest.count >= 2, rest[0] == "channels", rest[1] == "files" {
-                let path = rest.dropFirst(2).joined(separator: "/")
-                switch (method, path.isEmpty) {
-                case ("GET", true):
-                    return .response(.json(RemoteChannelFiles(files: try await host.channelFiles())))
-                case ("GET", false):
-                    let offset = max(Int(request.query["offset"] ?? "") ?? 0, 0)
-                    return .response(RemoteHTTPResponse(
-                        status: 200, headers: [("Content-Type", "application/octet-stream")],
-                        body: try await host.channelFile(path: path, offset: offset)))
-                case ("PUT", false):
-                    guard device.scope.actsForOwner else {
-                        return .response(.error(403, "the \(device.scope.rawValue) scope cannot write channels"))
-                    }
-                    let created = try await host.seedChannelFile(path: path, data: request.body)
-                    return .response(created ? .noContent : .error(409, "\(path) exists"))
-                default:
-                    return .response(.error(405, "method \(method) not allowed on \(request.rawPath)"))
-                }
             }
             let id = rest.count >= 2 && rest[0] == "cards" ? rest[1] : ""
             let shape = RemoteScopePolicy.shape(rest)

@@ -86,7 +86,7 @@ public enum KanbanCodeLog {
             // closeFile). The legacy ones raise NSException on any I/O hiccup
             // (stale fd after inode replacement, truncated file, disk full) and
             // Swift can't catch NSException — the process aborts. Seen in the
-            // wild on channel actions that happened to log while the file was
+            // wild on actions that happened to log while the file was
             // being touched externally:
             //   ~/Library/Logs/DiagnosticReports/KanbanCode-*.ips
             do {

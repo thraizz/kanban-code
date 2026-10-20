@@ -31,7 +31,6 @@ agents:
     host: tmux                       # optional, overrides the top-level host
     repos: [langwatch/langwatch, langwatch/scenario]
     model: opus                      # optional, claude --model
-    slackChannel: "#agent-dependabot-scout"   # bridge mirrors here / steers from here
     schedule: "06:00"                # used by your scheduler (systemd timer)
     dailyPrompt: |
       It's a new day. Check open Dependabot PRs ...
@@ -52,7 +51,7 @@ warning if it asked for rush.
 
 - The host id is the first eight hex digits of the agent's session id, and the
   card's session name is `rush-<host id>`. `kanban send`, `interrupt`,
-  `self-compact`, the daemon and the Slack bridge all address the agent through
+  `self-compact` and the daemon all address the agent through
   that name, which maps to `rush session send | interrupt | stop`.
 - The host carries the metas `kanban_session=rush-<id>`, `kanban_agent=<slug>`
   and `kanban_card=<card id>`. `rush session list --meta kanban_agent=<slug>`
@@ -63,9 +62,6 @@ warning if it asked for rush.
 - Switching an agent from tmux to rush kills its old tmux session before the host
   starts, and switching back stops the host, so two processes never run one
   conversation. The card keeps its id and gets the new session name.
-- The Slack bridge cannot read a pane on a rush host. When the agent is blocked
-  on a question, the bridge posts the question text (rush does not report its
-  options) and the next message in the channel is sent with `rush session answer`.
 
 ## Commands
 
@@ -75,11 +71,7 @@ warning if it asked for rush.
 | `kanban reconcile [--prune]` | Ensure every configured agent's worktree + session + card; `--prune` tears down de-configured agents |
 | `kanban daemon [--poll-interval ms] [--no-self-compact]` | Always-on engine: auto-send queued prompts on Stop, auto-compact long sessions |
 | `kanban hooks install` | Install Claude hooks + statusline into `~/.claude/settings.json` |
-| `kanban slack manifest` | Print a Slack app manifest (Socket Mode) + setup steps |
-| `kanban slack bridge` | Run the bidirectional Slack <-> agent bridge |
-| `kanban channel send <channel> "<msg>"` | Send a room-visible message to a shared channel; run `kanban channel --help` for join/history/share options |
-| `kanban dm <handle> "<msg>"` | Send a private direct message to one agent |
-| `kanban send <slug> "<msg>"` | Low-level: paste a prompt directly into one agent's tmux session; use channel or dm for normal coordination |
+| `kanban send <slug> "<msg>"` | Paste a prompt directly into one agent's tmux session |
 
 ## Auto-compaction
 
@@ -91,30 +83,11 @@ The daemon polls each session's context usage (written by the statusline hook to
   its threshold.
 - 750k tokens: send `/compact` to the session directly.
 
-## Slack bridge
-
-Socket Mode (a websocket from the box to Slack, no public webhook), one bot for all
-agent channels:
-
-- **agent -> Slack:** tails each agent's transcript and posts new assistant turns,
-  with compact tool labels (`Bash(npm test)`, `Read(.../path)`), merging the
-  thinking + reply lines Claude writes separately.
-- **Slack -> agent:** a human message in a mapped channel is relayed into the
-  agent's session (tmux or rush) as a prompt. The bot's own messages are ignored (no loops).
-- Automated traffic (scheduled nudges via `kanban send`, auto-compact
-  notes, auto-sent reminders) is posted to the channel; human relays are not
-  re-posted (they already appear in Slack).
-
-Set `SLACK_BOT_TOKEN` (xoxb) and `SLACK_APP_TOKEN` (xapp, `connections:write`) in the
-bridge's environment. Run `kanban slack manifest` for the app manifest and setup
-steps, then invite the bot to each agent's channel.
-
 ## Deploying as services (systemd sketch)
 
 ```
 agents-reconcile.service   # oneshot on boot: kanban reconcile (resumes sessions)
 agents-daemon.service      # long-running: kanban daemon
-agents-slack-bridge.service# long-running: kanban slack bridge
 agents-<slug>.timer        # daily: kanban send <slug> "<dailyPrompt>"
 ```
 

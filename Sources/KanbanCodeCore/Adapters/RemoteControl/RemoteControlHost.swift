@@ -79,15 +79,6 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// Replaces the text of a queued prompt.
     func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws
 
-    /// Runs a `kanban channel|dm` command another master handed over.
-    func runCLI(_ request: RemoteCLIRequest) async throws -> RemoteCLIResult
-
-    /// The files of `channels/`, for the masters that mirror them.
-    func channelFiles() async throws -> [RemoteChannelFile]
-    func channelFile(path: String, offset: Int) async throws -> Data
-    /// Creates a file of `channels/` that does not exist yet; false when it does.
-    func seedChannelFile(path: String, data: Data) async throws -> Bool
-
     /// Open attention requests, oldest first.
     func attention() async -> [AttentionRequest]
 
@@ -166,22 +157,6 @@ extension RemoteControlHost {
 
     public func editQueuedPrompt(cardId: String, promptId: String, text: String) async throws {
         throw RemoteHostError.notFound("this host does not edit queued prompts")
-    }
-
-    public func runCLI(_ request: RemoteCLIRequest) async throws -> RemoteCLIResult {
-        throw RemoteHostError.notFound("this host does not run commands for other masters")
-    }
-
-    public func channelFiles() async throws -> [RemoteChannelFile] {
-        throw RemoteHostError.notFound("this host does not serve channels")
-    }
-
-    public func channelFile(path: String, offset: Int) async throws -> Data {
-        throw RemoteHostError.notFound("this host does not serve channels")
-    }
-
-    public func seedChannelFile(path: String, data: Data) async throws -> Bool {
-        throw RemoteHostError.notFound("this host does not serve channels")
     }
 
     public func attention() async -> [AttentionRequest] { [] }

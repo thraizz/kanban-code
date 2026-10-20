@@ -148,7 +148,7 @@ public struct QueuedPrompt: Codable, Sendable, Equatable, Identifiable {
     /// without touching unrelated queue items.
     public var selfCompactThresholdTokens: Int?
     /// When the human wrote this prompt himself in a chat composer. Nil for
-    /// a prompt an agent, a channel or the app queued.
+    /// a prompt an agent or the app queued.
     public var humanWrittenAt: Date?
 
     public init(

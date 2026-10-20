@@ -79,42 +79,4 @@ struct ConversationMarkdownExporterTests {
         #expect(markdown.contains("# Conversation"))
         #expect(markdown.contains("## Codex CLI\n\nLegacy reply"))
     }
-
-    @Test("Channel export includes chat messages and image markdown only")
-    func channelExportIncludesMessagesAndImages() {
-        let messages = [
-            ChannelMessage(
-                id: "join_1",
-                ts: Date(timeIntervalSince1970: 10),
-                from: ChannelParticipant(cardId: nil, handle: "rchaves"),
-                body: "joined",
-                type: .join
-            ),
-            ChannelMessage(
-                id: "msg_1",
-                ts: Date(timeIntervalSince1970: 20),
-                from: ChannelParticipant(cardId: "card_1", handle: "agent_one"),
-                body: "before\n[Image #1]\nafter",
-                imagePaths: ["/tmp/screenshot.png"]
-            ),
-            ChannelMessage(
-                id: "system_1",
-                ts: Date(timeIntervalSince1970: 30),
-                from: ChannelParticipant(cardId: nil, handle: "system"),
-                body: "hidden",
-                type: .system
-            )
-        ]
-
-        let markdown = ChannelConversationMarkdownExporter.markdown(
-            channelName: "bugfixes",
-            messages: messages
-        )
-
-        #expect(markdown.contains("# #bugfixes"))
-        #expect(markdown.contains("## @agent_one · 1970-01-01T00:00:20.000Z"))
-        #expect(markdown.contains("before\n![](/tmp/screenshot.png)\nafter"))
-        #expect(!markdown.contains("joined"))
-        #expect(!markdown.contains("hidden"))
-    }
 }

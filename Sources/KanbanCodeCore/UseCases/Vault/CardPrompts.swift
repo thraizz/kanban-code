@@ -42,11 +42,15 @@ public struct CardPrompts: Sendable, Equatable {
 /// plus `isMeta` and `isCompactSummary` for text it injects itself. Kanban
 /// deliveries are pasted into the session, so they arrive as `human` too;
 /// they are told apart by the marker their sender prefixes:
-/// `[DM from @handle]:`, `[Message from #channel @handle]:`,
+/// `[DM from @handle]:` (`kanban parent dm` / `kanban subagent dm`),
 /// `[Message from @handle]:` (`kanban send` from a card),
 /// `[Message from DEVICE (remote agent)]:`, the self-compact follow-up
-/// marker, the external share warning, `You are running as subagent card`,
-/// `From NAME (Slack):`.
+/// marker, `You are running as subagent card`.
+///
+/// Chat channels, channel share links and the Slack bridge are gone, but a
+/// resumed session can still hold what they delivered, so their markers
+/// (`[Message from #channel @handle]:`, the external share warning,
+/// `From NAME (Slack):`) are still read as delivered rather than typed.
 public enum CardPromptReader {
     public static let maxTyped = 5
     public static let maxDelivered = 3

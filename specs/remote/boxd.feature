@@ -124,7 +124,7 @@ Feature: Boxd Remote Mode
 
   Scenario: kanban CLI inside the machine
     Given a card runs on a machine
-    When the assistant runs "kanban dm" or "kanban list" on the machine
+    When the assistant runs "kanban parent dm" or "kanban list" on the machine
     Then the command is forwarded to the Mac and runs against the full board
     And the caller is identified by the card id of the session
 

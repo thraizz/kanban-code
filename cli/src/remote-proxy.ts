@@ -1,6 +1,6 @@
 /**
  * Proxy mode of the CLI. Inside a remote card's tmux session the machine has no
- * board, no channels and no links.json, so a `kanban` command written by the
+ * board and no links.json, so a `kanban` command written by the
  * agent there is handed to the Mac instead of being run locally.
  *
  * The request goes to `~/.kanban-code/commands/proxy/<id>.json`, the Mac runs
@@ -50,17 +50,13 @@ export function runsOnMachine(argv: string[]): boolean {
  */
 export function proxyRefusalReason(argv: string[]): string | undefined {
   const command = firstCommand(argv);
-  const sub = subCommand(argv);
   if (argv.some((arg) => arg === "--project" || arg.startsWith("--project="))) {
     return "`--project` names a path that does not exist on both sides of a remote card.";
   }
   if (command === "export" && argv.some((arg) => arg === "-o" || arg === "--out" || arg.startsWith("--out="))) {
     return "`kanban export --out` would write the file on the Mac; redirect stdout instead (`kanban export > file.md`).";
   }
-  if (command === "channel" && sub === "share") {
-    return "`kanban channel share` is not available on a remote card.";
-  }
-  for (const refused of ["slack", "daemon", "launch", "reconcile", "open"]) {
+  for (const refused of ["daemon", "launch", "reconcile", "open"]) {
     if (command === refused) {
       return `\`kanban ${refused}\` runs on the Mac only and is not available on a remote card.`;
     }

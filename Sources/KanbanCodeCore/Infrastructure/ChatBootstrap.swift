@@ -1,30 +1,15 @@
 import Foundation
 
-/// One-shot, idempotent bootstrap for the chat channels feature:
-///   1. Ensures `~/.kanban-code/channels/` exists.
-///   2. Ensures the kanban-code skill is symlinked into `~/.claude/skills/kanban-code`
-///      so newly-launched Claude sessions pick it up.
+/// One-shot, idempotent bootstrap: ensures the kanban-code skill is
+/// symlinked into `~/.claude/skills/kanban-code` so newly-launched Claude
+/// sessions pick it up.
 ///
 /// Called on app launch. Side-effects are all best-effort — failures are logged,
 /// not fatal.
 public enum ChatBootstrap {
 
     public static func run(repoRoot: String? = nil) {
-        ensureChannelsDir()
         ensureSkillSymlink(repoRoot: repoRoot)
-    }
-
-    private static func ensureChannelsDir() {
-        let fm = FileManager.default
-        let home = NSHomeDirectory()
-        let dir = (home as NSString).appendingPathComponent(".kanban-code/channels")
-        do {
-            try fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            let dm = (dir as NSString).appendingPathComponent("dm")
-            try fm.createDirectory(atPath: dm, withIntermediateDirectories: true)
-        } catch {
-            KanbanCodeLog.warn("bootstrap", "ensureChannelsDir failed: \(error)")
-        }
     }
 
     private static func ensureSkillSymlink(repoRoot: String?) {

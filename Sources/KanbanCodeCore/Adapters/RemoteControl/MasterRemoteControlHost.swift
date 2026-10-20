@@ -334,29 +334,6 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         }
     }
 
-    // MARK: Channels home
-
-    public func runCLI(_ request: RemoteCLIRequest) async throws -> RemoteCLIResult {
-        await engine.runCLI(request)
-    }
-
-    public func channelFiles() async throws -> [RemoteChannelFile] {
-        let home = await MainActor.run { engine.platform.kanbanHome }
-        return MasterEngine.listChannelFiles(home: home)
-    }
-
-    public func channelFile(path: String, offset: Int) async throws -> Data {
-        let home = await MainActor.run { engine.platform.kanbanHome }
-        return try MasterEngine.readChannelFile(home: home, relative: path, offset: offset)
-    }
-
-    public func seedChannelFile(path: String, data: Data) async throws -> Bool {
-        let home = await MainActor.run { engine.platform.kanbanHome }
-        let created = try MasterEngine.seedChannelFile(home: home, relative: path, data: data)
-        if created { await MainActor.run { store.dispatch(.refreshChannels) } }
-        return created
-    }
-
     @MainActor
     @discardableResult
     private func queuedPrompt(_ cardId: String, _ promptId: String) throws -> QueuedPrompt {

@@ -12,8 +12,6 @@ import { join } from "node:path";
 
 import { runtimeSpec, isRuntime } from "./agents/runtime.js";
 import { trustCodexDirectory } from "./agents/codex-trust.js";
-import { formatCodexRolloutLines } from "./slack/format.js";
-import { writeThreadRoot, readThreadRoot } from "./slack/thread-root.js";
 import { parseAgentsConfig } from "./agents/config.js";
 import { agentIdentity } from "./agents/identity.js";
 import { ensureAgentSession, nameStartedSession } from "./agents/launch.js";
@@ -69,27 +67,6 @@ describe("runtime descriptor", () => {
     assert.ok(!args.includes("-m"));
   });
 
-  test("thread root round-trips per slug and shares across the announce/bridge split", () => {
-    const home = mkdtempSync(join(tmpdir(), "kanban-threads-"));
-    const prev = process.env.KANBAN_CODE_HOME;
-    process.env.KANBAN_CODE_HOME = home;
-    try {
-      assert.equal(readThreadRoot("dependabot-scout"), undefined);
-      // daemon announce records the root; bridge reads it for assistant turns
-      writeThreadRoot("dependabot-scout", "1700000000.000100");
-      assert.equal(readThreadRoot("dependabot-scout"), "1700000000.000100");
-      // a new prompt overwrites the root (start of a new thread)
-      writeThreadRoot("dependabot-scout", "1700000999.000200");
-      assert.equal(readThreadRoot("dependabot-scout"), "1700000999.000200");
-      // roots are per-agent
-      assert.equal(readThreadRoot("pr-reviewer"), undefined);
-    } finally {
-      if (prev === undefined) delete process.env.KANBAN_CODE_HOME;
-      else process.env.KANBAN_CODE_HOME = prev;
-      rmSync(home, { recursive: true, force: true });
-    }
-  });
-
   test("codex names a started session, claude was named at launch", () => {
     assert.equal(runtimeSpec("codex").nameCommand?.("pr-reviewer"), "/rename pr-reviewer");
     assert.equal(runtimeSpec("claude").nameCommand, undefined);
@@ -100,97 +77,6 @@ describe("runtime descriptor", () => {
     assert.ok(isRuntime("codex"));
     assert.ok(!isRuntime("gemini"));
     assert.ok(!isRuntime(undefined));
-  });
-});
-
-describe("formatCodexRolloutLines", () => {
-  test("mirrors received prompts, agent messages and exec commands, skips reasoning/system noise", () => {
-    const objs = [
-      { type: "session_meta", payload: { cwd: "/x" } },
-      { type: "event_msg", payload: { type: "user_message", message: "Please review PR 519.", images: [] } },
-      { type: "event_msg", payload: { type: "task_started" } },
-      { type: "event_msg", payload: { type: "agent_message", message: "I'll review the PR now." } },
-      { type: "response_item", payload: { type: "reasoning", encrypted_content: "..." } },
-      { type: "event_msg", payload: { type: "exec_command_begin", command: ["gh", "pr", "view", "519"] } },
-      { type: "event_msg", payload: { type: "agent_message", message: "No blockers; 2 nits." } },
-    ];
-    const posts = formatCodexRolloutLines(objs);
-    assert.equal(posts.length, 4);
-    // Prompt and agent messages route to the channel root (kind=text); the
-    // exec_command_begin routes into the thread under the last text (kind=tool).
-    assert.equal(posts[0].role, "user");
-    assert.equal(posts[0].kind, "text");
-    assert.match(posts[0].text, /^>>> Received user message/);
-    assert.match(posts[0].text, /Please review PR 519\./);
-    assert.equal(posts[1].kind, "text");
-    assert.equal(posts[1].text, "I'll review the PR now.");
-    assert.equal(posts[2].kind, "tool");
-    assert.match(posts[2].text, /gh pr view 519/);
-    assert.equal(posts[3].kind, "text");
-    assert.equal(posts[3].text, "No blockers; 2 nits.");
-    assert.ok(posts.slice(1).every((p) => p.role === "assistant"));
-  });
-
-  test("coalesces consecutive codex exec_command_begin into one tool post", () => {
-    const objs = [
-      { type: "event_msg", payload: { type: "user_message", message: "Look at PR 519.", images: [] } },
-      { type: "event_msg", payload: { type: "agent_message", message: "Pulling details." } },
-      { type: "event_msg", payload: { type: "exec_command_begin", command: ["gh", "pr", "view", "519"] } },
-      { type: "event_msg", payload: { type: "exec_command_begin", command: ["gh", "pr", "diff", "519"] } },
-      { type: "event_msg", payload: { type: "exec_command_begin", command: ["gh", "pr", "checks", "519"] } },
-    ];
-    const posts = formatCodexRolloutLines(objs);
-    // user + agent text + ONE tool (3 commands coalesced).
-    assert.equal(posts.length, 3);
-    assert.deepEqual(posts.map((p) => p.kind), ["text", "text", "tool"]);
-    assert.match(posts[2].text, /gh pr view 519/);
-    assert.match(posts[2].text, /gh pr diff 519/);
-    assert.match(posts[2].text, /gh pr checks 519/);
-  });
-
-  test("mirrors an out-of-credits failure when a turn produces no output", () => {
-    const objs = [
-      { type: "event_msg", payload: { type: "user_message", message: "Please review PR 4288.", images: [] } },
-      { type: "event_msg", payload: { type: "task_started" } },
-      {
-        type: "event_msg",
-        payload: {
-          type: "token_count",
-          rate_limits: { plan_type: "plus", credits: { has_credits: false, balance: "0" } },
-        },
-      },
-      { type: "event_msg", payload: { type: "task_complete", last_agent_message: null } },
-    ];
-    const posts = formatCodexRolloutLines(objs);
-    assert.equal(posts.length, 2);
-    assert.equal(posts[0].role, "user");
-    assert.equal(posts[0].kind, "text");
-    // The credits warning has to surface at the channel root, not buried in a
-    // thread — operators won't see "no output" otherwise.
-    assert.equal(posts[1].kind, "text");
-    assert.match(posts[1].text, /out of credits/i);
-    assert.match(posts[1].text, /plan: plus, balance 0/);
-    assert.match(posts[1].text, /chatgpt\.com\/codex\/settings\/usage/);
-    // Terminal flag tells the bridge to skip the working pill — no more
-    // output is coming this turn, the pill would sit on the channel
-    // indefinitely otherwise. Without this, the channel keeps showing
-    // "is working…" against a state that's already finished.
-    assert.equal(posts[1].terminal, true);
-  });
-
-  test("does not warn when a turn completes with output", () => {
-    const objs = [
-      {
-        type: "event_msg",
-        payload: { type: "token_count", rate_limits: { plan_type: "plus", credits: { has_credits: true, balance: "5" } } },
-      },
-      { type: "event_msg", payload: { type: "agent_message", message: "Reviewed, LGTM." } },
-      { type: "event_msg", payload: { type: "task_complete", last_agent_message: "Reviewed, LGTM." } },
-    ];
-    const posts = formatCodexRolloutLines(objs);
-    assert.equal(posts.length, 1);
-    assert.equal(posts[0].kind, "text");
-    assert.equal(posts[0].text, "Reviewed, LGTM.");
   });
 });
 

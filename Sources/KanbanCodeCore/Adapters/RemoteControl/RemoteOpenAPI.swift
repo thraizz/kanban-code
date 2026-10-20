@@ -88,17 +88,6 @@ enum RemoteOpenAPI {
       "patch": {"summary": "Replace the text of a queued prompt; {\"text\": \"...\"}", "responses": {"204": {"description": "edited"}, "400": {"$ref": "#/components/responses/Error"}, "404": {"$ref": "#/components/responses/Error"}}},
       "delete": {"summary": "Drop a queued prompt", "responses": {"204": {"description": "removed"}, "404": {"$ref": "#/components/responses/Error"}}}
     },
-    "/v1/cli": {
-      "post": {"summary": "Run a kanban channel or dm command on this master (the channels home), for another master; full scope. {\"argv\", \"cwd\", \"env\": {\"KANBAN_CARD_ID\", \"KANBAN_HUMAN_HANDLE\"}, \"images\": [{\"name\", \"base64\"}]} -> {\"stdout\", \"stderr\", \"code\"}", "responses": {"200": {"description": "RemoteCLIResult"}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}}}
-    },
-    "/v1/channels/files": {
-      "get": {"summary": "The files of the channels directory (not read-state.json, drafts.json): {\"files\": [{\"path\", \"size\", \"mtime\"}]}", "responses": {"200": {"description": "RemoteChannelFiles"}}}
-    },
-    "/v1/channels/files/{path}": {
-      "parameters": [{"name": "path", "in": "path", "required": true, "description": "relative to channels/, may hold slashes", "schema": {"type": "string"}}],
-      "get": {"summary": "A channel file from ?offset= on", "responses": {"200": {"description": "file bytes"}, "404": {"$ref": "#/components/responses/Error"}}},
-      "put": {"summary": "Create a channel file that does not exist yet (the first pairing copies a master's channels); full scope", "responses": {"204": {"description": "created"}, "409": {"$ref": "#/components/responses/Error"}}}
-    },
     "/v1/cards/{id}/interrupt": {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "post": {"summary": "Interrupt the current turn", "responses": {"204": {"description": "done"}, "404": {"$ref": "#/components/responses/Error"}, "409": {"$ref": "#/components/responses/Error"}}}

@@ -26,7 +26,7 @@ export interface ExportLookup {
   links: Link[];
   env?: NodeJS.ProcessEnv;
   tmuxSession?: () => string | undefined;
-  /** The card a channel member handle belongs to. */
+  /** The card a handle belongs to. */
   cardForHandle?: (handle: string) => Link | undefined;
   /** A Claude session transcript by id, for sessions that are not on the board. */
   sessionFile?: (sessionId: string) => string | undefined;

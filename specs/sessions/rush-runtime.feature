@@ -60,7 +60,7 @@ Feature: rush session runtime
 
   Scenario: Messages reach a rush session
     Given a card running on rush
-    When a queued prompt, a DM or a channel message is sent to it
+    When a queued prompt or a parent/subagent DM is sent to it
     Then it is delivered with "rush session send", which rush queues while a turn runs
     And an interrupting send uses "--now"
     And images are sent as files with "--image"

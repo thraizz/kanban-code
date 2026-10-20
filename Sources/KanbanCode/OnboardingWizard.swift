@@ -478,7 +478,7 @@ struct OnboardingWizard: View {
                             .foregroundStyle(.secondary)
                         Text("make install-cli")
                             .font(.app(.caption, design: .monospaced))
-                        Text("in the repo to enable /channel commands from any tmux session.")
+                        Text("in the repo to enable kanban commands from any tmux session.")
                             .font(.app(.caption))
                             .foregroundStyle(.secondary)
                     }
