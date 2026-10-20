@@ -120,6 +120,9 @@ public final class AppState: @unchecked Sendable {
     /// What each card's chat composer offers after `/`, as last read from
     /// the master that owns the card.
     public var slashCommands: [String: [RemoteSlashCommand]] = [:]
+    /// Prompts sent from a card's chat that never reached its session, by
+    /// card, oldest first.
+    public var failedPrompts: [String: [FailedPrompt]] = [:]
     /// Single source of truth for which drawer is open. Only ONE thing can be
     /// selected at a time; the type system enforces that invariant. The legacy
     /// `selectedCardId` / `selectedChannelName` / `selectedDMParticipant`
@@ -129,7 +132,17 @@ public final class AppState: @unchecked Sendable {
     public var paletteOpen: Bool = false
     public var detailExpanded: Bool = false
     public var promptEditorFocused: Bool = false
-    public var notice: Notice?
+    /// The banner over the board. Every one shown is written to the app log
+    /// too, since it is gone from the screen a few seconds later.
+    public var notice: Notice? {
+        didSet {
+            guard let notice, notice != oldValue else { return }
+            switch notice.kind {
+            case .error: KanbanCodeLog.warn("notice", "error shown: \(notice.message)")
+            default: KanbanCodeLog.info("notice", "\(notice.kind) shown: \(notice.message)")
+            }
+        }
+    }
     public var isLoading: Bool = false
     public var lastRefresh: Date?
 
@@ -804,6 +817,10 @@ public enum Action: Sendable {
     // Settings / misc
     case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?, remoteMode: RemoteMode = .boxd, boxd: BoxdSettings? = nil, sessionExclusion: SessionExclusion = SessionExclusion())
     case setError(String?)
+    /// A prompt sent from the card's chat did not reach its session.
+    case promptSendFailed(cardId: String, prompt: QueuedPrompt, message: String)
+    /// The chat let go of a failed prompt: sent again, edited or discarded.
+    case dismissFailedPrompt(cardId: String, promptId: String)
     /// Same banner as `setError`, but says what kind of news it is.
     case setNotice(String?, kind: NoticeKind)
     case setRateLimitedRepos(Set<String>)
@@ -883,6 +900,9 @@ public struct ReconciliationResult: Sendable {
     public let excludedPaths: [String]
     public let discoveredProjectPaths: [String]
     public let globalRemoteSettings: RemoteSettings?
+    /// Cards the reconciler merged into another card with the same
+    /// session: duplicate id to keeper id.
+    public let mergedDuplicates: [String: String]
 
     public init(
         links: [Link],
@@ -892,8 +912,10 @@ public struct ReconciliationResult: Sendable {
         configuredProjects: [Project] = [],
         excludedPaths: [String] = [],
         discoveredProjectPaths: [String] = [],
-        globalRemoteSettings: RemoteSettings? = nil
+        globalRemoteSettings: RemoteSettings? = nil,
+        mergedDuplicates: [String: String] = [:]
     ) {
+        self.mergedDuplicates = mergedDuplicates
         self.links = links
         self.sessions = sessions
         self.activityMap = activityMap
@@ -2738,6 +2760,15 @@ public enum Reducer {
                 KanbanCodeLog.info("store", "Dropped reconciler-removed orphan \(id.prefix(12))")
             }
 
+            // A card merged into another with the same session goes, or the
+            // next pass finds the pair again and merges it again.
+            for (id, keeperId) in result.mergedDuplicates.sorted(by: { $0.key < $1.key }) {
+                guard let link = mergedLinks[id], mergedLinks[keeperId] != nil,
+                      state.isOwnedLocally(link), link.isLaunching != true else { continue }
+                mergedLinks.removeValue(forKey: id)
+                KanbanCodeLog.info("store", "Dropped duplicate-session card \(id.prefix(12)), merged into \(keeperId.prefix(12))")
+            }
+
             if !preservedIds.isEmpty {
                 KanbanCodeLog.info("store", "Preserved \(preservedIds.count) card(s) modified during reconciliation")
             }
@@ -3044,6 +3075,19 @@ public enum Reducer {
 
         case .setError(let message):
             state.notice = message.map { Notice($0) }
+            return []
+
+        case .promptSendFailed(let cardId, let prompt, let message):
+            var failed = state.failedPrompts[cardId] ?? []
+            failed.removeAll { $0.id == prompt.id }
+            failed.append(FailedPrompt(prompt: prompt, message: message))
+            state.failedPrompts[cardId] = failed
+            return [.journalQueuedPrompt(cardId: cardId, prompt: prompt, reason: .failed)]
+
+        case .dismissFailedPrompt(let cardId, let promptId):
+            guard var failed = state.failedPrompts[cardId] else { return [] }
+            failed.removeAll { $0.id == promptId }
+            state.failedPrompts[cardId] = failed.isEmpty ? nil : failed
             return []
 
         case .setNotice(let message, let kind):
@@ -3831,7 +3875,8 @@ public final class BoardStore: @unchecked Sendable {
                 didScanTmux: tmuxAdapter != nil,
                 worktrees: worktreesByRepo,
                 pullRequests: pullRequests,
-                connectedRemoteMachines: connectedMachines
+                connectedRemoteMachines: connectedMachines,
+                localMachineId: state.localMachineId
             )
             // Pure work over every card and session: keep it off the main thread.
             let reconcileInput = existingLinks
@@ -3845,6 +3890,7 @@ public final class BoardStore: @unchecked Sendable {
                 mergedLinks = mergedLinks.map { migrating[$0.id] ?? $0 }
             }
             ph.end(t3, "reconciler", detail: "\(existingLinks.count) existing → \(mergedLinks.count) merged")
+            let mergedDuplicates = CardReconciler.mergedDuplicates(existing: existingLinks, reconciled: mergedLinks)
 
             // Update existing PR statuses from the by-number results. A pull
             // request is matched by the repository its own URL names, so a
@@ -3905,7 +3951,8 @@ public final class BoardStore: @unchecked Sendable {
                 configuredProjects: configuredProjects,
                 excludedPaths: excludedPaths,
                 discoveredProjectPaths: discoveredProjectPaths,
-                globalRemoteSettings: globalRemoteSettings
+                globalRemoteSettings: globalRemoteSettings,
+                mergedDuplicates: mergedDuplicates
             )
             dispatch(.reconciled(result))
             ph.end(t5, "dispatch")
@@ -4064,6 +4111,11 @@ public final class BoardStore: @unchecked Sendable {
         KanbanCodeLog.info("reconcile", "PR lookup: \(t.duration(to: .now)) (\(pullRequests.count) by branch, \(totalByNumber) by number, \(allRepos.count) repos, background)")
     }
 
+    /// How far back from the end of a session the automatic branch scan
+    /// reads. A full read of a 150 MB session held the reconcile for 23 s on a
+    /// loaded host; the manual "Discover Branches and PRs" still reads it all.
+    static let autoBranchScanBytes = 8 * 1024 * 1024
+
     private func autoDiscoverBranchesForRecentlyActiveCards(
         links: inout [Link],
         activityMap: [String: ActivityState]
@@ -4104,7 +4156,9 @@ public final class BoardStore: @unchecked Sendable {
         do {
             switch link.effectiveAssistant {
             case .claude, .gemini:
-                if let latest = try await JsonlParser.extractLatestPushedBranch(from: sessionPath) {
+                if let latest = try await JsonlParser.extractLatestPushedBranch(
+                    from: sessionPath, maxBytes: Self.autoBranchScanBytes
+                ) {
                     scanned = [latest]
                 } else {
                     scanned = []

@@ -89,6 +89,14 @@ extension MasterEngine {
         return !local.isEmpty && owner != local
     }
 
+    /// Whether a queued prompt is gone from the owner's `queue`. rush ids
+    /// carry the message's place, which shifts as the queue sends, so a
+    /// known `body` is matched by its text and only an unknown one by id.
+    nonisolated static func queuedPromptLeft(promptId: String, body: String?, queue: [RemoteQueuedPrompt]) -> Bool {
+        if let body { return !queue.contains { $0.text == body } }
+        return !queue.contains { $0.id == promptId }
+    }
+
     /// Sends the prompt and queue actions on cards another master owns to
     /// that master, the way the phone does: the owner runs them.
     public func installForeignCardHandler() {
@@ -102,21 +110,23 @@ extension MasterEngine {
         case .addQueuedPrompt(let cardId, let prompt, _):
             guard isForeign(cardId) else { return false }
             forwardedPromptIds.insert(prompt.id)
-            let images = (prompt.imagePaths ?? []).compactMap { path -> RemoteImage? in
-                guard let data = FileManager.default.contents(atPath: path) else { return nil }
-                return RemoteImage(mediaType: MasterRemoteControlHost.mediaType(ofExtension: (path as NSString).pathExtension),
-                                   data: data.base64EncodedString())
-            }
-            forwardToOwner(cardId, "send the prompt") { client in
-                try await client.sendPrompt(cardId: cardId, text: prompt.body, mode: .queue, images: images,
-                                            human: prompt.isHuman)
-            }
+            forwardPrompt(cardId: cardId, prompt: prompt)
             return true
         case .sendQueuedPrompt(let cardId, let promptId):
             guard isForeign(cardId) else { return false }
             if forwardedPromptIds.remove(promptId) != nil { return true }
+            let body = store.state.peerCards[cardId]?.queue.first { $0.id == promptId }?.body
             forwardToOwner(cardId, "send the queued prompt") { client in
-                try await client.sendQueuedPromptNow(cardId: cardId, promptId: promptId)
+                do {
+                    try await client.sendQueuedPromptNow(cardId: cardId, promptId: promptId)
+                } catch {
+                    // The owner's queue sends itself when the turn ends; a
+                    // send that lost that race went out already.
+                    guard let card = try? await client.card(id: cardId),
+                          Self.queuedPromptLeft(promptId: promptId, body: body, queue: card.queuedPrompts)
+                    else { throw error }
+                    KanbanCodeLog.info("peers", "card \(cardId): queued prompt \(promptId) left the owner's queue; taken as sent")
+                }
             }
             return true
         case .removeQueuedPrompt(let cardId, let promptId):
@@ -139,6 +149,45 @@ extension MasterEngine {
         }
     }
 
+    /// Sends a prompt typed here to the master that owns the card. It is
+    /// journalled before it leaves, and a send the owner does not take comes
+    /// back to the card's chat as a failed prompt, text and images kept.
+    func forwardPrompt(cardId: String, prompt: QueuedPrompt) {
+        let journal = promptJournal
+        let store = self.store
+        let ownerName = peerName(store.state.links[cardId]?.ownerMachine ?? "")
+        Task {
+            await journal.append(QueuedPromptJournalEntry(
+                cardId: cardId, promptId: prompt.id, reason: .sent, body: prompt.body,
+                imagePaths: prompt.imagePaths, sendAutomatically: prompt.sendAutomatically))
+            @MainActor func fail(_ message: String) {
+                KanbanCodeLog.warn("peers", "prompt \(prompt.id) to \(cardId) not sent: \(message)")
+                store.dispatch(.promptSendFailed(cardId: cardId, prompt: prompt, message: message))
+                store.dispatch(.setError("Could not send the prompt on \(ownerName): \(message)"))
+            }
+            var images: [RemoteImage] = []
+            for path in prompt.imagePaths ?? [] {
+                guard let data = FileManager.default.contents(atPath: path) else {
+                    return fail("the image \((path as NSString).lastPathComponent) is gone")
+                }
+                images.append(RemoteImage(mediaType: MasterRemoteControlHost.mediaType(ofExtension: (path as NSString).pathExtension),
+                                          data: data.base64EncodedString()))
+            }
+            guard let client = await ownerClient(forCard: cardId) else {
+                return fail("\(ownerName) is not a configured peer")
+            }
+            do {
+                try await client.sendPrompt(cardId: cardId, text: prompt.body, mode: .queue, images: images,
+                                            human: prompt.isHuman)
+                if let card = try? await client.card(id: cardId) {
+                    store.dispatch(.peerCardRead(cardId: cardId, state: PeerTranscriptMirror.state(of: card)))
+                }
+            } catch {
+                fail(error.localizedDescription)
+            }
+        }
+    }
+
     /// Runs `call` on the card's owner, reporting a failure on the board.
     /// A start (`isStart`) reports on the card itself: its status bar shows
     /// the owner's answer, the way a start here shows its own.
@@ -158,10 +207,16 @@ extension MasterEngine {
                     store.dispatch(.peerCardRead(cardId: cardId, state: PeerTranscriptMirror.state(of: card)))
                 }
             } catch {
+                // The owner's queue as it is now, so the bar does not keep
+                // offering a prompt the owner no longer holds.
+                if let card = try? await client.card(id: cardId) {
+                    store.dispatch(.peerCardRead(cardId: cardId, state: PeerTranscriptMirror.state(of: card)))
+                }
                 report("Could not \(what) on \(owner): \(error.localizedDescription)")
             }
         }
         func report(_ message: String) {
+            KanbanCodeLog.warn("peers", "card \(cardId): \(message)")
             if isStart {
                 store.dispatch(.cardStartReported(cardId: cardId, report: .failed(message)))
             } else {

@@ -695,6 +695,32 @@ struct PeerSyncLoopTests {
         #expect(statuses.map(\.online) == [false, true])
     }
 
+    @Test("an online peer that fails to answer stays online until the failures span the grace")
+    func slowPeerStaysOnline() async throws {
+        let transport = FakeTransport()
+        transport.pages["peer_box"] = LinksPage(machine: box, epoch: "e", seq: 1, full: true, links: [])
+        let dispatched = Dispatched()
+        let sync = PeerSync(identity: me, peers: [peer], transport: transport, offlineGrace: 0.3) { await dispatched.append($0) }
+        #expect(await sync.pull(peerId: "peer_box"))
+
+        transport.lock.withLock { transport.failing = ["peer_box"] }
+        #expect(await sync.pull(peerId: "peer_box") == false)
+        #expect(await sync.status(of: "peer_box")?.online == true)
+        #expect(await sync.status(of: "peer_box")?.lastError?.contains("502") == true)
+
+        try await Task.sleep(for: .milliseconds(350))
+        #expect(await sync.pull(peerId: "peer_box") == false)
+        #expect(await sync.status(of: "peer_box")?.online == false)
+
+        transport.lock.withLock { transport.failing = [] }
+        #expect(await sync.pull(peerId: "peer_box"))
+        transport.lock.withLock { transport.failing = ["peer_box"] }
+        #expect(await sync.pull(peerId: "peer_box") == false)
+        #expect(await sync.status(of: "peer_box")?.online == true)
+        let flips = await dispatched.actions.compactMap { if case .peerStatusChanged(let s) = $0 { s.online } else { nil } }
+        #expect(flips.filter { !$0 }.count == 1)
+    }
+
     @Test("a peer that turns out to be this machine is refused")
     func selfPeer() async {
         let transport = FakeTransport()
@@ -740,6 +766,25 @@ struct PeerSyncLoopTests {
         #expect(transport.lock.withLock { transport.requests.count } == 2)
         await sync.notifyPeers()
         #expect(transport.lock.withLock { transport.notified } == ["peer_box"])
+    }
+
+    @Test("a peer that was down is pulled again within seconds of coming back")
+    func offlinePeerRetriesSoon() async throws {
+        #expect(PeerSync.offlineRetry <= .seconds(5))
+        let transport = FakeTransport()
+        transport.pages["peer_box"] = LinksPage(machine: box, epoch: "e", seq: 1, full: true, links: [])
+        transport.failing = ["peer_box"]
+        let sync = PeerSync(identity: me, peers: [peer], transport: transport) { _ in }
+        let task = Task { await sync.run(interval: .seconds(60), offlineInterval: .milliseconds(200)) }
+        defer { task.cancel() }
+        for _ in 0..<40 where transport.lock.withLock({ transport.requests.count }) < 1 {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        transport.lock.withLock { transport.failing = [] }
+        for _ in 0..<40 where await sync.status(of: "peer_box")?.online != true {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(await sync.status(of: "peer_box")?.online == true)
     }
 
     @Test("links URL is built from the peer base URL")

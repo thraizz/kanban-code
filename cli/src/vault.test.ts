@@ -1,4 +1,5 @@
 import { strict as assert } from "node:assert";
+import { spawnSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
@@ -30,6 +31,7 @@ import {
   reasonProblem,
   runKv,
   shellQuote,
+  typedValueReader,
   type VaultIO,
 } from "./vault.js";
 import { envVaultFor, environmentOfEnvFile, isSecret, planAws, planSecrets, renderPlan, tierFor } from "./vault-import.js";
@@ -73,10 +75,40 @@ test("the hook wraps Bash commands only in projects with .env.vault", () => {
   };
   const cmd = out.hookSpecificOutput.updatedInput.command;
   assert.match(cmd, /env .*\.env\.vault --export --command-b64 /);
-  assert.ok(cmd.endsWith("\ncd x && pnpm test"));
+  assert.ok(cmd.endsWith("\ncd x && pnpm test\nelse exit $?; fi"));
   assert.equal(hookRewrite({ tool_name: "Bash", tool_input: { command: cmd }, cwd: join(root, "repo") }, "/bin/kv"), undefined);
   assert.equal(hookRewrite({ tool_name: "Read", tool_input: {}, cwd: join(root, "repo") }, "/bin/kv"), undefined);
   assert.equal(hookRewrite({ tool_name: "Bash", tool_input: { command: "ls" }, cwd: join(root, "other") }, "/bin/kv"), undefined);
+});
+
+test("the rewritten command runs with the vault env in its own shell, and not at all when kv fails", () => {
+  const root = mkdtempSync(join(tmpdir(), "kv-hook-"));
+  mkdirSync(join(root, "repo/.git"), { recursive: true });
+  mkdirSync(join(root, "repo/sub"));
+  writeFileSync(join(root, "repo/.env.vault"), "A={{vault:A}}\n");
+  const kv = (body: string) => {
+    const path = join(root, `kv-${Math.random().toString(36).slice(2)}`);
+    writeFileSync(path, `#!/bin/sh\n${body}\n`, { mode: 0o755 });
+    return path;
+  };
+  const run = (kvPath: string, command: string) => {
+    const out = hookRewrite({ tool_name: "Bash", tool_input: { command }, cwd: join(root, "repo") }, kvPath) as {
+      hookSpecificOutput: { updatedInput: { command: string } };
+    };
+    return spawnSync("/bin/sh", ["-c", `${out.hookSpecificOutput.updatedInput.command}\necho "cwd=$(basename "$PWD")"`], {
+      cwd: join(root, "repo"),
+      encoding: "utf8",
+    });
+  };
+
+  const ok = run(kv("echo \"export A='from vault'\""), "cd sub && echo \"A=$A\" && cat <<EOF\nheredoc\nEOF");
+  assert.equal(ok.status, 0);
+  assert.equal(ok.stdout, "A=from vault\nheredoc\ncwd=sub\n");
+
+  const failed = run(kv("echo denied >&2; exit 7"), "echo ran");
+  assert.equal(failed.status, 7);
+  assert.equal(failed.stdout.includes("ran"), false);
+  assert.match(failed.stderr, /denied/);
 });
 
 test("the hook answers Codex with permissionDecision allow and Claude Code without it", () => {
@@ -661,6 +693,39 @@ test("kv same says how a value compares with the stored one and writes no secret
   assert.deepEqual(printed, ["same\n", "different\n"]);
   assert.deepEqual(m.calls.map((c) => `${c.method} ${c.path}`), ["POST /v1/vault/compare?card=card_x", "POST /v1/vault/compare?card=card_x"]);
   assert.equal(m.calls[0].body.value, "stored");
+});
+
+const FAKE_PEM = `-----BEGIN PRIVATE KEY-----\n${"QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=\n".repeat(26)}-----END PRIVATE KEY-----`;
+
+test("kv set sends a multi-line value whole", async () => {
+  const m = await fakeMaster(() => ({ status: 200, body: { status: "granted", message: "added FAKE_PEM" } }));
+  const long = "x".repeat(4000);
+  assert.equal(await runKv(["set", "FAKE_PEM"], { ...io(m.url, []), stdin: async () => `${FAKE_PEM}\n` }), 0);
+  assert.equal(await runKv(["set", "FAKE_LONG"], { ...io(m.url, []), stdin: async () => long }), 0);
+  m.close();
+  assert.equal(m.calls[0].body.value, FAKE_PEM);
+  assert.equal(m.calls[1].body.value, long);
+});
+
+test("a value pasted at the terminal keeps its newlines", () => {
+  const feed = (chunks: string[]) => {
+    const read = typedValueReader();
+    for (const c of chunks) {
+      const r = read(c);
+      if (r.done) return r.value;
+    }
+    return "not done";
+  };
+  const raw = FAKE_PEM.replace(/\n/g, "\r");
+  // Bracketed paste, then Enter.
+  assert.equal(feed([`\u001b[200~${raw}\r\u001b[201~`, "\r"]), FAKE_PEM);
+  // The paste markers split across chunks.
+  assert.equal(feed(["\u001b[20", `0~${raw.slice(0, 50)}`, `${raw.slice(50)}\u001b[2`, "01~", "\r"]), FAKE_PEM);
+  // A terminal without bracketed paste sends the paste as one chunk.
+  assert.equal(feed([raw, "\r"]), FAKE_PEM);
+  // Typing: Enter alone ends it, backspace edits, Ctrl-C aborts.
+  assert.equal(feed(["a", "b", "x", "\u007f", "c", "\r"]), "abc");
+  assert.equal(feed(["a", "\u0003"]), undefined);
 });
 
 test("import names a second value after its project and environment", () => {

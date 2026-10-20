@@ -732,6 +732,10 @@ struct CardDetailView: View {
                 }
             },
             githubBaseURL: githubBaseURL,
+            failedPrompts: AppComposition.shared.store.state.failedPrompts[card.id] ?? [],
+            onDismissFailedPrompt: { failed in
+                AppComposition.shared.store.dispatch(.dismissFailedPrompt(cardId: card.id, promptId: failed.id))
+            },
             draftText: chatDraftText,
             draftImages: chatDraftImages,
             pendingMessage: $chatPendingMessage
@@ -2354,6 +2358,7 @@ struct CardDetailView: View {
     }
 
     private func showCopyToast(_ message: String) {
+        KanbanCodeLog.info("toast", "card \(card.id): \(message)")
         copyToast = message
         Task { @MainActor in
             try? await Task.sleep(for: .seconds(2))

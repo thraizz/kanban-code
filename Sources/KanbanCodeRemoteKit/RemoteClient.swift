@@ -428,12 +428,13 @@ public struct RemoteClient: Sendable {
     /// (re)connect, then `cards` deltas to fold in with `RemoteEvent.apply(to:)`.
     /// A delta that arrives before the connection's first board is dropped and
     /// a resync asked for, so every delta applies to a whole board. Reconnects
-    /// with exponential backoff (1 s doubling to 30 s) on any drop, and
+    /// with backoff (1 s doubling to `maxReconnectDelay`) on any drop, and
     /// finishes with an error only when the token is refused. `onState`
     /// reports the connection.
     public func events(all: Bool = false,
                        onState: (@Sendable (RemoteConnectionState) -> Void)? = nil) -> AsyncThrowingStream<RemoteEvent, Error> {
-        let request = webSocketRequest(webSocketURL("v1/events", query: all ? [URLQueryItem(name: "all", value: "1")] : []))
+        let request = webSocketRequest(webSocketURL("v1/events", query: all ? [URLQueryItem(name: "all", value: "1")] : []),
+                                       timeout: Self.eventsIdleTimeout)
         let session = self.session
         return AsyncThrowingStream { continuation in
             let task = Task {
@@ -483,12 +484,20 @@ public struct RemoteClient: Sendable {
                     if Task.isCancelled { break }
                     onState?(.reconnecting(retryIn: delay, reason: reason))
                     try? await Task.sleep(for: .seconds(delay))
-                    delay = min(delay * 2, 30)
+                    delay = Self.nextReconnectDelay(after: delay)
                 }
                 continuation.finish()
             }
             continuation.onTermination = { _ in task.cancel() }
         }
+    }
+
+    /// The longest wait between reconnects. A master restarting for a deploy
+    /// is back within seconds, and a longer wait shows it offline for that long.
+    public static let maxReconnectDelay: TimeInterval = 5
+
+    public static func nextReconnectDelay(after delay: TimeInterval) -> TimeInterval {
+        min(delay * 2, maxReconnectDelay)
     }
 
     static let resyncFrame: String = {
@@ -508,10 +517,15 @@ public struct RemoteClient: Sendable {
         return RemoteTerminalConnection(task: session.webSocketTask(with: request))
     }
 
-    public func webSocketRequest(_ url: URL) -> URLRequest {
+    /// How long the events socket waits for a frame before it gives up on
+    /// the connection. The master pings every 20 s; a loaded master sends
+    /// that ping late, and a socket dropped for it shows the master offline.
+    public static let eventsIdleTimeout: TimeInterval = 60
+
+    public func webSocketRequest(_ url: URL, timeout: TimeInterval = 30) -> URLRequest {
         var request = URLRequest(url: url)
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 30
+        request.timeoutInterval = timeout
         return request
     }
 

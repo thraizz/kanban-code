@@ -1,4 +1,8 @@
+#if canImport(CryptoKit)
 import CryptoKit
+#else
+import Crypto
+#endif
 import Foundation
 import Testing
 @testable import KanbanCodeCore
@@ -244,6 +248,51 @@ struct VaultOwnerTests {
         let afterRestart = await w.broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"]), caller: card)
         #expect(afterRestart.status == .pending)
         #expect(w.approvals.last?.vault?.whys == [VaultBroker.lockedWhy])
+    }
+
+    @Test func aLeaseServesTheReplacedValueAfterAReplace() async throws {
+        let w = try await makeWorld()
+        let asked = await w.broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"]), caller: card)
+        #expect(try await w.approve(asked, "Approve for this card (2 days)").values == ["ASK": "ask-value"])
+        let pem = "-----BEGIN PRIVATE KEY-----\n" + String(repeating: "QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo=", count: 50) + "\n-----END PRIVATE KEY-----\n"
+        let replaced = await w.broker.add(VaultAddRequest(name: "ASK", value: pem), caller: card, trusted: true)
+        #expect(replaced.status == .granted)
+        let again = await w.broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"]), caller: card)
+        #expect(again.status == .granted && again.values == ["ASK": pem])
+    }
+
+    @Test func anApprovedReplaceOfAnOpenSecretIsServedAtOnce() async throws {
+        let w = try await makeWorld()
+        let asked = await w.broker.add(VaultAddRequest(name: "OPEN", value: "line-one\nline-two"), caller: card, trusted: false)
+        #expect(asked.status == .pending)
+        #expect(try await w.approve(asked).status == .granted)
+        let again = await w.broker.release(VaultReleaseRequest(mode: "run", names: ["OPEN"]), caller: card)
+        #expect(again.values == ["OPEN": "line-one\nline-two"])
+    }
+
+    @Test func anApprovedReplaceOfALeasedSecretIsServedByTheLease() async throws {
+        let w = try await makeWorld()
+        let first = await w.broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"]), caller: card)
+        #expect(try await w.approve(first, "Approve for this card (2 days)").values == ["ASK": "ask-value"])
+        let asked = await w.broker.add(VaultAddRequest(name: "ASK", value: "new\nvalue"), caller: card, trusted: false)
+        #expect(asked.status == .pending)
+        #expect(try await w.approve(asked).status == .granted)
+        let again = await w.broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"]), caller: card)
+        #expect(again.status == .granted && again.values == ["ASK": "new\nvalue"])
+    }
+
+    @Test func aHeldValueIsDroppedWhenAPeerChangesTheSecret() async throws {
+        let w = try await makeWorld()
+        let asked = await w.broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"]), caller: card)
+        #expect(try await w.approve(asked, "Approve for this card (2 days)").values == ["ASK": "ask-value"])
+        // A new value written straight to the store, as a replica merge does.
+        var s = try #require(try await w.store.secret("ASK"))
+        s.value = "peer-value"
+        s.sealed = nil
+        try await w.store.upsert(s)
+        let again = await w.broker.release(VaultReleaseRequest(mode: "run", names: ["ASK"]), caller: card)
+        #expect(again.status == .pending)
+        #expect(try await w.approve(again).values == ["ASK": "peer-value"])
     }
 
     @Test func aHookWrappedCommandGoesOnWithoutASealedSecret() async throws {
