@@ -101,6 +101,9 @@ struct ContentView: View {
     @AppStorage("showBoardInExpanded") var showBoardInExpanded = false
     @State var sidebarVisibility: NavigationSplitViewVisibility = .detailOnly
     @State var showNewTask = false
+    /// Preset the next New Task dialog opens with, from the prompt library.
+    @State var newTaskPreset: PromptPreset?
+    @AppStorage("sidebarMode") var sidebarModeRaw = SidebarMode.sessions.rawValue
     @State var showOnboarding = false
     @State var showCreateChannel = false
     @State var renameChannelName: String? = nil
@@ -410,7 +413,7 @@ struct ContentView: View {
             canDropCard: { card, column in
                 CardDropIntent.resolve(card, to: column).isAllowed
             },
-            onNewTask: { showNewTask = true },
+            onNewTask: { presentNewTask() },
             onCardClicked: { cardId in
                 if store.state.cards.first(where: { $0.id == cardId })?.link.tmuxLink != nil {
                     shouldFocusTerminal = true
@@ -427,7 +430,23 @@ struct ContentView: View {
     /// Sidebar content for expanded mode — always list view.
     /// Toolbar items only included when sidebar is visible to avoid duplication in window toolbar.
     private var sidebarContent: some View {
-        sidebarListView
+        VStack(spacing: 0) {
+            Picker("Sidebar", selection: $sidebarModeRaw) {
+                ForEach(SidebarMode.allCases, id: \.self) { mode in
+                    Text(mode.label).tag(mode.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+
+            if SidebarMode(rawValue: sidebarModeRaw) == .prompts {
+                PromptLibraryView(onNewTask: { preset in presentNewTask(preset: preset) })
+            } else {
+                sidebarListView
+            }
+        }
             .toolbar {
                 // The live visibility, not the persisted flag: the flag can
                 // still say "open" from a past session while the sidebar is
@@ -860,7 +879,7 @@ struct ContentView: View {
 
     private var boardWithSheets: some View {
         boardWithOverlays
-            .sheet(isPresented: $showNewTask) {
+            .sheet(isPresented: $showNewTask, onDismiss: { newTaskPreset = nil }) {
                 NewTaskDialog(
                     isPresented: $showNewTask,
                     projects: store.state.configuredProjects,
@@ -868,6 +887,8 @@ struct ContentView: View {
                     globalRemoteSettings: store.state.globalRemoteSettings,
                     remoteOptions: remoteLaunchOptions(cardId: nil),
                     enabledAssistants: assistantRegistry.available,
+                    initialPrompt: newTaskPreset?.body ?? "",
+                    initialTitle: newTaskPreset?.title ?? "",
                     onCreate: { prompt, projectPath, title, startImmediately, images, assistant, apiServiceId, modelOverride, modelVariantOverride in
                         createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images, assistant: assistant, apiServiceId: apiServiceId, modelOverride: modelOverride, modelVariantOverride: modelVariantOverride)
                     },
@@ -2901,7 +2922,8 @@ struct ContentView: View {
         }
     }
 
-    private func presentNewTask() {
+    private func presentNewTask(preset: PromptPreset? = nil) {
+        newTaskPreset = preset
         showNewTask = true
     }
 
