@@ -814,7 +814,6 @@ struct ContentView: View {
                     remoteOptions: remoteLaunchOptions(cardId: nil),
                     enabledAssistants: assistantRegistry.available,
                     initialPrompt: newTaskPreset?.body ?? "",
-                    initialTitle: newTaskPreset?.title ?? "",
                     onCreate: { prompt, projectPath, title, startImmediately, images, assistant, apiServiceId, modelOverride, modelVariantOverride in
                         createManualTask(prompt: prompt, projectPath: projectPath, title: title, startImmediately: startImmediately, images: images, assistant: assistant, apiServiceId: apiServiceId, modelOverride: modelOverride, modelVariantOverride: modelVariantOverride)
                     },

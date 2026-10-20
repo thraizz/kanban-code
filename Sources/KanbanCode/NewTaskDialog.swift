@@ -10,9 +10,8 @@ struct NewTaskDialog: View {
     /// `globalRemoteSettings` is ignored.
     var remoteOptions: RemoteLaunchOptions?
     var enabledAssistants: [CodingAssistant] = CodingAssistant.allCases
-    /// Prefills the prompt and title, e.g. from a prompt library preset.
+    /// Prefills the prompt, e.g. from a prompt library preset.
     var initialPrompt: String = ""
-    var initialTitle: String = ""
     /// (prompt, projectPath, title, startImmediately, images, assistant, apiServiceId, model, variant)
     var onCreate: (String, String?, String?, Bool, [ImageAttachment], CodingAssistant, String?, String?, String?) -> Void = { _, _, _, _, _, _, _, _, _ in }
     /// (prompt, projectPath, title, createWorktree, runRemotely, skipPermissions, commandOverride, images, assistant, apiServiceId, model, variant) — creates and launches directly (skips LaunchConfirmation)
@@ -227,7 +226,6 @@ struct NewTaskDialog: View {
                 selectedAssistant = first
             }
             if prompt.isEmpty { prompt = initialPrompt }
-            if title.isEmpty { title = initialTitle }
             applyProjectDefaults()
             command = commandPreview
             titleFocused = true
