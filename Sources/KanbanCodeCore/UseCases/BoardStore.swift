@@ -686,6 +686,9 @@ public enum Action: Sendable {
     case resumeCard(cardId: String)
     case moveCard(cardId: String, to: KanbanCodeColumn)
     case renameCard(cardId: String, name: String)
+    /// A model's title for a card created without one. Dropped when the card
+    /// got a name of its own in the meantime.
+    case titleGenerated(cardId: String, name: String)
     case setCardPinned(cardId: String, isPinned: Bool)
     case setSelfCompactContextThreshold(cardId: String, thresholdTokens: Int?)
     case relinkSession(cardId: String, sessionLink: SessionLink)
@@ -946,6 +949,8 @@ public enum Effect: Sendable {
     case cleanupBrowserCache(cardId: String)
     case refreshDiscovery
     case updateSessionIndex(sessionId: String, name: String)
+    /// Asks a model for a title for the card's prompt.
+    case generateTitle(cardId: String, prompt: String)
     case moveSessionFile(cardId: String, sessionId: String, oldPath: String, newProjectPath: String)
     /// `human` marks a prompt the human wrote himself, for a rush session
     /// that records it.
@@ -1204,8 +1209,13 @@ public enum Reducer {
         // MARK: UI Actions
 
         case .createManualTask(let link):
+            let isNew = state.links[link.id] == nil
             state.links[link.id] = link
-            return [.upsertLink(link)]
+            var effects: [Effect] = [.upsertLink(link)]
+            if isNew, link.source == .manual, TaskTitleGenerator.needsTitle(link), let prompt = link.promptBody {
+                effects.append(.generateTitle(cardId: link.id, prompt: prompt))
+            }
+            return effects
 
         case .createTerminal(let cardId):
             guard var link = state.links[cardId] else { return [] }
@@ -1342,6 +1352,10 @@ public enum Reducer {
                 }
             }
             return effects
+
+        case .titleGenerated(let cardId, let name):
+            guard let link = state.links[cardId], TaskTitleGenerator.needsTitle(link) else { return [] }
+            return reduceAction(state: state, action: .renameCard(cardId: cardId, name: name))
 
         case .renameCard(let cardId, let name):
             guard var link = state.links[cardId] else { return [] }

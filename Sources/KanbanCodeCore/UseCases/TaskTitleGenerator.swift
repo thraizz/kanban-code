@@ -36,6 +36,24 @@ public enum TaskTitleGenerator {
         no quotes, no markdown, no trailing period.
         """
 
+    /// The name a card gets when it is created without a title: the first
+    /// line of its prompt.
+    public static func placeholderName(for prompt: String) -> String {
+        let trimmed = prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let firstLine = trimmed.components(separatedBy: .newlines).first ?? trimmed
+        return String(firstLine.prefix(100))
+    }
+
+    /// Whether the card has a prompt but no title of its own: no name, or
+    /// only the first line of its prompt standing in for one.
+    public static func needsTitle(_ link: Link) -> Bool {
+        guard let prompt = link.promptBody,
+              !InjectedPromptText.strip(prompt).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else { return false }
+        let name = link.name ?? ""
+        return name.isEmpty || name == placeholderName(for: prompt)
+    }
+
     public static func generate(prompt: String) async throws -> String {
         let task = String(InjectedPromptText.strip(prompt)
             .trimmingCharacters(in: .whitespacesAndNewlines)

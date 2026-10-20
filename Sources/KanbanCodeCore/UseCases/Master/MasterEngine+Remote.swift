@@ -9,7 +9,7 @@ extension MasterEngine {
     @discardableResult
     public func createRemoteTask(_ request: RemoteLaunchRequest) -> String {
         let trimmed = request.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        let name = String((request.title ?? trimmed.components(separatedBy: .newlines).first ?? trimmed).prefix(100))
+        let name = request.title.map { String($0.prefix(100)) } ?? TaskTitleGenerator.placeholderName(for: trimmed)
         let link = Link(
             name: name,
             projectPath: request.projectPath,

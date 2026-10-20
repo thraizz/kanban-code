@@ -36,4 +36,45 @@ struct TaskTitleGeneratorTests {
             try await TaskTitleGenerator.generate(prompt: "  \n")
         }
     }
+
+    @Test("a card is untitled while its name is empty or its prompt's first line")
+    func needsTitle() {
+        let prompt = "fix the login bug\nit fails on Safari"
+        #expect(TaskTitleGenerator.placeholderName(for: prompt) == "fix the login bug")
+        #expect(TaskTitleGenerator.needsTitle(Link(name: nil, column: .backlog, promptBody: prompt)))
+        #expect(TaskTitleGenerator.needsTitle(Link(name: "fix the login bug", column: .backlog, promptBody: prompt)))
+        #expect(!TaskTitleGenerator.needsTitle(Link(name: "Safari login", column: .backlog, promptBody: prompt)))
+        #expect(!TaskTitleGenerator.needsTitle(Link(name: nil, column: .backlog)))
+    }
+
+    @Test("creating a manual card without a title asks for one, once")
+    func createRequestsTitle() {
+        let state = AppState()
+        let link = Link(id: "c1", name: "fix the login bug", column: .backlog, source: .manual, promptBody: "fix the login bug")
+        let effects = Reducer.reduce(state: state, action: .createManualTask(link))
+        #expect(effects.contains { if case .generateTitle(cardId: "c1", prompt: "fix the login bug") = $0 { true } else { false } })
+
+        // The same action as an upsert of an existing card does not ask again.
+        let again = Reducer.reduce(state: state, action: .createManualTask(link))
+        #expect(!again.contains { if case .generateTitle = $0 { true } else { false } })
+
+        let titled = Link(id: "c2", name: "Safari login", column: .backlog, source: .manual, promptBody: "fix the login bug")
+        #expect(!Reducer.reduce(state: state, action: .createManualTask(titled))
+            .contains { if case .generateTitle = $0 { true } else { false } })
+    }
+
+    @Test("a generated title replaces the placeholder, never a name the user gave")
+    func titleGenerated() {
+        let state = AppState()
+        _ = Reducer.reduce(state: state, action: .createManualTask(
+            Link(id: "c1", name: "fix the login bug", column: .backlog, source: .manual, promptBody: "fix the login bug")))
+        _ = Reducer.reduce(state: state, action: .titleGenerated(cardId: "c1", name: "Fix Safari login"))
+        #expect(state.links["c1"]?.name == "Fix Safari login")
+
+        _ = Reducer.reduce(state: state, action: .createManualTask(
+            Link(id: "c2", name: "fix it", column: .backlog, source: .manual, promptBody: "fix it")))
+        _ = Reducer.reduce(state: state, action: .renameCard(cardId: "c2", name: "Mine"))
+        _ = Reducer.reduce(state: state, action: .titleGenerated(cardId: "c2", name: "Generated"))
+        #expect(state.links["c2"]?.name == "Mine")
+    }
 }

@@ -69,6 +69,9 @@ public actor EffectHandler {
     private var bursts: [String: Burst] = [:]
     private let burstWindow: TimeInterval = 2.0
 
+    /// Writes a card title from a prompt.
+    private let titleGenerator: @Sendable (String) async throws -> String
+
     public init(
         coordinationStore: CoordinationStore,
         tmuxAdapter: TmuxManagerPort? = nil,
@@ -77,8 +80,10 @@ public actor EffectHandler {
         notifier: NotifierPort? = nil,
         queuedPromptJournal: QueuedPromptJournal? = nil,
         remoteMachines: (any RemoteMachineControl)? = nil,
-        humanMessageLog: HumanMessageLog? = nil
+        humanMessageLog: HumanMessageLog? = nil,
+        titleGenerator: (@Sendable (String) async throws -> String)? = nil
     ) {
+        self.titleGenerator = titleGenerator ?? { try await TaskTitleGenerator.generate(prompt: $0) }
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
         self.setClipboardImage = setClipboardImage
@@ -186,6 +191,15 @@ public actor EffectHandler {
 
         case .updateSessionIndex(let sessionId, let name):
             try? SessionIndexReader.updateSummary(sessionId: sessionId, summary: name)
+
+        case .generateTitle(let cardId, let prompt):
+            do {
+                let title = try await titleGenerator(prompt)
+                await dispatch(.titleGenerated(cardId: cardId, name: title))
+            } catch {
+                // The card keeps the first line of its prompt as its name.
+                KanbanCodeLog.warn("title", "card \(cardId.prefix(12)): \(error.localizedDescription)")
+            }
 
         case .moveSessionFile(let cardId, let sessionId, let oldPath, let newProjectPath):
             do {

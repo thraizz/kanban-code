@@ -2916,8 +2916,8 @@ struct ContentView: View {
         if let title, !title.isEmpty {
             name = String(title.prefix(100))
         } else {
-            let firstLine = trimmed.components(separatedBy: .newlines).first ?? trimmed
-            name = String(firstLine.prefix(100))
+            // Stands in until the generated title arrives.
+            name = TaskTitleGenerator.placeholderName(for: trimmed)
         }
         let imagePaths: [String]? = images.isEmpty ? nil : images.compactMap { img in
             var mutable = img
@@ -2950,8 +2950,8 @@ struct ContentView: View {
         if let title, !title.isEmpty {
             name = String(title.prefix(100))
         } else {
-            let firstLine = trimmed.components(separatedBy: .newlines).first ?? trimmed
-            name = String(firstLine.prefix(100))
+            // Stands in until the generated title arrives.
+            name = TaskTitleGenerator.placeholderName(for: trimmed)
         }
         let imagePaths: [String]? = images.isEmpty ? nil : images.compactMap { img in
             var mutable = img

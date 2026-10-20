@@ -170,10 +170,7 @@ struct CardActionCatalog {
 
     /// The prompt of a card that has no title of its own, to title it from.
     private var untitledPrompt: String? {
-        guard card.link.name?.isEmpty ?? true, let prompt = card.link.promptBody,
-              !InjectedPromptText.strip(prompt).trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-        else { return nil }
-        return prompt
+        TaskTitleGenerator.needsTitle(card.link) ? card.link.promptBody : nil
     }
 
     private var hasSessionPath: Bool { card.link.sessionLink?.sessionPath != nil }
