@@ -23,6 +23,13 @@ struct ToolbarVisibilityTests {
         #expect(v.showExpandedCardInfo == false)
     }
 
+    @Test("Normal mode, sidebar open: board controls move to the sidebar")
+    func normalModeSidebarOpen() {
+        let v = ToolbarVisibility(isExpandedDetail: false, showBoardInExpanded: true, hasSelectedCard: false)
+        #expect(v.showBoardControls == false)
+        #expect(v.showViewModePicker == true)
+    }
+
     // MARK: - Expanded mode, sidebar closed
 
     @Test("Expanded, sidebar closed: board controls visible, picker and inspector visible, card info visible")

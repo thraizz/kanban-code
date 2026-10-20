@@ -231,7 +231,7 @@ struct ContentView: View {
             .appendingPathComponent(".kanban-code/settings.json")
 
         // Set sidebar visibility synchronously too
-        if UserDefaults.standard.bool(forKey: "detailExpanded") && UserDefaults.standard.bool(forKey: "showBoardInExpanded") {
+        if UserDefaults.standard.bool(forKey: "showBoardInExpanded") {
             _sidebarVisibility = State(initialValue: .doubleColumn)
         }
     }
@@ -805,8 +805,7 @@ struct ContentView: View {
             }
             .onChange(of: showBoardInExpanded) {
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    sidebarVisibility = (isExpandedDetail && showBoardInExpanded)
-                        ? .doubleColumn : .detailOnly
+                    sidebarVisibility = showBoardInExpanded ? .doubleColumn : .detailOnly
                 }
             }
             .onChange(of: sidebarVisibility) {
@@ -2214,7 +2213,7 @@ struct ContentView: View {
         .keyboardShortcut(AppShortcut.toggleExpanded.key, modifiers: AppShortcut.toggleExpanded.modifiers)
         .hidden()
 
-        // Cmd+B — toggle sidebar in expanded mode
+        // Cmd+B — toggle the left sidebar
         Button("") {
             if AppShortcut.toggleSidebar.isActive(in: shortcutContext) {
                 showBoardInExpanded.toggle()

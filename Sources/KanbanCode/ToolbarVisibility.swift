@@ -8,7 +8,7 @@ struct ToolbarVisibility {
     /// New task, refresh, dark mode, project selector — shown when sidebar is NOT visible.
     /// When the sidebar is open these controls live in the sidebar toolbar.
     var showBoardControls: Bool {
-        !(isExpandedDetail && showBoardInExpanded)
+        !showBoardInExpanded
     }
 
     /// Kanban/list segmented picker — always visible (toggles between kanban and expanded+sidebar).

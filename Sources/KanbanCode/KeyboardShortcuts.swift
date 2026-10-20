@@ -63,7 +63,7 @@ enum AppShortcut: CaseIterable {
     // Detail panel
     case resumeAssistant        // Cmd+Enter (when selected assistant session ended)
     case toggleExpanded         // Cmd+Shift+Enter (only when palette closed)
-    case toggleSidebar          // Cmd+B (only in expanded mode, palette closed)
+    case toggleSidebar          // Cmd+B (palette closed)
     case newTerminal            // Cmd+T (only when detail open on terminal tab, palette closed)
     case navigateBack           // Cmd+[ (only in expanded mode, palette closed)
     case navigateForward        // Cmd+] (only in expanded mode, palette closed)
@@ -205,9 +205,9 @@ enum AppShortcut: CaseIterable {
         case .resumeAssistant:
             return ctx.canResumeAssistant && !ctx.paletteOpen && !ctx.promptEditorFocused
 
-        // Toggle sidebar in expanded (list) mode
+        // Toggle the left sidebar (sessions / prompt library) in either mode
         case .toggleSidebar:
-            return ctx.expandedDetail && !ctx.paletteOpen
+            return !ctx.paletteOpen
 
         // New terminal only when detail is open on terminal tab AND palette is closed
         case .newTerminal:
