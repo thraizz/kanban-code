@@ -10,20 +10,25 @@ extension View {
 }
 
 enum UsageTracking {
-    /// Lets the usage log tell a click or key press from background work: an
-    /// action dispatched within half a second of a mouse or key event that is
-    /// still being handled counts as the user's.
+    /// True while AppKit handles a click or key press. A SwiftUI button or
+    /// shortcut acts inside that handling, so an action dispatched meanwhile
+    /// is the user's. The flag clears in the run loop's block phase, which
+    /// comes before the main queue runs the work background tasks queued.
+    @MainActor private static var handlingUserEvent = false
+
     @MainActor static func install() {
-        UsageLog.userInputProbe = {
-            guard let event = NSApp.currentEvent else { return false }
-            switch event.type {
-            case .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
-                 .otherMouseDown, .otherMouseUp, .keyDown, .keyUp:
-                return ProcessInfo.processInfo.systemUptime - event.timestamp < 0.5
-            default:
-                return false
+        NSEvent.addLocalMonitorForEvents(matching: [
+            .leftMouseDown, .leftMouseUp, .rightMouseDown, .rightMouseUp,
+            .otherMouseDown, .otherMouseUp, .keyDown,
+        ]) { event in
+            handlingUserEvent = true
+            CFRunLoopPerformBlock(CFRunLoopGetMain(), CFRunLoopMode.commonModes.rawValue) {
+                MainActor.assumeIsolated { handlingUserEvent = false }
             }
+            CFRunLoopWakeUp(CFRunLoopGetMain())
+            return event
         }
+        UsageLog.userInputProbe = { handlingUserEvent }
         NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: nil
         ) { _ in

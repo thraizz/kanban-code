@@ -24,7 +24,7 @@ public enum UsageLog {
         return dir
     }()
 
-    /// Whether the last dispatch came straight from a click or a key press.
+    /// Whether the current dispatch comes straight from a click or a key press.
     /// The app sets it; without it every action counts as `system`.
     @MainActor public static var userInputProbe: (@MainActor () -> Bool)?
 
