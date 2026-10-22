@@ -610,7 +610,6 @@ public enum Action: Sendable {
     case migrateSession(cardId: String, newAssistant: CodingAssistant, newSessionId: String, newSessionPath: String)
     case migrationFailed(cardId: String, error: String)
     case markPRMerged(cardId: String, prNumber: Int)
-    case mergeCards(sourceId: String, targetId: String)
     case updatePrompt(cardId: String, body: String, imagePaths: [String]?)
     case reorderCard(cardId: String, targetCardId: String, above: Bool)
     case reorderPinnedCard(cardId: String, targetCardId: String?, above: Bool)
@@ -1775,79 +1774,6 @@ public enum Reducer {
             state.busyCards.remove(cardId)
             state.notice = Notice("Migration failed: \(error)")
             return []
-
-        case .mergeCards(let sourceId, let targetId):
-            guard let source = state.links[sourceId],
-                  var target = state.links[targetId],
-                  sourceId != targetId else { return [] }
-
-            // Validation: don't merge two cards that both have sessions
-            if source.sessionLink != nil && target.sessionLink != nil {
-                state.notice = Notice("Cannot merge: both cards have sessions")
-                return []
-            }
-            // Don't merge two cards that both have tmux terminals
-            if source.tmuxLink != nil && target.tmuxLink != nil {
-                state.notice = Notice("Cannot merge: both cards have terminals")
-                return []
-            }
-            // Don't merge two cards that both have different issues
-            if source.issueLink != nil && target.issueLink != nil
-                && source.issueLink != target.issueLink {
-                state.notice = Notice("Cannot merge: both cards have different issues")
-                return []
-            }
-
-            // Transfer links from source → target (only fill nil slots)
-            if target.sessionLink == nil { target.sessionLink = source.sessionLink }
-            if target.tmuxLink == nil { target.tmuxLink = source.tmuxLink }
-            if target.worktreeLink == nil { target.worktreeLink = source.worktreeLink }
-            if target.issueLink == nil { target.issueLink = source.issueLink }
-            if target.projectPath == nil { target.projectPath = source.projectPath }
-            if target.name == nil { target.name = source.name }
-            if target.promptBody == nil { target.promptBody = source.promptBody }
-            if target.pinnedAt == nil {
-                target.pinnedAt = source.pinnedAt
-                target.pinnedSortOrder = source.pinnedSortOrder
-            }
-            // Merge PR links (deduplicate by PR number)
-            let existingPRNumbers = Set(target.prLinks.map(\.number))
-            for pr in source.prLinks where !existingPRNumbers.contains(pr.number) {
-                target.prLinks.append(pr)
-            }
-            // Merge discovered branches
-            if let sourceBranches = source.discoveredBranches {
-                var branches = target.discoveredBranches ?? []
-                for b in sourceBranches where !branches.contains(b) { branches.append(b) }
-                target.discoveredBranches = branches
-            }
-            if let sourceRepos = source.discoveredRepos {
-                var repos = target.discoveredRepos ?? [:]
-                for (k, v) in sourceRepos { repos[k] = v }
-                target.discoveredRepos = repos
-            }
-            // Preserve the more recent lastActivity
-            if let sourceActivity = source.lastActivity {
-                if target.lastActivity == nil || sourceActivity > target.lastActivity! {
-                    target.lastActivity = sourceActivity
-                }
-            }
-            // If source is remote, inherit that
-            if source.isRemote { target.isRemote = true }
-
-            target.updatedAt = .now
-            state.links[targetId] = target
-
-            // Remove source card
-            state.links.removeValue(forKey: sourceId)
-            state.deletedCardIds.insert(sourceId)
-            if let sessionId = source.sessionLink?.sessionId, target.sessionLink?.sessionId != sessionId {
-                state.deletedSessionIds.insert(sessionId)
-            }
-            if state.selectedCardId == sourceId { state.selectedCardId = targetId }
-
-            KanbanCodeLog.info("store", "Merge: \(sourceId.prefix(12)) → \(targetId.prefix(12))")
-            return [.upsertLink(target), .removeLink(sourceId)]
 
         // MARK: Async Completions
 

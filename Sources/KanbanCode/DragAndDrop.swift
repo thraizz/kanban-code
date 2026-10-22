@@ -7,8 +7,6 @@ import struct KanbanCodeCore.Link
 class DragState {
     var draggingCard: KanbanCodeCard?
     var sourceColumn: KanbanCodeColumn?
-    /// Card ID the cursor is currently over (merge candidate).
-    var mergeTargetId: String?
     /// Drop insertion indicator for same-column reordering.
     var reorderTargetId: String?
     /// Whether to insert above (true) or below (false) the reorder target.
@@ -23,7 +21,7 @@ struct CardFramePreference: PreferenceKey {
     }
 }
 
-/// A column view that supports drag and drop (column move + card-to-card merge).
+/// A column view that supports drag and drop (column move + same-column reorder).
 struct DroppableColumnView: View {
     let column: KanbanCodeColumn
     let cards: [KanbanCodeCard]
@@ -32,7 +30,6 @@ struct DroppableColumnView: View {
     var canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool = { _, _ in true }
     var isRefreshingBacklog: Bool = false
     var onMoveCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
-    var onMergeCards: (String, String) -> Void = { _, _ in }   // (sourceId, targetId)
     var onReorderCard: (String, String, Bool) -> Void = { _, _, _ in }  // (cardId, targetCardId, above)
     var onRenameCard: (String, String) -> Void = { _, _ in }
     var onArchiveCard: (String) -> Void = { _ in }
@@ -66,13 +63,15 @@ struct DroppableColumnView: View {
     @State private var cardFrames: [String: CGRect] = [:]
     @State private var collapsedSubagentParents: Set<String> = []
 
+    /// Frames only drive same-column reordering, so only the column the drag
+    /// started in pays for geometry readers and preference updates.
     private var isCollectingCardFrames: Bool {
-        dragState.draggingCard != nil
+        dragState.draggingCard != nil && dragState.sourceColumn == column
     }
 
     private var isCurrentDropAllowed: Bool {
         guard let draggingCard = dragState.draggingCard else { return true }
-        if dragState.sourceColumn == column || dragState.mergeTargetId != nil {
+        if dragState.sourceColumn == column {
             return true
         }
         return canDropCard(draggingCard, column)
@@ -82,37 +81,12 @@ struct DroppableColumnView: View {
         ScrollView {
             LazyVStack(spacing: 8) {
                 ForEach(cards) { card in
-                    let isMergeTarget = dragState.mergeTargetId == card.id
-                    let canMerge: Bool = {
-                        guard let source = dragState.draggingCard, source.id != card.id else { return false }
-                        return Link.mergeBlocked(source: source.link, target: card.link) == nil
-                    }()
-
                     // Drop indicator above this card
                     if dragState.reorderTargetId == card.id && dragState.reorderAbove {
                         ReorderIndicator()
                     }
 
                     cardView(for: card)
-                    // Merge highlight
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(
-                                isMergeTarget && canMerge ? Color.orange : Color.clear,
-                                lineWidth: 2
-                            )
-                    )
-                    .overlay(alignment: .top) {
-                        if isMergeTarget && canMerge {
-                            Text("Merge")
-                                .font(.app(.caption2).bold())
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(Color.orange, in: Capsule())
-                                .offset(y: -10)
-                        }
-                    }
                     // Report frame in column coordinate space
                     .background { cardFrameReporter(for: card) }
                     .onDrag {
@@ -138,8 +112,8 @@ struct DroppableColumnView: View {
                     }
                 }
 
-                // Ghost card placeholder when dragging over this column (not merging)
-                if isTargeted, dragState.mergeTargetId == nil,
+                // Ghost card placeholder when dragging over this column
+                if isTargeted,
                    let dragging = dragState.draggingCard, dragState.sourceColumn != column {
                     VStack(alignment: .leading, spacing: 6) {
                         Text(dragging.displayTitle)
@@ -171,14 +145,14 @@ struct DroppableColumnView: View {
         .overlay(
             RoundedRectangle(cornerRadius: 12)
                 .stroke(
-                    isTargeted && dragState.mergeTargetId == nil
+                    isTargeted
                         ? (isCurrentDropAllowed ? Color.accentColor.opacity(0.5) : Color.red.opacity(0.55))
                         : Color.clear,
                     lineWidth: isTargeted ? 2 : 0
                 )
         )
         .overlay(alignment: .topTrailing) {
-            if isTargeted, dragState.mergeTargetId == nil, !isCurrentDropAllowed {
+            if isTargeted, !isCurrentDropAllowed {
                 InvalidDropBadge()
                     .padding(10)
             }
@@ -240,13 +214,11 @@ struct DroppableColumnView: View {
         }
         .onDrop(of: [.utf8PlainText], delegate: ColumnDropDelegate(
             column: column,
-            cards: cards,
             cardFrames: cardFrames,
             dragState: dragState,
             isTargeted: $isTargeted,
             canDropCard: canDropCard,
             onMoveCard: onMoveCard,
-            onMergeCards: onMergeCards,
             onReorderCard: onReorderCard
         ))
         .simultaneousGesture(
@@ -255,7 +227,6 @@ struct DroppableColumnView: View {
             }
         )
         .animation(.easeInOut(duration: 0.15), value: isTargeted)
-        .animation(.easeInOut(duration: 0.15), value: dragState.mergeTargetId)
         .animation(.easeInOut(duration: 0.15), value: dragState.reorderTargetId)
         .sheet(isPresented: Binding(
             get: { renamingCardId.flatMap { displayedCardsById[$0] } != nil },
@@ -363,17 +334,15 @@ struct DroppableColumnView: View {
     }
 }
 
-/// Drop delegate that handles both column-level moves and card-to-card merges.
-/// Uses cursor position + stored card frames to detect merge targets.
+/// Drop delegate that handles column-level moves and same-column reordering.
+/// Uses cursor position + stored card frames to detect the reorder target.
 struct ColumnDropDelegate: DropDelegate {
     let column: KanbanCodeColumn
-    let cards: [KanbanCodeCard]
     let cardFrames: [String: CGRect]
     let dragState: DragState
     @Binding var isTargeted: Bool
     let canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool
     let onMoveCard: (String, KanbanCodeColumn) -> Void
-    let onMergeCards: (String, String) -> Void
     let onReorderCard: (String, String, Bool) -> Void  // (cardId, targetCardId, above)
 
     private var isSameColumn: Bool {
@@ -388,7 +357,7 @@ struct ColumnDropDelegate: DropDelegate {
     func dropUpdated(info: DropInfo) -> DropProposal? {
         updateTargets(at: info.location)
         guard let sourceCard = dragState.draggingCard else { return nil }
-        if isSameColumn || dragState.mergeTargetId != nil || canDropCard(sourceCard, column) {
+        if isSameColumn || canDropCard(sourceCard, column) {
             return DropProposal(operation: .move)
         }
         return nil
@@ -396,7 +365,6 @@ struct ColumnDropDelegate: DropDelegate {
 
     func dropExited(info: DropInfo) {
         isTargeted = false
-        dragState.mergeTargetId = nil
         dragState.reorderTargetId = nil
     }
 
@@ -404,20 +372,11 @@ struct ColumnDropDelegate: DropDelegate {
         defer {
             dragState.draggingCard = nil
             dragState.sourceColumn = nil
-            dragState.mergeTargetId = nil
             dragState.reorderTargetId = nil
             isTargeted = false
         }
 
         guard let sourceCard = dragState.draggingCard else { return false }
-
-        // Check if we're merging onto a card
-        if let targetId = dragState.mergeTargetId,
-           let targetCard = cards.first(where: { $0.id == targetId }),
-           Link.mergeBlocked(source: sourceCard.link, target: targetCard.link) == nil {
-            onMergeCards(sourceCard.id, targetId)
-            return true
-        }
 
         // Same-column reorder
         if isSameColumn, let targetId = dragState.reorderTargetId, targetId != sourceCard.id {
@@ -433,59 +392,23 @@ struct ColumnDropDelegate: DropDelegate {
     }
 
     private func updateTargets(at location: CGPoint) {
-        guard let source = dragState.draggingCard else {
-            dragState.mergeTargetId = nil
+        guard let source = dragState.draggingCard, isSameColumn else {
             dragState.reorderTargetId = nil
             return
         }
-
-        if isSameColumn {
-            // Same-column: detect reorder position
-            updateReorderTarget(at: location, source: source)
-        } else {
-            // Cross-column: detect merge target
-            updateMergeTarget(at: location, source: source)
-        }
+        updateReorderTarget(at: location, source: source)
     }
 
     private func updateReorderTarget(at location: CGPoint, source: KanbanCodeCard) {
         // Find the nearest card and whether cursor is in upper or lower half
         for (cardId, frame) in cardFrames {
             guard cardId != source.id, frame.contains(location) else { continue }
-
-            // Check if this is a valid merge target — merge takes priority over reorder
-            if let targetCard = cards.first(where: { $0.id == cardId }),
-               Link.mergeBlocked(source: source.link, target: targetCard.link) == nil {
-                dragState.mergeTargetId = cardId
-                dragState.reorderTargetId = nil
-                return
-            }
-
-            // Otherwise reorder
             let midY = frame.midY
-            dragState.mergeTargetId = nil
             dragState.reorderTargetId = cardId
             dragState.reorderAbove = location.y < midY
             return
         }
-        dragState.mergeTargetId = nil
         dragState.reorderTargetId = nil
-    }
-
-    private func updateMergeTarget(at location: CGPoint, source: KanbanCodeCard) {
-        dragState.reorderTargetId = nil
-
-        for (cardId, frame) in cardFrames {
-            guard cardId != source.id, frame.contains(location) else { continue }
-            guard let targetCard = cards.first(where: { $0.id == cardId }),
-                  Link.mergeBlocked(source: source.link, target: targetCard.link) == nil else {
-                dragState.mergeTargetId = nil
-                return
-            }
-            dragState.mergeTargetId = cardId
-            return
-        }
-        dragState.mergeTargetId = nil
     }
 }
 

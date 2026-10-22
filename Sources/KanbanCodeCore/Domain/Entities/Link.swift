@@ -404,28 +404,6 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         return .task
     }
 
-    // MARK: - Merge Validation
-
-    /// Check if two cards can be merged. Returns nil if allowed, or an error message if not.
-    public static func mergeBlocked(source: Link, target: Link) -> String? {
-        if source.id == target.id { return "Cannot merge a card with itself" }
-        if source.sessionLink != nil && target.sessionLink != nil {
-            return "Cannot merge: both cards have sessions"
-        }
-        if source.tmuxLink != nil && target.tmuxLink != nil {
-            return "Cannot merge: both cards have terminals"
-        }
-        if source.issueLink != nil && target.issueLink != nil
-            && source.issueLink != target.issueLink {
-            return "Cannot merge: both cards have different issues"
-        }
-        if source.worktreeLink != nil && target.worktreeLink != nil
-            && source.worktreeLink != target.worktreeLink {
-            return "Cannot merge: both cards have different worktrees"
-        }
-        return nil
-    }
-
     // MARK: - Init
 
     public init(

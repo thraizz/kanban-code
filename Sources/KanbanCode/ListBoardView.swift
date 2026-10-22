@@ -31,7 +31,6 @@ struct ListBoardView: View {
     var onRefreshBacklog: () -> Void = {}
     var onDeleteAllCards: (KanbanCodeColumn) -> Void = { _ in }
     var onDropCard: (String, KanbanCodeColumn) -> Void = { _, _ in }
-    var onMergeCards: (String, String) -> Void = { _, _ in }
     var canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool = { _, _ in true }
     var onNewTask: () -> Void = {}
     var onCardClicked: (String) -> Void = { _ in }
@@ -228,7 +227,6 @@ struct ListBoardView: View {
             onRefreshBacklog: onRefreshBacklog,
             onDeleteAllCards: onDeleteAllCards,
             onMoveCard: onDropCard,
-            onMergeCards: onMergeCards,
             canDropCard: canDropCard,
             onReorderCard: { cardId, targetCardId, above in
                 store.dispatch(.reorderCard(cardId: cardId, targetCardId: targetCardId, above: above))
@@ -332,7 +330,6 @@ private struct ListBoardSectionView: View {
     let onRefreshBacklog: () -> Void
     let onDeleteAllCards: (KanbanCodeColumn) -> Void
     let onMoveCard: (String, KanbanCodeColumn) -> Void
-    let onMergeCards: (String, String) -> Void
     let canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool
     let onReorderCard: (String, String, Bool) -> Void
     let onRenameCard: (String, String) -> Void
@@ -355,8 +352,10 @@ private struct ListBoardSectionView: View {
         Dictionary(uniqueKeysWithValues: (section.cards + Array(subagentCardsById.values)).map { ($0.id, $0) })
     }
 
+    /// Frames only drive same-section reordering, so only the section the
+    /// drag started in pays for geometry readers and preference updates.
     private var isCollectingCardFrames: Bool {
-        dragState.draggingCard != nil
+        dragState.draggingCard != nil && dragState.sourceColumn == section.column
     }
 
     private var isCurrentDropAllowed: Bool {
@@ -400,14 +399,12 @@ private struct ListBoardSectionView: View {
             )
             .onDrop(of: [.utf8PlainText], delegate: ListSectionDropDelegate(
                 column: section.column,
-                cards: section.cards,
                 cardFrames: cardFrames,
                 dragState: dragState,
                 isTargeted: $isTargeted,
                 canDropCard: canDropCard,
                 onMoveCard: onMoveCard,
-                onMergeCards: onMergeCards,
-                onReorderCard: onReorderCard
+                    onReorderCard: onReorderCard
             ))
         }
     }
@@ -437,14 +434,12 @@ private struct ListBoardSectionView: View {
             }
             .onDrop(of: [.utf8PlainText], delegate: ListSectionDropDelegate(
                 column: section.column,
-                cards: section.cards,
                 cardFrames: cardFrames,
                 dragState: dragState,
                 isTargeted: $isTargeted,
                 canDropCard: canDropCard,
                 onMoveCard: onMoveCard,
-                onMergeCards: onMergeCards,
-                onReorderCard: onReorderCard
+                    onReorderCard: onReorderCard
             ))
         } else {
             LazyVStack(spacing: 4) {
@@ -454,24 +449,6 @@ private struct ListBoardSectionView: View {
                     }
                     listCardRow(for: card)
                     .opacity(dragState.draggingCard?.id == card.id ? 0.65 : 1)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .strokeBorder(
-                                dragState.mergeTargetId == card.id ? Color.orange : Color.clear,
-                                lineWidth: 2
-                            )
-                    )
-                    .overlay(alignment: .top) {
-                        if dragState.mergeTargetId == card.id {
-                            Text("Merge")
-                                .font(.app(.caption2).bold())
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 8)
-                                .padding(.vertical, 2)
-                                .background(Color.orange, in: Capsule())
-                                .offset(y: -10)
-                        }
-                    }
                     .background { cardFrameReporter(for: card) }
                     .onDrag {
                         dragState.draggingCard = card
@@ -502,14 +479,12 @@ private struct ListBoardSectionView: View {
             }
             .onDrop(of: [.utf8PlainText], delegate: ListSectionDropDelegate(
                 column: section.column,
-                cards: section.cards,
                 cardFrames: cardFrames,
                 dragState: dragState,
                 isTargeted: $isTargeted,
                 canDropCard: canDropCard,
                 onMoveCard: onMoveCard,
-                onMergeCards: onMergeCards,
-                onReorderCard: onReorderCard
+                    onReorderCard: onReorderCard
             ))
             .sheet(isPresented: Binding(
                 get: { renamingCardId != nil },
@@ -673,13 +648,11 @@ private struct ListSectionHeader: View {
 
 private struct ListSectionDropDelegate: DropDelegate {
     let column: KanbanCodeColumn
-    let cards: [KanbanCodeCard]
     let cardFrames: [String: CGRect]
     let dragState: DragState
     @Binding var isTargeted: Bool
     let canDropCard: (KanbanCodeCard, KanbanCodeColumn) -> Bool
     let onMoveCard: (String, KanbanCodeColumn) -> Void
-    let onMergeCards: (String, String) -> Void
     let onReorderCard: (String, String, Bool) -> Void
 
     private var isSameSection: Bool {
@@ -710,19 +683,10 @@ private struct ListSectionDropDelegate: DropDelegate {
             dragState.draggingCard = nil
             dragState.sourceColumn = nil
             dragState.reorderTargetId = nil
-            dragState.mergeTargetId = nil
             isTargeted = false
         }
 
         guard let sourceCard = dragState.draggingCard else { return false }
-
-        // Merge onto a card
-        if let targetId = dragState.mergeTargetId,
-           let targetCard = cards.first(where: { $0.id == targetId }),
-           Link.mergeBlocked(source: sourceCard.link, target: targetCard.link) == nil {
-            onMergeCards(sourceCard.id, targetId)
-            return true
-        }
 
         if isSameSection, let targetId = dragState.reorderTargetId, targetId != sourceCard.id {
             onReorderCard(sourceCard.id, targetId, dragState.reorderAbove)
@@ -736,34 +700,17 @@ private struct ListSectionDropDelegate: DropDelegate {
     }
 
     private func updateReorderTarget(at location: CGPoint) {
-        guard let sourceCard = dragState.draggingCard else {
+        guard let sourceCard = dragState.draggingCard, isSameSection else {
             dragState.reorderTargetId = nil
-            dragState.mergeTargetId = nil
             return
         }
 
         for (cardId, frame) in cardFrames {
             guard cardId != sourceCard.id, frame.contains(location) else { continue }
-
-            // Merge takes priority over reorder
-            if let targetCard = cards.first(where: { $0.id == cardId }),
-               Link.mergeBlocked(source: sourceCard.link, target: targetCard.link) == nil {
-                dragState.mergeTargetId = cardId
-                dragState.reorderTargetId = nil
-                return
-            }
-
-            // Reorder (same section only)
-            if isSameSection {
-                dragState.mergeTargetId = nil
-                dragState.reorderTargetId = cardId
-                dragState.reorderAbove = location.y < frame.midY
-                return
-            }
-
-            break
+            dragState.reorderTargetId = cardId
+            dragState.reorderAbove = location.y < frame.midY
+            return
         }
-        dragState.mergeTargetId = nil
         dragState.reorderTargetId = nil
     }
 }

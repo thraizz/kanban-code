@@ -310,9 +310,6 @@ struct ContentView: View {
                 CardDropIntent.resolve(card, to: column).isAllowed
             },
             onDropCard: { cardId, column in handleDrop(cardId: cardId, to: column) },
-            onMergeCards: { sourceId, targetId in
-                store.dispatch(.mergeCards(sourceId: sourceId, targetId: targetId))
-            },
             onNewTask: { presentNewTask() },
             onCardClicked: { cardId in
                 if store.state.cards.first(where: { $0.id == cardId })?.link.tmuxLink != nil {
@@ -374,9 +371,6 @@ struct ContentView: View {
             onRefreshBacklog: { Task { await store.refreshBacklog() } },
             onDeleteAllCards: { column in confirmDeleteAllCards(in: column) },
             onDropCard: { cardId, column in handleDrop(cardId: cardId, to: column) },
-            onMergeCards: { sourceId, targetId in
-                store.dispatch(.mergeCards(sourceId: sourceId, targetId: targetId))
-            },
             canDropCard: { card, column in
                 CardDropIntent.resolve(card, to: column).isAllowed
             },
