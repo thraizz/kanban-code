@@ -23,7 +23,7 @@ public enum TaskTitleGenerator {
         }
     }
 
-    public static let openRouterModel = "anthropic/claude-haiku-5.5"
+    public static let openRouterModel = "deepseek/deepseek-v4.1-flash"
     static let claudeModel = "haiku"
     /// Enough of a prompt to know what it is about; long pasted logs add cost, not meaning.
     static let maxPromptCharacters = 4000
@@ -118,6 +118,8 @@ public enum TaskTitleGenerator {
         let body: [String: Any] = [
             "model": openRouterModel,
             "max_tokens": 40,
+            // A title needs no thinking, and reasoning tokens would use up max_tokens.
+            "reasoning": ["enabled": false],
             "messages": [
                 ["role": "system", "content": instructions],
                 ["role": "user", "content": task],
