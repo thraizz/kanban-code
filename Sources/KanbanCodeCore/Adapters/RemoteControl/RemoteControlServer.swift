@@ -396,6 +396,7 @@ public final class RemoteControlServer: Sendable {
     private func routeAuthenticated(_ request: RemoteHTTPRequest, device: RemoteDevice, peer: RemotePeerAddress?) async -> Outcome {
         let seg = request.segments
         let method = request.method
+        UsageLog.record("api", "\(method) \(UsageLog.routeTemplate(seg)) [\(device.scope.rawValue)]")
         if let scrubber, let response = await RemoteScrubRoutes.handle(
             method: method, rest: Array(seg.dropFirst()), body: request.body, device: device, scrubber: scrubber) {
             return .response(response)

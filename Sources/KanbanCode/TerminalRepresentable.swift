@@ -18,6 +18,11 @@ final class BatchedTerminalView: LocalProcessTerminalView {
     /// The tmux session this terminal shows, used to find its machine.
     var kanbanSession: String?
 
+    override func send(source: TerminalView, data: ArraySlice<UInt8>) {
+        UsageLog.record("terminal", "input")
+        super.send(source: source, data: data)
+    }
+
     private var pendingData: [UInt8] = []
     private var flushScheduled = false
     private var lastPendingDataWarningAt: CFTimeInterval = 0

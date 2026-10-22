@@ -12,7 +12,9 @@ struct SlashCommandList: View {
     static let rowHeight: CGFloat = 26
     static let visibleRows = 7
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "SlashCommandList") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         ScrollViewReader { proxy in
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 0) {

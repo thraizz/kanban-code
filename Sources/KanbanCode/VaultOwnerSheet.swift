@@ -31,7 +31,9 @@ struct VaultOwnerSheet: View {
         return owner?.recipients.contains { $0.publicKey == thisMac.publicKey } ?? false
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "VaultOwnerSheet") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(alignment: .leading, spacing: 14) {
             HStack {
                 Label("Owner Keys", systemImage: "touchid").font(.title3.weight(.semibold))

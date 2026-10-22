@@ -103,7 +103,9 @@ struct ChatView: View {
         }
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "ChatView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         RenderDiagnostics.measure(
             "ChatView.body",
             metadata: "turns=\(turns.count) assistant=\(assistant.rawValue) card=\(cardId.prefix(12))"

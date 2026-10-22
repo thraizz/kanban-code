@@ -96,7 +96,9 @@ struct ImageChipsView: View {
     @Binding var images: [ImageAttachment]
     var onRemove: ((Int) -> Void)?
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "ImageChipsView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         if !images.isEmpty {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 6) {

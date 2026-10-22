@@ -49,7 +49,9 @@ struct ProcessManagerView: View {
     private let tmuxFound = ShellCommand.findExecutable("tmux") != nil
     private let gitFound = ShellCommand.findExecutable("git") != nil
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "ProcessManagerView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(spacing: 0) {
             // Tab picker
             Picker("", selection: $selectedTab) {

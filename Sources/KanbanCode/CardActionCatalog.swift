@@ -23,7 +23,7 @@ struct CardActionItem: Identifiable {
     var dividerBefore = false
     /// The keyboard shortcut that runs the same action, shown in the palette.
     var shortcut: AppShortcut?
-    let kind: Kind
+    var kind: Kind
 }
 
 /// A card action flattened for the command palette.
@@ -133,7 +133,20 @@ struct CardActionCatalog {
             migrateItems,
             machineItems,
             archiveItems,
-        ].filter { !$0.isEmpty }
+        ].filter { !$0.isEmpty }.map { $0.map(Self.tracked) }
+    }
+
+    /// The item with its action counted in the usage log.
+    private static func tracked(_ item: CardActionItem) -> CardActionItem {
+        var item = item
+        switch item.kind {
+        case .perform(let run):
+            let id = item.id
+            item.kind = .perform { UsageLog.record("card-action", id); run() }
+        case .submenu(let children):
+            item.kind = .submenu(children.map(tracked))
+        }
+        return item
     }
 
     /// The enabled actions, one per button, submenu children titled with

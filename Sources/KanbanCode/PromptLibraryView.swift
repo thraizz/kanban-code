@@ -40,7 +40,9 @@ struct PromptLibraryView: View {
         presets.firstIndex(where: { $0.id == selectedId })
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "PromptLibraryView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(spacing: 0) {
             header
             Divider()

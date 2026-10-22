@@ -10,7 +10,9 @@ struct QueuedPromptsBar: View {
 
     @State private var draggingId: String?
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "QueuedPromptsBar") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             ForEach(prompts) { prompt in
                 HStack(spacing: 6) {

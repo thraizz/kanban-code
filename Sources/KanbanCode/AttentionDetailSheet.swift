@@ -115,7 +115,9 @@ struct AttentionDetailSheet: View {
     /// Set once the request was refused here: the sheet asks for the note.
     @State private var note: DenialNotePacer?
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "AttentionDetailSheet") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         if let note {
             DenialNoteView(requestId: request.id, title: AttentionCopy.notification(for: request, cardName: cardName).title,
                            pacer: note, onClose: onClose)

@@ -236,7 +236,9 @@ struct BrowserContentView: View {
     @State private var navigationDebounce: Task<Void, Never>?
     @FocusState private var isURLFieldFocused: Bool
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "BrowserContentView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(spacing: 0) {
             // Navigation bar
             HStack(spacing: 6) {

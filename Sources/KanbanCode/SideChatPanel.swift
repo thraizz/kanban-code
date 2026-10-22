@@ -73,7 +73,9 @@ struct SideChatPanel: View {
         !followUp.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && !state.isRunning
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "SideChatPanel") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
             if !collapsed {

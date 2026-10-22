@@ -108,39 +108,50 @@ struct SettingsView: View {
         TabView {
             ProjectsSettingsView()
                 .tabItem { Label("Projects", systemImage: "folder") }
+            .trackUsage("settings", "Projects")
 
             AssistantsSettingsView(assistantStatus: $assistantStatus)
                 .tabItem { Label("Assistants", systemImage: "terminal") }
+            .trackUsage("settings", "Assistants")
 
             GeneralSettingsView(
                 ghAvailable: ghAvailable,
                 tmuxAvailable: tmuxAvailable
             )
             .tabItem { Label("General", systemImage: "gear") }
+            .trackUsage("settings", "General")
 
             SelfCompactSettingsView()
                 .tabItem { Label("Self-Compact", systemImage: "arrow.triangle.2.circlepath") }
+            .trackUsage("settings", "Self-Compact")
 
             SubagentSettingsView()
                 .tabItem { Label("Subagents", systemImage: "point.3.connected.trianglepath.dotted") }
+            .trackUsage("settings", "Subagents")
 
             NotificationSettingsView()
                 .tabItem { Label("Notifications", systemImage: "bell") }
+            .trackUsage("settings", "Notifications")
 
             RemoteSettingsView()
                 .tabItem { Label("Remote", systemImage: "network") }
+            .trackUsage("settings", "Remote")
 
             RemoteControlSettingsView()
                 .tabItem { Label("Remote Control", systemImage: "iphone.radiowaves.left.and.right") }
+            .trackUsage("settings", "Remote Control")
 
             SyncSettingsView()
                 .tabItem { Label("Sync", systemImage: "arrow.triangle.2.circlepath.circle") }
+            .trackUsage("settings", "Sync")
 
             VaultSettingsView()
                 .tabItem { Label("Vault", systemImage: "key") }
+            .trackUsage("settings", "Vault")
 
             AmphetamineSettingsView()
                 .tabItem { Label("Amphetamine", systemImage: "bolt.fill") }
+            .trackUsage("settings", "Amphetamine")
         }
         .frame(width: 960, height: 620)
         .task {

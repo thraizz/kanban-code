@@ -56,7 +56,9 @@ struct NewTaskDialog: View {
     private static let customModelSentinel = "__custom_model__"
     private static let customVariantSentinel = "__custom_variant__"
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "NewTaskDialog") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text("New Task")
                 .font(.app(.title3))

@@ -87,7 +87,9 @@ struct SessionHistoryView: View {
         return loadedTurn(containing: offset)?.lineNumber
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "SessionHistoryView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         if isLoading {
             VStack {
                 ProgressView()

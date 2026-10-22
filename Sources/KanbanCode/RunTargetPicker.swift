@@ -9,7 +9,9 @@ struct RunTargetPicker: View {
     @Binding var machineChoice: BoxdMachineChoice
     @State private var reachability: [String: Bool] = [:]
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "RunTargetPicker") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         Picker("Run on", selection: selection) {
             ForEach(RunTargetOption.options(for: remote, reachability: reachability)) { option in
                 Text(option.label).tag(option.target)

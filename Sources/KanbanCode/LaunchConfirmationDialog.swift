@@ -100,7 +100,9 @@ struct LaunchConfirmationDialog: View {
         self._createWorktree = State(initialValue: UserDefaults.standard.object(forKey: "createWorktree_\(projectPath)") as? Bool ?? true)
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "LaunchConfirmationDialog") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 16) {

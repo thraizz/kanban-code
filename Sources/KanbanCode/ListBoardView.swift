@@ -61,7 +61,9 @@ struct ListBoardView: View {
         nonmutating set { collapsedColumnsRaw = ListSectionCollapseState.encode(newValue) }
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "ListBoardView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         listContent
         .overlay { emptyStateOverlay }
         .sheet(isPresented: Binding(

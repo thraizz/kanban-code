@@ -36,7 +36,9 @@ struct QueuedPromptDialog: View {
         }
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "QueuedPromptDialog") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(alignment: .leading, spacing: 16) {
             Text(existingPrompt != nil ? "Edit Queued Prompt" : "Queue Prompt")
                 .font(.app(.title3))

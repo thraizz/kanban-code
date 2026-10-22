@@ -66,7 +66,9 @@ struct QuitConfirmationView: View {
         _killManagedSessions = State(initialValue: killManagedSessions)
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "QuitConfirmationView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(spacing: 0) {
             VStack(spacing: 8) {
                 Image(systemName: "terminal")

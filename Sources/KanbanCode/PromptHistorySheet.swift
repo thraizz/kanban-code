@@ -73,7 +73,9 @@ struct PromptHistorySheet: View {
         return items.filter { $0.body.lowercased().contains(trimmed) }
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "PromptHistorySheet") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(spacing: 0) {
             header
             Divider()

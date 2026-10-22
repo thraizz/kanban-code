@@ -41,6 +41,7 @@ import { loadAgentsConfig, isAgentHost } from "./agents/config.js";
 import { reconcileAll } from "./agents/reconcile.js";
 import { runtimeSpec } from "./agents/runtime.js";
 import { installHooks } from "./hooks.js";
+import { recordCliUsage } from "./usage.js";
 import { runRemoteAgent } from "./remote-agent.js";
 import { runProxiedCommand, shouldProxy } from "./remote-proxy.js";
 import {
@@ -1703,5 +1704,12 @@ if (shouldProxy(proxyArgv)) {
   });
   process.exit(code);
 }
+
+// A proxied command is counted on the Mac, where it runs through here again.
+program.hook("preAction", (_program, actionCommand) => {
+  const names: string[] = [];
+  for (let cmd: Command | null = actionCommand; cmd && cmd !== program; cmd = cmd.parent) names.unshift(cmd.name());
+  recordCliUsage(names.join(" "));
+});
 
 await program.parseAsync();

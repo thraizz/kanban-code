@@ -21,7 +21,9 @@ struct SubagentManagerView: View {
             }
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "SubagentManagerView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(alignment: .leading, spacing: 16) {
             HStack {
                 VStack(alignment: .leading, spacing: 3) {

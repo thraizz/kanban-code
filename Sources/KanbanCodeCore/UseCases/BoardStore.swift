@@ -2639,6 +2639,7 @@ public final class BoardStore: @unchecked Sendable {
         // Mirror gives the case name without serializing associated values.
         let actionName = Mirror(reflecting: action).children.first?.label ?? String(describing: action)
         LastDispatchedAction.shared.set(actionName)
+        UsageLog.recordAction(actionName)
         #if canImport(os)
         let sp = PerfSignposts.store
         let spID = sp.makeSignpostID()
@@ -2668,6 +2669,7 @@ public final class BoardStore: @unchecked Sendable {
     /// Dispatch an action and wait for all its effects to complete.
     public func dispatchAndWait(_ action: Action) async {
         if deferUntilLocalLinksLoad(action) { return }
+        UsageLog.recordAction(Mirror(reflecting: action).children.first?.label ?? String(describing: action))
         let effects = guardedEffects(Reducer.reduce(state: state, action: action))
         await withTaskGroup(of: Void.self) { group in
             for effect in effects {

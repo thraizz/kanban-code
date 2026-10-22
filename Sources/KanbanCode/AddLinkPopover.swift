@@ -10,7 +10,9 @@ struct AddLinkPopover: View {
     @State private var branchText = ""
     @State private var numberText = ""
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "AddLinkPopover") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(alignment: .leading, spacing: 12) {
             Text("Add Link")
                 .font(.app(.subheadline).bold())

@@ -256,7 +256,9 @@ struct CardDetailView: View {
         self._selectedTab = selectedTab
     }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "CardDetailView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         RenderDiagnostics.measure(
             "CardDetailView.body",
             metadata: "card=\(card.id.prefix(12)) tab=\(selectedTab) turns=\(turns.count) expanded=\(isExpanded)"

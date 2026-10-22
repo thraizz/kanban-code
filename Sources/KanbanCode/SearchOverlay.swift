@@ -28,7 +28,9 @@ struct SearchOverlay: View {
     @State private var focusRequestToken = 0
     @FocusState private var isSearchFocused: Bool
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "SearchOverlay") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         RenderDiagnostics.measure(
             "SearchOverlay.body",
             metadata: "query=\(query.count) results=\(visibleIds.count) deep=\(isDeepSearching)"

@@ -24,6 +24,7 @@ struct KanbanCodeApp: App {
         .commands {
             CommandGroup(replacing: .newItem) {
                 Button("New Task") {
+                    UsageLog.record("menu", "new-task")
                     NotificationCenter.default.post(name: .kanbanCodeNewTask, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: .command)
@@ -31,11 +32,13 @@ struct KanbanCodeApp: App {
 
             CommandGroup(replacing: .undoRedo) {
                 Button("Undo") {
+                    UsageLog.record("menu", "undo")
                     Self.performTextUndo()
                 }
                 .keyboardShortcut("z", modifiers: .command)
 
                 Button("Redo") {
+                    UsageLog.record("menu", "redo")
                     Self.performTextRedo()
                 }
                 .keyboardShortcut("z", modifiers: [.command, .shift])
@@ -43,6 +46,7 @@ struct KanbanCodeApp: App {
 
             CommandGroup(after: .toolbar) {
                 Button("Search Sessions") {
+                    UsageLog.record("menu", "search")
                     NotificationCenter.default.post(name: .kanbanCodeToggleSearch, object: nil)
                 }
                 .keyboardShortcut("k", modifiers: .command)
@@ -50,22 +54,26 @@ struct KanbanCodeApp: App {
                 Divider()
 
                 Button("Zoom In") {
+                    UsageLog.record("menu", "zoom-in")
                     Self.adjustZoom(by: 1)
                 }
                 .keyboardShortcut("+", modifiers: .command)
 
                 // Cmd+= (without shift) also zooms in — standard macOS behavior
                 Button("Zoom In") {
+                    UsageLog.record("menu", "zoom-in")
                     Self.adjustZoom(by: 1)
                 }
                 .keyboardShortcut("=", modifiers: .command)
 
                 Button("Zoom Out") {
+                    UsageLog.record("menu", "zoom-out")
                     Self.adjustZoom(by: -1)
                 }
                 .keyboardShortcut("-", modifiers: .command)
 
                 Button("Actual Size") {
+                    UsageLog.record("menu", "actual-size")
                     UserDefaults.standard.set(1, forKey: "uiTextSize")
                     UserDefaults.standard.set(Double(TerminalCache.defaultFontSize), forKey: TerminalCache.fontSizeKey)
                 }
@@ -127,6 +135,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
         defaults.set(false, forKey: "NSAutomaticPeriodSubstitutionEnabled")
 
         InputLatencyProbe.shared.start()
+        UsageTracking.install()
 
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)

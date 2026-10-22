@@ -1308,6 +1308,9 @@ struct ContentView: View {
     private var boardWithPresence: some View {
         boardWithAlerts
             .onChange(of: detailTab, initial: true) { reportPresenceTab() }
+            .onChange(of: detailTab) { UsageLog.record("tab", detailTab.rawValue) }
+            .onChange(of: boardViewModeRaw) { UsageLog.record("board-mode", boardViewModeRaw) }
+            .onChange(of: isExpandedDetail) { UsageLog.record("board-mode", isExpandedDetail ? "expanded-detail" : "board") }
     }
 
     private var boardWithHandlers: some View {
@@ -1986,22 +1989,22 @@ struct ContentView: View {
         // Instead, check isActive inside the action closure.
 
         // Palette open/close
-        Button("") { if showSearch { closePalette() } else { openPalette() } }
+        Button("") { UsageLog.record("shortcut", "openPaletteK"); if showSearch { closePalette() } else { openPalette() } }
             .keyboardShortcut(AppShortcut.openPaletteK.key, modifiers: AppShortcut.openPaletteK.modifiers)
             .hidden()
-        Button("") { togglePinOnSelectedCard() }
+        Button("") { UsageLog.record("shortcut", "togglePin"); togglePinOnSelectedCard() }
             .keyboardShortcut(AppShortcut.togglePin.key, modifiers: AppShortcut.togglePin.modifiers)
             .hidden()
-        Button("") { archiveSelectedCard() }
+        Button("") { UsageLog.record("shortcut", "archiveCard"); archiveSelectedCard() }
             .keyboardShortcut(AppShortcut.archiveCard.key, modifiers: AppShortcut.archiveCard.modifiers)
             .hidden()
-        Button("") { if showSearch { closePalette() } else { openPalette(initialQuery: ">") } }
+        Button("") { UsageLog.record("shortcut", "openCommandMode"); if showSearch { closePalette() } else { openPalette(initialQuery: ">") } }
             .keyboardShortcut(AppShortcut.openCommandMode.key, modifiers: AppShortcut.openCommandMode.modifiers)
             .hidden()
 
         // Cmd+Enter — primary action: prompt queue, deep search, or resume ended session.
         // When the prompt editor is focused, forward to it for queue prompt.
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "resumeAssistant");
             if let textView = NSApp.keyWindow?.firstResponder as? SubmitTextView {
                 textView.onCmdSubmit?()
                 return
@@ -2018,7 +2021,7 @@ struct ContentView: View {
         .hidden()
 
         // Cmd+Shift+Enter — toggle between kanban and expanded detail mode.
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "toggleExpanded");
             if AppShortcut.toggleExpanded.isActive(in: shortcutContext) {
                 if isExpandedDetail {
                     isExpandedDetail = false
@@ -2033,7 +2036,7 @@ struct ContentView: View {
         .hidden()
 
         // Cmd+B — toggle the left sidebar
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "toggleSidebar");
             if AppShortcut.toggleSidebar.isActive(in: shortcutContext) {
                 showBoardInExpanded.toggle()
             }
@@ -2042,14 +2045,14 @@ struct ContentView: View {
         .hidden()
 
         // Cmd+[ / Cmd+] — browser-style navigation in expanded mode
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "navigateBack");
             if AppShortcut.navigateBack.isActive(in: shortcutContext), canNavigateBack {
                 navigateBack()
             }
         }
         .keyboardShortcut(AppShortcut.navigateBack.key, modifiers: AppShortcut.navigateBack.modifiers)
         .hidden()
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "navigateForward");
             if AppShortcut.navigateForward.isActive(in: shortcutContext), canNavigateForward {
                 navigateForward()
             }
@@ -2058,7 +2061,7 @@ struct ContentView: View {
         .hidden()
 
         // Cmd+T — new terminal tab (only when detail open on terminal tab)
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "newTerminal");
             if AppShortcut.newTerminal.isActive(in: shortcutContext),
                let cardId = store.state.selectedCardId {
                 createExtraTerminal(cardId: cardId)
@@ -2068,7 +2071,7 @@ struct ContentView: View {
         .hidden()
 
         // Escape + prompt focused: send interrupt (Ctrl+C) to stop the assistant
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "stopAssistant");
             guard AppShortcut.stopAssistant.isActive(in: shortcutContext) else { return }
             if let card = store.state.selectedCard, card.link.tmuxLink != nil {
                 engine.interrupt(cardId: card.id)
@@ -2082,7 +2085,7 @@ struct ContentView: View {
         // the browser reloads only while its tab is selected, and the rename
         // opens only while none is. Which tab that is lives in the detail view,
         // not here.
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "browserReload");
             let ctx = shortcutContext
             if AppShortcut.browserReload.isActive(in: ctx) {
                 NotificationCenter.default.post(name: .browserReload, object: nil)
@@ -2095,7 +2098,7 @@ struct ContentView: View {
         .hidden()
 
         // Cmd+L — focus the active browser tab's address bar
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "browserFocusAddress");
             guard AppShortcut.browserFocusAddress.isActive(in: shortcutContext) else { return }
             NotificationCenter.default.post(name: .browserFocusAddressBar, object: nil)
         }
@@ -2103,7 +2106,7 @@ struct ContentView: View {
         .hidden()
 
         // Cmd+Shift+T — reopen last closed tab (browser or terminal)
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "reopenClosedTab");
             guard AppShortcut.reopenClosedTab.isActive(in: shortcutContext) else { return }
             NotificationCenter.default.post(name: .kanbanReopenClosedTab, object: nil)
         }
@@ -2114,7 +2117,7 @@ struct ContentView: View {
         // 1. In fullscreen mode: do nothing (don't close the card)
         // 2. In chat mode with Claude working: send interrupt (Ctrl+C)
         // 3. Otherwise: deselect card (close drawer)
-        Button("") {
+        Button("") { UsageLog.record("shortcut", "deselect");
             guard AppShortcut.deselect.isActive(in: shortcutContext) else { return }
             if isExpandedDetail { return }
             if let card = store.state.selectedCard,
@@ -2129,16 +2132,16 @@ struct ContentView: View {
         }
             .keyboardShortcut(AppShortcut.deselect.key, modifiers: AppShortcut.deselect.modifiers)
             .hidden()
-        Button("") { if AppShortcut.deleteCard.isActive(in: shortcutContext) { deleteSelectedCard() } }
+        Button("") { UsageLog.record("shortcut", "deleteCard"); if AppShortcut.deleteCard.isActive(in: shortcutContext) { deleteSelectedCard() } }
             .keyboardShortcut(AppShortcut.deleteCard.key, modifiers: AppShortcut.deleteCard.modifiers)
             .hidden()
-        Button("") { if AppShortcut.deleteCardForward.isActive(in: shortcutContext) { deleteSelectedCard() } }
+        Button("") { UsageLog.record("shortcut", "deleteCardForward"); if AppShortcut.deleteCardForward.isActive(in: shortcutContext) { deleteSelectedCard() } }
             .keyboardShortcut(AppShortcut.deleteCardForward.key, modifiers: AppShortcut.deleteCardForward.modifiers)
             .hidden()
 
         // Cmd+1-9: terminal tab switching (when detail open) or project switching
         ForEach(Array(AppShortcut.allCases.filter { $0.projectIndex != nil }), id: \.projectIndex) { shortcut in
-            Button("") {
+            Button("") { UsageLog.record("shortcut", "number");
                 let ctx = shortcutContext
                 if ctx.detailOpen && !ctx.paletteOpen {
                     selectTerminalTab(at: shortcut.projectIndex!)

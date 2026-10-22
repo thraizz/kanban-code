@@ -48,7 +48,9 @@ struct OnboardingWizard: View {
 
     private var totalSteps: Int { steps.count }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "OnboardingWizard") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         VStack(spacing: 0) {
             // Step indicator
             HStack(spacing: 8) {

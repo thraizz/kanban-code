@@ -36,7 +36,9 @@ struct BoardView: View {
     var onCardClicked: (String) -> Void = { _ in }
     var onColumnBackgroundClick: (KanbanCodeColumn) -> Void = { _ in }
 
-    var body: some View {
+    var body: some View { usageTrackedBody.trackUsage("view", "BoardView") }
+
+    @ViewBuilder private var usageTrackedBody: some View {
         boardContent
     }
 
