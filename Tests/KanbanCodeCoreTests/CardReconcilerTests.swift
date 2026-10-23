@@ -44,6 +44,32 @@ struct CardReconcilerTests {
         #expect(result[0].lastActivity == today)
     }
 
+    @Test("A session absorbed while the terminal lives gets no card of its own after the terminal is gone")
+    func absorbedSessionSurvivesTmuxLoss() {
+        let card = Link(
+            projectPath: "/repo",
+            column: .inProgress,
+            sessionLink: SessionLink(sessionId: "own", sessionPath: "/p/own.jsonl"),
+            tmuxLink: TmuxLink(sessionName: "repo-card_1")
+        )
+        let sessions = [
+            Session(id: "own", projectPath: "/repo", messageCount: 5, modifiedTime: .now),
+            Session(id: "cleared", projectPath: "/repo", messageCount: 3, modifiedTime: .now),
+        ]
+
+        let first = CardReconciler.reconcile(existing: [card], snapshot: .init(sessions: sessions))
+        #expect(first.count == 1)
+        #expect(first[0].absorbedSessionIds == ["cleared"])
+
+        // A reboot: the terminal is gone, so rule 4 has no card to go by.
+        var afterReboot = first[0]
+        afterReboot.tmuxLink = nil
+        let second = CardReconciler.reconcile(existing: [afterReboot], snapshot: .init(sessions: sessions))
+        #expect(second.count == 1)
+        #expect(second[0].sessionLink?.sessionId == "own")
+        #expect(second[0].absorbedSessionIds == ["cleared"])
+    }
+
     @Test("Existing card matched by sessionId is updated, not duplicated")
     func matchBySessionId() {
         let existing = [

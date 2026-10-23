@@ -99,6 +99,15 @@ public enum CardReconciler {
             }
         }
 
+        // A session a card absorbed earlier matches that card exactly, also
+        // once its terminals are gone and the fuzzy rules below find nothing.
+        // A card's own session wins over another card's absorbed one.
+        for link in existing {
+            for sid in link.absorbedSessionIds ?? [] where cardIdBySessionId[sid] == nil {
+                cardIdBySessionId[sid] = link.id
+            }
+        }
+
         // Track which sessions we've matched so we can detect new ones
         var matchedSessionIds: Set<String> = []
 
@@ -120,6 +129,9 @@ public enum CardReconciler {
             if let cardId, var link = linksById[cardId] {
                 // Archived cards stay archived — just mark matched to prevent duplicates
                 if link.manuallyArchived {
+                    if link.sessionLink != nil, absorb(session.id, into: &link) {
+                        linksById[cardId] = link
+                    }
                     matchedSessionIds.insert(session.id)
                     continue
                 }
@@ -142,9 +154,11 @@ public enum CardReconciler {
                    link.sessionLink?.sessionId == session.id, !link.isClaimed {
                     link.headless = true
                 }
-                // Different sessionId (e.g., shell tab session) — just mark matched,
-                // don't overwrite the card's primary session. Activity only moves
-                // forward: a session from days ago that lost its own card lands
+                // Different sessionId (e.g., shell tab session) — recorded on the
+                // card so it stays matched after the terminal is gone, but the
+                // card's primary session is not overwritten.
+                absorb(session.id, into: &link)
+                // Activity only moves forward: a session from days ago that lost its own card lands
                 // on the newest card of its project by rule 4, and its age is
                 // not the card's.
                 if link.lastActivity.map({ session.modifiedTime > $0 }) ?? true {
@@ -688,6 +702,16 @@ public enum CardReconciler {
 
         KanbanCodeLog.debug("reconciler", "findCard: session=\(session.id.prefix(8)) projectPath=\(session.projectPath ?? "nil") → NO MATCH")
         return nil
+    }
+
+    /// Records `sessionId` as a session of `link` other than its own.
+    /// Returns whether the card changed.
+    @discardableResult
+    private static func absorb(_ sessionId: String, into link: inout Link) -> Bool {
+        guard let own = link.sessionLink?.sessionId, own != sessionId,
+              !(link.absorbedSessionIds ?? []).contains(sessionId) else { return false }
+        link.absorbedSessionIds = (link.absorbedSessionIds ?? []) + [sessionId]
+        return true
     }
 
     /// How far before a card's launch a session may have been written and
