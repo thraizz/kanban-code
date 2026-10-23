@@ -177,7 +177,18 @@ public enum CardReconciler {
                 if let pp = session.projectPath.flatMap(Self.worktreeRoot(of:)) {
                     let needsUpdate = link.worktreeLink == nil
                         || (link.worktreeLink?.path != pp && link.sessionLink?.sessionId == session.id)
-                    let shouldUpdate = needsUpdate && (link.isLaunching == true || link.worktreeLink != nil)
+                    // A session's recorded worktree can be one removed since
+                    // (the session moved on to another). Adopting it would
+                    // be cleared again as dead below, the branch match would
+                    // set the live one back next pass, and the card would
+                    // flip between the two on every pass.
+                    let repoScanned = snapshot.worktrees.contains { repoRoot, worktrees in
+                        pp.hasPrefix(repoRoot + "/") && !worktrees.isEmpty
+                    }
+                    let isRemovedWorktree = repoScanned
+                        && !snapshot.worktrees.values.contains { $0.contains { $0.path == pp } }
+                    let shouldUpdate = needsUpdate && !isRemovedWorktree
+                        && (link.isLaunching == true || link.worktreeLink != nil)
                     if shouldUpdate {
                         // Prefer real git branch from snapshot (directory name may differ from branch)
                         var branchName: String?

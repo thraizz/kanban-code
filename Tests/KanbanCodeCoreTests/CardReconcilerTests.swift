@@ -70,6 +70,32 @@ struct CardReconcilerTests {
         #expect(second[0].absorbedSessionIds == ["cleared"])
     }
 
+    @Test("A session whose recorded worktree was removed does not flip the card's live worktree")
+    func removedSessionWorktreeDoesNotFlap() {
+        let live = "/repo/.claude/worktrees/live"
+        var card = Link(
+            projectPath: "/repo",
+            column: .done,
+            sessionLink: SessionLink(sessionId: "s1", sessionPath: "/p/s1.jsonl"),
+            worktreeLink: WorktreeLink(path: live, branch: "fix/live")
+        )
+        card.discoveredBranches = ["fix/live"]
+        let snapshot = CardReconciler.DiscoverySnapshot(
+            sessions: [Session(id: "s1", projectPath: "/repo/.claude/worktrees/gone", messageCount: 5, modifiedTime: .now)],
+            worktrees: ["/repo": [
+                Worktree(path: "/repo", branch: "main"),
+                Worktree(path: live, branch: "refs/heads/fix/live"),
+            ]]
+        )
+
+        var links = [card]
+        for _ in 0..<3 {
+            links = CardReconciler.reconcile(existing: links, snapshot: snapshot)
+            #expect(links.count == 1)
+            #expect(links[0].worktreeLink?.path == live)
+        }
+    }
+
     @Test("Existing card matched by sessionId is updated, not duplicated")
     func matchBySessionId() {
         let existing = [
