@@ -68,6 +68,8 @@ public final class MasterEngine {
     public lazy var humanMessages = HumanMessageLog(kanbanHome: platform.kanbanHome)
     /// Every prompt that passed through a card's queue or left for a peer.
     public lazy var promptJournal = QueuedPromptJournal(basePath: platform.kanbanHome)
+    /// The conversation logs of the cards (docs/conversations.md).
+    public lazy var conversationStore = ConversationStore(kanbanHome: platform.kanbanHome)
     /// Each card's last catch-up, shown again while the session has nothing new.
     public lazy var catchUps = CatchUpKeep(kanbanHome: platform.kanbanHome)
 
@@ -910,6 +912,26 @@ public final class MasterEngine {
                             progress.report("Creating worktree \(name) locally")
                             _ = try await BoxdMachineSupervisor.createLocalWorktree(repoRoot: repoRoot, name: name)
                         }
+                    }
+                }
+                // A worktree deleted under the card comes back from its
+                // branch; with the branch gone too, the session continues in
+                // the project root, its transcript moved along.
+                if !isRemote, boxdPreparation == nil, let worktree = card.link.worktreeLink,
+                   worktree.path == resumePath, !FileManager.default.fileExists(atPath: resumePath) {
+                    let outcome = await SessionDirectory.ensureLocal(
+                        dir: resumePath, branch: worktree.branch, repoRoot: card.link.projectPath)
+                    if case .projectRoot(let root) = outcome {
+                        progress.report("Worktree \((resumePath as NSString).lastPathComponent) and its branch are gone; continuing in \(root)")
+                        if assistant == .claude,
+                           let sessionPath = store.state.links[cardId]?.sessionLink?.sessionPath,
+                           FileManager.default.fileExists(atPath: sessionPath),
+                           let moved = try? SessionFileMover.moveSession(sessionId: sessionId, fromPath: sessionPath, toProjectPath: root) {
+                            var updated = store.state.links[cardId] ?? card.link
+                            updated.sessionLink = SessionLink(sessionId: sessionId, sessionPath: moved)
+                            store.dispatch(.createManualTask(updated))
+                        }
+                        resumePath = root
                     }
                 }
                 let commandTemplate = settings?.commandTemplate(for: assistant, remote: isRemote)

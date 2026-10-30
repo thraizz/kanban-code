@@ -41,12 +41,16 @@ public struct PeerCardState: Sendable, Equatable {
     public var queue: [QueuedPrompt]
     /// A start in flight or failed there, or a move away from there.
     public var status: RemoteSessionStatus?
+    /// Its conversations as the owner has them, most recent first.
+    public var conversations: [RemoteConversation]
 
-    public init(isLive: Bool, isBusy: Bool, queue: [QueuedPrompt] = [], status: RemoteSessionStatus? = nil) {
+    public init(isLive: Bool, isBusy: Bool, queue: [QueuedPrompt] = [], status: RemoteSessionStatus? = nil,
+                conversations: [RemoteConversation] = []) {
         self.isLive = isLive
         self.isBusy = isBusy
         self.queue = queue
         self.status = status
+        self.conversations = conversations
     }
 }
 
@@ -103,6 +107,21 @@ public final class AppState: @unchecked Sendable {
     /// Prompts sent from a card's chat that never reached its session, by
     /// card, oldest first.
     public var failedPrompts: [String: [FailedPrompt]] = [:]
+    /// Each card's conversations (docs/conversations.md), most recent
+    /// first, archived ones included: from the card's log here, or from the
+    /// copy of its owner's.
+    public var conversations: [String: [RemoteConversation]] = [:]
+    /// The conversation each card's chat shows; a card not in it shows Main.
+    public var openConversations: [String: String] = [:]
+    /// Conversation messages sent from this app that the conversation's
+    /// log does not show yet, per card: the view shows them faded.
+    public var conversationOutbox: [String: [QueuedPrompt]] = [:]
+
+    /// The sidebar highlights a card's row only while its Main chat shows;
+    /// with one of its conversations open, only that conversation's row is.
+    public func highlightsCardRow(_ cardId: String) -> Bool {
+        selectedCardId == cardId && openConversations[cardId] == nil
+    }
     /// Single source of truth for which drawer is open. Only ONE thing can be
     /// selected at a time; the type system enforces that invariant. The legacy
     /// `selectedCardId` field is kept as a computed accessor over this enum.
@@ -716,12 +735,20 @@ public enum Action: Sendable {
     case peerActivityScanned(cards: [String: PeerCardState])
     /// One card another master owns, as its owner just reported it.
     case peerCardRead(cardId: String, state: PeerCardState?)
+    /// A card's conversation log was read again.
+    case conversationsLoaded(cardId: String, conversations: [RemoteConversation])
+    /// Shows a conversation in the card's chat, or Main for nil.
+    case openConversation(cardId: String, conversationId: String?)
 
     // Settings / misc
     case settingsLoaded(projects: [Project], excludedPaths: [String], remote: RemoteSettings?, remoteMode: RemoteMode = .boxd, boxd: BoxdSettings? = nil, sessionExclusion: SessionExclusion = SessionExclusion())
     case setError(String?)
     /// A prompt sent from the card's chat did not reach its session.
     case promptSendFailed(cardId: String, prompt: QueuedPrompt, message: String)
+    /// A conversation message left this app; it shows faded until the log has it.
+    case conversationMessageSent(cardId: String, prompt: QueuedPrompt)
+    /// The log shows these outbox messages now.
+    case conversationMessagesDelivered(cardId: String, promptIds: [String])
     /// The chat let go of a failed prompt: sent again, edited or discarded.
     case dismissFailedPrompt(cardId: String, promptId: String)
     /// Same banner as `setError`, but says what kind of news it is.
@@ -827,6 +854,8 @@ public enum Effect: Sendable {
     /// Writes a prompt the human wrote himself to the card's record of them.
     case recordHumanMessage(cardId: String, text: String, at: Date, sessionId: String?)
     case journalQueuedPrompt(cardId: String, prompt: QueuedPrompt, reason: QueuedPromptJournalReason)
+    /// Appends to the conversation log of a card this master owns.
+    case appendConversationEvents(cardId: String, events: [ConversationEvent])
     case deleteFiles([String])
 
     // Attention
@@ -1605,7 +1634,15 @@ public enum Reducer {
             link.queuedPrompts = prompts
             link.updatedAt = .now
             state.links[cardId] = link
-            return [.upsertLink(link), .journalQueuedPrompt(cardId: cardId, prompt: prompt, reason: .queued)]
+            var effects: [Effect] = [.upsertLink(link), .journalQueuedPrompt(cardId: cardId, prompt: prompt, reason: .queued)]
+            if let conversation = prompt.conversation {
+                // The conversation shows the message from when it was written.
+                effects.append(.appendConversationEvents(cardId: cardId, events: [
+                    .message(conversation, id: prompt.id, role: .human, text: prompt.body, at: prompt.humanWrittenAt ?? .now,
+                         images: prompt.imagePaths)
+                ]))
+            }
+            return effects
 
         case .updateQueuedPrompt(let cardId, let promptId, let body, let sendAutomatically):
             guard var link = state.links[cardId] else { return [] }
@@ -1616,10 +1653,16 @@ public enum Reducer {
             link.queuedPrompts = prompts
             link.updatedAt = .now
             state.links[cardId] = link
-            return [
+            var effects: [Effect] = [
                 .upsertLink(link),
                 .journalQueuedPrompt(cardId: cardId, prompt: prompts[idx], reason: .edited),
             ]
+            if let conversation = prompts[idx].conversation {
+                effects.append(.appendConversationEvents(cardId: cardId, events: [
+                    .message(conversation, id: promptId, role: .human, text: body)
+                ]))
+            }
+            return effects
 
         case .removeQueuedPrompt(let cardId, let promptId):
             guard var link = state.links[cardId] else { return [] }
@@ -1632,18 +1675,28 @@ public enum Reducer {
             if let removed {
                 effects.append(
                     .journalQueuedPrompt(cardId: cardId, prompt: removed, reason: .removed))
+                if let conversation = removed.conversation {
+                    effects.append(.appendConversationEvents(cardId: cardId, events: [.retracted(conversation, id: promptId)]))
+                }
             }
             return effects
 
         case .sendQueuedPrompt(let cardId, let promptId):
             guard var link = state.links[cardId] else { return [] }
             guard let prompts = link.queuedPrompts,
-                  let prompt = prompts.first(where: { $0.id == promptId }),
+                  let queued = prompts.first(where: { $0.id == promptId }),
                   let sessionName = link.tmuxLink?.sessionName else { return [] }
             link.queuedPrompts?.removeAll { $0.id == promptId }
             if link.queuedPrompts?.isEmpty == true { link.queuedPrompts = nil }
             link.updatedAt = .now
             state.links[cardId] = link
+            var prompt = queued
+            if let id = prompt.conversation {
+                // The session gets the conversation's header and reply line.
+                let conversation = state.conversations[cardId]?.first { $0.id == id }
+                prompt.body = conversation.map { ConversationPrompt.wrap(prompt.body, conversation: $0) }
+                    ?? ConversationPrompt.wrap(prompt.body, id: id, title: nil)
+            }
             let sendEffect: Effect
             if let imagePaths = prompt.imagePaths, !imagePaths.isEmpty {
                 sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths, assistant: link.effectiveAssistant, human: prompt.isHuman)
@@ -2444,6 +2497,18 @@ public enum Reducer {
             if state.peerCards[cardId] != card { state.peerCards[cardId] = card }
             return []
 
+        case .openConversation(let cardId, let conversationId):
+            if state.openConversations[cardId] != conversationId { state.openConversations[cardId] = conversationId }
+            return []
+
+        case .conversationsLoaded(let cardId, let conversations):
+            if conversations.isEmpty {
+                if state.conversations[cardId] != nil { state.conversations[cardId] = nil }
+            } else if state.conversations[cardId] != conversations {
+                state.conversations[cardId] = conversations
+            }
+            return []
+
         case .releaseCardOwnership(let cardId, let machine):
             guard var link = state.links[cardId], state.isOwnedLocally(link),
                   machine != state.localMachineId, link.isLaunching != true
@@ -2494,7 +2559,24 @@ public enum Reducer {
             state.notice = message.map { Notice($0) }
             return []
 
+        case .conversationMessageSent(let cardId, let prompt):
+            var outbox = state.conversationOutbox[cardId] ?? []
+            outbox.removeAll { $0.id == prompt.id }
+            outbox.append(prompt)
+            state.conversationOutbox[cardId] = outbox
+            return []
+
+        case .conversationMessagesDelivered(let cardId, let promptIds):
+            guard var outbox = state.conversationOutbox[cardId] else { return [] }
+            outbox.removeAll { promptIds.contains($0.id) }
+            state.conversationOutbox[cardId] = outbox.isEmpty ? nil : outbox
+            return []
+
         case .promptSendFailed(let cardId, let prompt, let message):
+            if var outbox = state.conversationOutbox[cardId] {
+                outbox.removeAll { $0.id == prompt.id }
+                state.conversationOutbox[cardId] = outbox.isEmpty ? nil : outbox
+            }
             var failed = state.failedPrompts[cardId] ?? []
             failed.removeAll { $0.id == prompt.id }
             failed.append(FailedPrompt(prompt: prompt, message: message))

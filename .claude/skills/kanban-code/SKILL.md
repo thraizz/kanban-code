@@ -91,6 +91,7 @@ owner talking, and `[DM from @parser-bug (subagent)]` is one of your children re
   - The same three modes back the auto-compact thresholds in Settings → Self-Compact.
 - `kanban relink <card> <session-id>` — point a card at a different transcript when it is stuck on a stale session. Never moves or deletes a `.jsonl`.
 - `kanban self-compact - <<'EOF' … EOF` — compact your own session and hand yourself a post-compact continuation message. Always pass that handoff; without it you wake up with only the digest.
+- `kanban reply <conversation> [--title "<title>"] "<text>"` (or `-` for stdin): answer a prompt that arrived with a `[conversation swift-otter ...]` header. The header line tells you the exact command. `kanban conversation list|new|show|title` manages the card's conversations; `--card <card>` acts on another card. See docs/conversations.md.
 - Read `kanban --help` in full. Do not pipe it through `head` or `tail`; the command list continues past the first screen.
 
 ## Secrets (kv)

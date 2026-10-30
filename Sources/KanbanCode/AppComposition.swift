@@ -194,6 +194,8 @@ final class AppComposition {
         Task { await engine.runOwnershipLoop() }
         let mirror = PeerTranscriptMirror(engine: engine)
         Task { await mirror.run() }
+        Task { await engine.runConversationWatcher() }
+        WindowSnapshots.start()
         NotificationCenter.default.addObserver(forName: .kanbanCodeSettingsChanged, object: nil, queue: .main) { _ in
             let peers = Self.readPeers()
             Task { await peerSync.setPeers(peers) }

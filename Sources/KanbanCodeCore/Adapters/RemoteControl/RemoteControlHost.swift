@@ -13,6 +13,8 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// Newest `limit` messages of the card's conversation, older than
     /// `before` when given.
     func transcript(cardId: String, limit: Int, before: String?) async throws -> RemoteTranscript
+    /// The bytes of image `index` of a user message of the transcript.
+    func transcriptImage(cardId: String, messageId: String, index: Int) async throws -> Data
 
     /// The machines a task can run on, this master first.
     func machines() async -> [RemoteMachineEntry]
@@ -111,9 +113,24 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// What the card's chat composer offers after `/`.
     func slashCommands(cardId: String) async throws -> [RemoteSlashCommand]
 
+    /// The card's conversations (docs/conversations.md), most recent first.
+    func conversations(cardId: String) async throws -> [RemoteConversation]
+    func createConversation(cardId: String, _ request: RemoteConversationCreate) async throws -> RemoteConversation
+    func conversation(cardId: String, conversationId: String) async throws -> RemoteConversationDetail
+    func updateConversation(cardId: String, conversationId: String, _ update: RemoteConversationUpdate) async throws -> RemoteConversation
+    /// The card's conversation log from `offset`, for a master that mirrors it.
+    func rawConversations(cardId: String, offset: Int) async throws -> RemoteRawTranscript
+    /// The bytes of image `index` of a human message of a conversation, read
+    /// on the master that owns the card.
+    func conversationImage(cardId: String, conversationId: String, messageId: String, index: Int) async throws -> Data
+
     /// Keeps an image pasted into the card's terminal as a file on the
     /// master that owns the card, and returns where it is there.
     func storePastedImage(cardId: String, image: Data) async throws -> RemotePastedImage
+
+    /// Keeps one chunk of a file for the card's prompt where the card's
+    /// assistant runs, and says how far the file is.
+    func storePromptFileChunk(cardId: String, _ chunk: RemotePromptFileChunk) async throws -> RemotePromptFile
 }
 
 extension RemoteControlHost {
@@ -194,8 +211,38 @@ extension RemoteControlHost {
 
     public func slashCommands(cardId: String) async throws -> [RemoteSlashCommand] { [] }
 
+    public func conversations(cardId: String) async throws -> [RemoteConversation] { [] }
+
+    public func createConversation(cardId: String, _ request: RemoteConversationCreate) async throws -> RemoteConversation {
+        throw RemoteHostError.notFound("this host has no conversations")
+    }
+
+    public func conversation(cardId: String, conversationId: String) async throws -> RemoteConversationDetail {
+        throw RemoteHostError.notFound("this host has no conversations")
+    }
+
+    public func updateConversation(cardId: String, conversationId: String, _ update: RemoteConversationUpdate) async throws -> RemoteConversation {
+        throw RemoteHostError.notFound("this host has no conversations")
+    }
+
+    public func transcriptImage(cardId: String, messageId: String, index: Int) async throws -> Data {
+        throw RemoteHostError.notFound("this host keeps no transcript images")
+    }
+
+    public func conversationImage(cardId: String, conversationId: String, messageId: String, index: Int) async throws -> Data {
+        throw RemoteHostError.notFound("this host has no conversations")
+    }
+
+    public func rawConversations(cardId: String, offset: Int) async throws -> RemoteRawTranscript {
+        throw RemoteHostError.notFound("this host has no conversations")
+    }
+
     public func storePastedImage(cardId: String, image: Data) async throws -> RemotePastedImage {
         throw RemoteHostError.notFound("this host does not keep pasted images")
+    }
+
+    public func storePromptFileChunk(cardId: String, _ chunk: RemotePromptFileChunk) async throws -> RemotePromptFile {
+        throw RemoteHostError.notFound("this host does not keep files")
     }
 }
 

@@ -13,6 +13,7 @@ public actor EffectHandler {
     private let notifier: NotifierPort?
     private let queuedPromptJournal: QueuedPromptJournal
     private let humanMessageLog: HumanMessageLog
+    private let conversationStore: ConversationStore
     private let remoteMachines: (any RemoteMachineControl)?
     /// Delivers attention requests to the Mac and the phone.
     private var attentionDelivery: (any AttentionDelivering)?
@@ -44,6 +45,32 @@ public actor EffectHandler {
     /// Writes a card title from a prompt.
     private let titleGenerator: @Sendable (String) async throws -> String
 
+    // MARK: - One prompt at a time per session
+    //
+    // Pasting a prompt waits until the assistant took it. Two prompts sent
+    // at once to the same session would otherwise land in one input box as
+    // a single message, so each session delivers them in order.
+    private var sendingSessions: Set<String> = []
+    private var sendWaiters: [String: [CheckedContinuation<Void, Never>]] = [:]
+
+    private func acquireSend(_ sessionName: String) async {
+        guard sendingSessions.contains(sessionName) else {
+            sendingSessions.insert(sessionName)
+            return
+        }
+        await withCheckedContinuation { sendWaiters[sessionName, default: []].append($0) }
+    }
+
+    private func releaseSend(_ sessionName: String) {
+        guard var waiters = sendWaiters[sessionName], !waiters.isEmpty else {
+            sendingSessions.remove(sessionName)
+            return
+        }
+        let next = waiters.removeFirst()
+        sendWaiters[sessionName] = waiters.isEmpty ? nil : waiters
+        next.resume()
+    }
+
     public init(
         coordinationStore: CoordinationStore,
         tmuxAdapter: TmuxManagerPort? = nil,
@@ -52,7 +79,8 @@ public actor EffectHandler {
         queuedPromptJournal: QueuedPromptJournal? = nil,
         remoteMachines: (any RemoteMachineControl)? = nil,
         humanMessageLog: HumanMessageLog? = nil,
-        titleGenerator: (@Sendable (String) async throws -> String)? = nil
+        titleGenerator: (@Sendable (String) async throws -> String)? = nil,
+        conversationStore: ConversationStore? = nil
     ) {
         self.titleGenerator = titleGenerator ?? { try await TaskTitleGenerator.generate(prompt: $0) }
         self.coordinationStore = coordinationStore
@@ -61,6 +89,7 @@ public actor EffectHandler {
         self.notifier = notifier
         self.queuedPromptJournal = queuedPromptJournal ?? QueuedPromptJournal()
         self.humanMessageLog = humanMessageLog ?? HumanMessageLog()
+        self.conversationStore = conversationStore ?? ConversationStore()
         self.remoteMachines = remoteMachines
     }
 
@@ -195,10 +224,21 @@ public actor EffectHandler {
                 )
             )
 
+        case .appendConversationEvents(let cardId, let events):
+            do {
+                try conversationStore.append(cardId: cardId, events)
+                let summaries = conversationStore.threads(cardId: cardId).map(\.summary)
+                await dispatch(.conversationsLoaded(cardId: cardId, conversations: summaries))
+            } catch {
+                KanbanCodeLog.warn("conversations", "card \(cardId.prefix(12)): append failed: \(error)")
+            }
+
         case .recordHumanMessage(let cardId, let text, let at, let sessionId):
             humanMessageLog.append(cardId: cardId, HumanMessageRecord(at: at, text: text, sessionId: sessionId))
 
         case .sendPromptToTmux(let sessionName, let promptBody, let assistant, let human):
+            await acquireSend(sessionName)
+            defer { releaseSend(sessionName) }
             do {
                 // A prompt to a session on a paused machine brings the
                 // machine back first; the prompt itself never wakes it.
@@ -222,6 +262,8 @@ public actor EffectHandler {
             }
 
         case .sendPromptWithImagesToTmux(let sessionName, let promptBody, let imagePaths, let assistant, let human):
+            await acquireSend(sessionName)
+            defer { releaseSend(sessionName) }
             do {
                 guard let tmux = tmuxAdapter else { return }
                 guard await remoteMachines?.resumeMachine(forSession: sessionName) != false else {

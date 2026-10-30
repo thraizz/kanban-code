@@ -135,6 +135,8 @@ struct ListBoardView: View {
                             .padding(.horizontal, 8)
                     }
                     .id(ListBoardRowIdentity.pinned(card.id))
+                    conversationRows(for: card.id)
+                        .padding(.horizontal, 8)
                     ForEach(visiblePinnedSubagents(for: card.id)) { row in
                         if let child = activeSubagentCardsById[row.cardId] {
                             pinnedCardRow(for: child, descendantCounts: descendantCounts)
@@ -162,7 +164,7 @@ struct ListBoardView: View {
     ) -> ListCardRowView {
         ListCardRowView(
             card: card,
-            isSelected: card.id == store.state.selectedCardId,
+            isSelected: store.state.highlightsCardRow(card.id),
             onCopyConversationMarkdown: { onCopyConversationMarkdown(card.id) },
             subagentCount: descendantCounts[card.id] ?? 0,
             activeDirectSubagentCount: activeSubagentCardsByParent[card.id]?.count ?? 0,
@@ -200,7 +202,7 @@ struct ListBoardView: View {
     private func sectionView(for section: ListBoardSection) -> some View {
         ListBoardSectionView(
             section: section,
-            selectedCardId: store.state.selectedCardId,
+            selectedCardId: store.state.selectedCardId.flatMap { store.state.highlightsCardRow($0) ? $0 : nil },
             isCollapsed: collapsedColumns.contains(section.column),
             isRefreshingBacklog: store.state.isRefreshingBacklog,
             availableProjects: availableProjects,
@@ -255,6 +257,12 @@ struct ListBoardView: View {
     }
 
     private func handleCardSelection(_ cardId: String) {
+        // A click on the card while one of its conversations is open goes
+        // back to Main.
+        if store.state.selectedCardId == cardId, store.state.openConversations[cardId] != nil {
+            store.dispatch(.openConversation(cardId: cardId, conversationId: nil))
+            return
+        }
         let newId = store.state.selectedCardId == cardId ? nil : cardId
         store.dispatch(.selectCard(cardId: newId))
         if newId != nil { onCardClicked(cardId) }
@@ -458,6 +466,7 @@ private struct ListBoardSectionView: View {
                         return NSItemProvider(object: card.id as NSString)
                     }
                     .id(ListBoardRowIdentity.column(section.column, card.id))
+                    conversationRows(for: card.id)
                     ForEach(visibleSubagents(for: card.id)) { row in
                         if let child = subagentCardsById[row.cardId] {
                             listCardRow(for: child)
@@ -714,6 +723,17 @@ private struct ListSectionDropDelegate: DropDelegate {
             return
         }
         dragState.reorderTargetId = nil
+    }
+}
+
+/// The card's conversations nested under its row (docs/conversations.md).
+@MainActor @ViewBuilder
+private func conversationRows(for cardId: String) -> some View {
+    let state = AppComposition.shared.store.state
+    if let conversations = state.conversations[cardId], conversations.contains(where: { !$0.archived }) {
+        SidebarConversationRows(
+            cardId: cardId, conversations: conversations, openId: state.openConversations[cardId],
+            isCardSelected: state.selectedCardId == cardId)
     }
 }
 

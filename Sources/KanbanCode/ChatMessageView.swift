@@ -14,6 +14,10 @@ struct ChatMessageView: View, Equatable {
     var onFork: (() -> Void)?
     var onCheckpoint: ((ConversationTurn) -> Void)?
     var onSendAnswer: ((String) -> Void)?
+    /// Starts a conversation that continues from this agent message.
+    var onContinueInConversation: ((String) -> Void)?
+    /// Starts a conversation from this message of the human's.
+    var onContinueUserMessage: (() -> Void)?
     var suppressBackground: Bool = false
     var highlightText: String? = nil
     var isCurrentMatch: Bool = false
@@ -118,8 +122,20 @@ struct ChatMessageView: View, Equatable {
                 HStack {
                     Spacer(minLength: 0)
                     VStack(alignment: turn.role == "user" ? .trailing : .leading, spacing: 4) {
-                        if turn.role == "user" {
+                        if turn.role == "user", let onContinueUserMessage {
                             userBubble
+                                .contextMenu {
+                                    Button("Continue in New Conversation") { onContinueUserMessage() }
+                                    Button("Copy") { onCopy?(turnText) }
+                                }
+                        } else if turn.role == "user" {
+                            userBubble
+                        } else if let onContinueInConversation, !turnText.isEmpty {
+                            assistantMessage
+                                .contextMenu {
+                                    Button("Continue in New Conversation") { onContinueInConversation(turnText) }
+                                    Button("Copy") { onCopy?(turnText) }
+                                }
                         } else {
                             assistantMessage
                         }
@@ -182,8 +198,26 @@ struct ChatMessageView: View, Equatable {
         }
     }
 
+    /// The paths of the files the message names on `[File: ...]` lines.
+    private var userFilePaths: [String] {
+        turn.contentBlocks.flatMap { block -> [String] in
+            guard case .text = block.kind else { return [] }
+            return PromptFiles.split(ConversationPrompt.parse(block.text)?.text ?? block.text).paths
+        }
+    }
+
+    /// Whether the message has text left once its file lines are chips.
+    private var userBubbleHasText: Bool {
+        turn.contentBlocks.contains { block in
+            guard case .text = block.kind else { return false }
+            if ConversationPrompt.parse(block.text) != nil { return true }
+            return !PromptFiles.split(block.text).text.isEmpty
+        }
+    }
+
     private var userBubble: some View {
         VStack(alignment: .trailing, spacing: 4) {
+            SentFileChips(paths: userFilePaths)
             // Image attachment chips with on-demand hover preview
             if turn.imageCount > 0 {
                 HStack(spacing: 4) {
@@ -206,16 +240,29 @@ struct ChatMessageView: View, Equatable {
                             truncatedSystemText(block.text, blockIndex: i, color: .secondaryLabelColor)
                         } else if block.text.contains("[Request interrupted by user") {
                             truncatedSystemText(block.text, blockIndex: i, color: .secondaryLabelColor)
+                        } else if let tagged = ConversationPrompt.parse(block.text) {
+                            // A message of a conversation: its name, then the text as typed.
+                            Label(tagged.title ?? tagged.id, systemImage: "bubble.left.and.bubble.right")
+                                .font(.app(.caption))
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                            let shown = PromptFiles.split(tagged.text).text
+                            if !shown.isEmpty {
+                                truncatedTextBlock(shown, blockIndex: i, font: .app(.body))
+                            }
                         } else {
-                            truncatedTextBlock(block.text, blockIndex: i, font: .app(.body))
+                            let shown = PromptFiles.split(block.text).text
+                            if !shown.isEmpty {
+                                truncatedTextBlock(shown, blockIndex: i, font: .app(.body))
+                            }
                         }
                     }
                 }
             }
-            .padding(.horizontal, isInterruption ? 0 : 14)
-            .padding(.vertical, isInterruption ? 4 : 10)
+            .padding(.horizontal, isInterruption || !userBubbleHasText ? 0 : 14)
+            .padding(.vertical, isInterruption ? 4 : (userBubbleHasText ? 10 : 0))
             .background {
-                if !isInterruption {
+                if !isInterruption && userBubbleHasText {
                     RoundedRectangle(cornerRadius: 18)
                         .fill(Color.primary.opacity(0.06))
                 }
@@ -539,6 +586,17 @@ struct ChatMessageView: View, Equatable {
                 }
             }
 
+            if turn.role != "user", let onContinueInConversation, !turnText.isEmpty {
+                ActionButton(icon: "arrow.turn.down.right", help: "Continue in new conversation") {
+                    onContinueInConversation(turnText)
+                }
+            }
+            if turn.role == "user", let onContinueUserMessage {
+                ActionButton(icon: "arrow.turn.down.right", help: "Continue in new conversation") {
+                    onContinueUserMessage()
+                }
+            }
+
             // Fork
             if onFork != nil {
                 ActionButton(icon: "arrow.branch", help: "Fork") {
@@ -591,7 +649,8 @@ struct ActionButton: View {
 
 // MARK: - Lazy Image Chip (loads on hover from JSONL)
 
-/// Shows "Image #N" chip; loads the actual image from the JSONL on hover.
+/// Shows "Image #N" chip; loads the actual image from the JSONL on hover,
+/// and opens it in the default viewer on click.
 struct LazyImageChip: View {
     let index: Int
     let sessionPath: String?
@@ -612,6 +671,8 @@ struct LazyImageChip: View {
         .padding(.vertical, 4)
         .background(Color.primary.opacity(0.06), in: Capsule())
         .foregroundStyle(.secondary)
+        .contentShape(Capsule())
+        .onTapGesture { openImage() }
         .onHover { hovering in
             if hovering && loadedImage == nil && !isLoading {
                 loadImage()
@@ -638,6 +699,23 @@ struct LazyImageChip: View {
                         height: size.height * scale
                     )
                     .padding(4)
+            }
+        }
+    }
+
+    private func openImage() {
+        guard let path = sessionPath else { return }
+        Task {
+            guard let images = try? await TranscriptReader.loadImagesAtOffset(from: path, byteOffset: byteOffset),
+                  let data = images[safe: index] else { return }
+            let ext = NSImage(data: data).flatMap { _ in data.starts(with: [0x89, 0x50, 0x4E, 0x47]) ? "png" : "jpg" } ?? "png"
+            let file = (NSTemporaryDirectory() as NSString)
+                .appendingPathComponent("kanban-image-\(byteOffset)-\(index).\(ext)")
+            do {
+                try data.write(to: URL(fileURLWithPath: file))
+                NSWorkspace.shared.open(URL(fileURLWithPath: file))
+            } catch {
+                KanbanCodeLog.warn("chat", "could not open image \(index + 1): \(error)")
             }
         }
     }

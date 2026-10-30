@@ -13,7 +13,7 @@ enum RemoteScopePolicy {
         case "cards":
             if rest == ["cards", "search"] { return "cards/search" }
             return rest.enumerated().map { item in
-                item.offset == 1 || (item.offset == 3 && (rest[2] == "queue" || rest[2] == "side-chat")) ? "*" : item.element
+                item.offset == 1 || (item.offset == 3 && (rest[2] == "queue" || rest[2] == "side-chat" || rest[2] == "conversations")) ? "*" : item.element
             }.joined(separator: "/")
         case "attention":
             if rest.count == 3 { return "attention/*/\(rest[2])" }
@@ -35,12 +35,14 @@ enum RemoteScopePolicy {
         "GET vault/audit/hashes", "GET vault/audit/mirror", "POST vault/audit/mirror",
         "GET scrub/status", "GET scrub/index", "POST scrub/run", "PUT scrub/schedule",
         "POST tasks", "GET cards/search", "GET cards/*", "PATCH cards/*", "DELETE cards/*",
-        "GET cards/*/transcript", "GET cards/*/transcript/raw", "GET cards/*/handover",
+        "GET cards/*/transcript", "GET cards/*/transcript/raw", "GET cards/*/transcript/images", "GET cards/*/handover",
         "POST cards/*/prompt", "POST cards/*/interrupt", "POST cards/*/resume", "POST cards/*/move", "POST cards/*/fork",
         "POST cards/*/worktree/remove", "POST cards/*/discover",
         "POST cards/*/queue/*", "PATCH cards/*/queue/*", "DELETE cards/*/queue/*",
         "POST cards/*/side-chat", "GET cards/*/side-chat/*", "DELETE cards/*/side-chat/*",
-        "GET cards/*/slash-commands", "POST cards/*/pasted-image",
+        "GET cards/*/slash-commands", "POST cards/*/pasted-image", "POST cards/*/files",
+        "GET cards/*/conversations", "POST cards/*/conversations", "GET cards/*/conversations/*",
+        "PATCH cards/*/conversations/*", "GET cards/*/conversations-raw", "GET cards/*/conversations/*/images",
     ]
 
     /// What `kanban remote attach` calls to show a terminal.

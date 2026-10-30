@@ -4,7 +4,7 @@ import KanbanCodeRemoteKit
 struct BoardScreen: View {
     let fleet: FleetModel
     @Environment(\.scenePhase) private var scenePhase
-    @State private var path: [String] = []
+    @State private var path: [BoardRoute] = []
     /// The board's rows while a card is open on top of it. A list that
     /// changes while covered reloads when focus comes back to one of its
     /// cells, which UIKit refuses with a crash; so it waits for the card to close.
@@ -20,6 +20,11 @@ struct BoardScreen: View {
     @State private var attentionFocus: String?
     @State private var actions: CardActionController
     @State private var expandedSections: Set<String> = []
+    /// The conversation being renamed from its row, and the title typed.
+    @State private var renameTarget: ConversationModel?
+    @State private var renamingConversation = false
+    @State private var newConversationTitle = ""
+    @State private var conversationError: String?
     /// Project name the board is narrowed to, "" for every project.
     @AppStorage("projectFilter.fleet") private var projectFilter = ""
 
@@ -43,10 +48,29 @@ struct BoardScreen: View {
                 .searchable(text: $search, prompt: "Search cards")
                 .refreshable { await refreshAll() }
                 .toolbar { toolbar }
-                .navigationDestination(for: String.self) { id in
-                    FleetCardScreen(cardId: id, fleet: fleet)
+                .navigationDestination(for: BoardRoute.self) { route in
+                    switch route {
+                    case .card(let id):
+                        FleetCardScreen(cardId: id, fleet: fleet)
+                    case .conversation(let conversation):
+                        FleetConversationScreen(route: conversation, fleet: fleet)
+                    }
                 }
                 .cardActions(actions)
+                .alert("Rename conversation", isPresented: $renamingConversation) {
+                    TextField("Title", text: $newConversationTitle)
+                        .accessibilityIdentifier("conversationTitleField")
+                    Button("Cancel", role: .cancel) {}
+                    Button("Rename") { renameConversation() }
+                        .accessibilityIdentifier("conversationRenameConfirm")
+                }
+                .alert("Something went wrong", isPresented: Binding(
+                    get: { conversationError != nil }, set: { if !$0 { conversationError = nil } }
+                )) {
+                    Button("OK", role: .cancel) {}
+                } message: {
+                    Text(conversationError ?? "")
+                }
         }
         .task { fleet.start() }
         .onChange(of: scenePhase) { _, phase in
@@ -59,7 +83,7 @@ struct BoardScreen: View {
         .sheet(isPresented: $showNewTask) {
             NewTaskSheet(fleet: fleet) { card, master in
                 master.upsert(card)
-                path = [card.id]
+                path = [.card(card.id)]
             }
         }
         .sheet(isPresented: $showAddMac) {
@@ -72,7 +96,7 @@ struct BoardScreen: View {
             ArchivedCardsSheet(fleet: fleet)
         }
         .sheet(isPresented: $showAttention) {
-            AttentionListView(fleet: fleet, openCard: { id in path = [id] }, focusId: attentionFocus)
+            AttentionListView(fleet: fleet, openCard: { id in path = [.card(id)] }, focusId: attentionFocus)
         }
         .onReceive(NotificationCenter.default.publisher(for: .openAttention)) { note in
             attentionFocus = note.object as? String
@@ -88,6 +112,43 @@ struct BoardScreen: View {
                     attentionFocus = nil
                     showAttention = true
                 }
+            }
+        }
+    }
+
+    @ViewBuilder private func conversationMenu(entry: FleetCard, conversation: RemoteConversation) -> some View {
+        let model = ConversationModel(cardId: entry.card.id, id: conversation.id, board: entry.master)
+        let reachable = entry.master.client != nil && entry.master.isOnline
+        Button("Rename", systemImage: "pencil") {
+            newConversationTitle = conversation.title ?? ""
+            renameTarget = model
+            renamingConversation = true
+        }
+        .disabled(!reachable)
+        .accessibilityIdentifier("conversationRename")
+        Button("Archive", systemImage: "archivebox", role: .destructive) {
+            Task {
+                do {
+                    try await model.archive()
+                } catch {
+                    conversationError = "Could not archive the conversation: \(error.localizedDescription)"
+                }
+            }
+        }
+        .disabled(!reachable)
+        .accessibilityIdentifier("conversationArchive")
+    }
+
+    /// Renames through the card's master; the row takes the new title at once.
+    private func renameConversation() {
+        guard let model = renameTarget else { return }
+        let title = newConversationTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.isEmpty else { return }
+        Task {
+            do {
+                try await model.rename(title)
+            } catch {
+                conversationError = "Could not rename the conversation: \(error.localizedDescription)"
             }
         }
     }
@@ -149,13 +210,25 @@ struct BoardScreen: View {
                             let collapsed = search.isEmpty && !expandedSections.contains(section.id)
                                 && section.cards.count > Self.columnPreviewCount
                             ForEach(collapsed ? Array(section.cards.prefix(Self.columnPreviewCount)) : section.cards) { entry in
-                                NavigationLink(value: entry.card.id) {
+                                NavigationLink(value: BoardRoute.card(entry.card.id)) {
                                     CardRow(card: entry.card, showsColumn: section.id == Self.liveSectionID,
                                             machine: fleet.showsMachines ? entry.machineName : nil,
                                             machineOffline: !entry.master.isOnline)
                                 }
                                 .contextMenu { CardActionsMenu(entry: entry, controller: actions) }
                                 .accessibilityIdentifier("card-\(entry.card.id)")
+                                // Its conversations, nested under it. One opens
+                                // straight from the board, so back lands there.
+                                ForEach(entry.card.conversations) { conversation in
+                                    Button {
+                                        path = [.conversation(ConversationRoute(cardId: entry.card.id, id: conversation.id))]
+                                    } label: {
+                                        ConversationRow(conversation: conversation)
+                                    }
+                                    .tint(.primary)
+                                    .contextMenu { conversationMenu(entry: entry, conversation: conversation) }
+                                    .accessibilityIdentifier("conversation-\(entry.card.id)-\(conversation.id)")
+                                }
                             }
                             if search.isEmpty && section.cards.count > Self.columnPreviewCount {
                                 Button {
@@ -217,7 +290,7 @@ struct BoardScreen: View {
     private func olderSection(_ cards: [FleetCard]) -> some View {
         Section {
             ForEach(cards) { entry in
-                NavigationLink(value: entry.card.id) {
+                NavigationLink(value: BoardRoute.card(entry.card.id)) {
                     CardRow(card: entry.card, showsColumn: true,
                             machine: fleet.showsMachines ? entry.machineName : nil,
                             machineOffline: !entry.master.isOnline)
@@ -392,6 +465,12 @@ struct BoardScreen: View {
         }
         return out
     }
+}
+
+/// A screen pushed over the board.
+enum BoardRoute: Hashable {
+    case card(String)
+    case conversation(ConversationRoute)
 }
 
 /// What the footer of search results from the masters says.

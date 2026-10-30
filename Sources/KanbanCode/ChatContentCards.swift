@@ -769,6 +769,10 @@ struct ChatInputBar: View {
     /// The slash list just opened: time to read the commands again.
     var onSlashMenuOpen: (() -> Void)?
 
+    /// The draft key of this composer's files in `PromptFileDrafts`; nil
+    /// takes no files (channels).
+    var fileDraftKey: String? = nil
+
     @Binding var text: String
     @Binding var pastedImages: [Data]
     @FocusState private var isFocused: Bool
@@ -787,8 +791,72 @@ struct ChatInputBar: View {
     /// Bumped every time the composer should take the keyboard back.
     @State private var focusToken = 0
 
+    private var fileDrafts: PromptFileDrafts { PromptFileDrafts.shared }
+
+    private var sendHelp: String {
+        isUploadingFiles ? "Send is ready once the files are uploaded" : "Send"
+    }
+
+    private var attachedFiles: [PromptFileAttachment] {
+        fileDraftKey.map { fileDrafts.attachments($0) } ?? []
+    }
+
+    private var isUploadingFiles: Bool {
+        fileDraftKey.map { fileDrafts.isUploading($0) } ?? false
+    }
+
     private var canSend: Bool {
-        !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        guard !isUploadingFiles else { return false }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            || attachedFiles.contains { $0.readyPath != nil }
+    }
+
+    private var filePasteHandler: (([URL]) -> Bool)? {
+        guard fileDraftKey != nil else { return nil }
+        return { urls in pasteFiles(urls) }
+    }
+
+    /// Files pasted into the editor (copied in Finder). Images among them
+    /// keep going inline; the rest attach as files. False when this
+    /// composer takes no files.
+    private func pasteFiles(_ urls: [URL]) -> Bool {
+        guard let fileDraftKey else { return false }
+        let split = PromptFileDrafts.partition(urls)
+        guard !split.files.isEmpty else { return false }
+        fileDrafts.add(split.files, cardId: cardId, key: fileDraftKey)
+        return true
+    }
+
+    @ViewBuilder
+    private var attachFileButton: some View {
+        if let fileDraftKey {
+            Button { fileDrafts.pick(cardId: cardId, key: fileDraftKey) } label: {
+                Image(systemName: "paperclip")
+                    .font(.system(size: 16))
+                    .foregroundStyle(Color.primary.opacity(0.5))
+            }
+            .buttonStyle(.plain)
+            .help("Attach files")
+            .accessibilityIdentifier("attachFileButton")
+        }
+    }
+
+    @ViewBuilder
+    private var fileChips: some View {
+        if let fileDraftKey, !attachedFiles.isEmpty {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    ForEach(attachedFiles) { file in
+                        PromptFileChip(attachment: file) {
+                            fileDrafts.remove(file.id, key: fileDraftKey)
+                        }
+                    }
+                }
+                .padding(.horizontal, 6)
+            }
+            .padding(.top, 6)
+            .padding(.bottom, 4)
+        }
     }
 
     private var resolvedPlaceholder: String {
@@ -821,6 +889,7 @@ struct ChatInputBar: View {
                         .padding(.top, 6)
                         .padding(.bottom, 4)
                     }
+                    fileChips
 
                 PromptEditor(
                     text: $text,
@@ -837,6 +906,7 @@ struct ChatInputBar: View {
                     onEnterIntercept: { slashReplacement(isReturn: true) },
                     onTabIntercept: { slashReplacement(isReturn: false) },
                     onImagePaste: insertPastedImage,
+                    onFilePaste: filePasteHandler,
                     onEscape: { escapeOrDecline(escapeSlashMenuOr(onEscape)) },
                     onHeightChange: { height in
                         editorHeight = clampedEditorHeight(height, minHeight: 36, maxHeight: 160)
@@ -853,6 +923,8 @@ struct ChatInputBar: View {
                     if let contextUsage {
                         ContextDonutView(usage: contextUsage)
                     }
+
+                    attachFileButton
 
                     if let onCatchUp {
                         Button(action: onCatchUp) {
@@ -883,6 +955,7 @@ struct ChatInputBar: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(!canSend)
+                    .help(sendHelp)
                 }
             }
             .padding(.horizontal, 6)
@@ -933,7 +1006,9 @@ struct ChatInputBar: View {
                         var mutable = img
                         return try? mutable.saveToPersistent()
                     }
-                    onQueuePrompt?(body, sendAuto, imagePaths)
+                    // While a file is still uploading, all files stay in the composer.
+                    let filePaths = fileDraftKey.flatMap { fileDrafts.takeReadyPaths($0) } ?? []
+                    onQueuePrompt?(PromptFiles.appending(paths: filePaths, to: body), sendAuto, imagePaths)
                     text = ""
                     pastedImages = []
                     usesInlineImageMarkers = false
@@ -988,6 +1063,10 @@ struct ChatInputBar: View {
     }
 
     private func normalizeInlineImages(for newValue: String) {
+        // An image dropped on the window arrives with its marker already in the text.
+        if !usesInlineImageMarkers, !pastedImages.isEmpty, newValue.contains(PromptImageLayout.markerPrefix) {
+            usesInlineImageMarkers = true
+        }
         guard usesInlineImageMarkers else { return }
         if !newValue.contains(PromptImageLayout.markerPrefix) {
             pastedImages = []
@@ -1058,8 +1137,11 @@ struct ChatInputBar: View {
 
     private func send() {
         if secretOffer.isActive { secretOffer.accept(); return }
+        guard !isUploadingFiles else { return }
         let normalized = PromptImagePlaceholders.normalize(text: text, images: pastedImages)
-        let trimmed = normalized.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let filePaths = attachedFiles.compactMap(\.readyPath)
+        let trimmed = PromptFiles.appending(paths: filePaths, to: normalized.text)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         // The images are kept under ~/.kanban-code before the prompt goes
         // out, so a send that fails can be sent again with them.
@@ -1073,6 +1155,7 @@ struct ChatInputBar: View {
         }
         secretOffer.submit(trimmed) { final in
             onSend(final, imagePaths)
+            if let fileDraftKey { _ = fileDrafts.takeReadyPaths(fileDraftKey) }
             text = ""
             pastedImages = []
             usesInlineImageMarkers = false

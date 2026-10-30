@@ -463,6 +463,15 @@ public final class RemoteControlServer: Sendable {
                 let before = request.query["before"].flatMap { $0.isEmpty ? nil : $0 }
                 return .response(.json(try await host.transcript(cardId: id, limit: limit, before: before)))
 
+            case ("GET", "cards/*/transcript/images"):
+                guard let message = request.query["message"], !message.isEmpty,
+                      let index = Int(request.query["index"] ?? ""), index >= 0 else {
+                    return .response(.error(400, "query must be ?message=<id>&index=<n>"))
+                }
+                let image = try await host.transcriptImage(cardId: id, messageId: message, index: index)
+                return .response(RemoteHTTPResponse(
+                    status: 200, headers: [("Content-Type", RemotePromptImages.mimeType(of: image))], body: image))
+
             case ("GET", "machines"):
                 return .response(.json(RemoteMachineList(machines: await host.machines())))
 
@@ -507,11 +516,56 @@ public final class RemoteControlServer: Sendable {
             case ("GET", "cards/*/side-chat/*"):
                 return .response(.json(try await host.sideChatRun(cardId: id, runId: rest[3])))
 
+            case ("GET", "cards/*/conversations"):
+                return .response(.json(try await host.conversations(cardId: id)))
+
+            case ("POST", "cards/*/conversations"):
+                let body = request.body.isEmpty ? RemoteConversationCreate()
+                    : (try? JSONDecoder.remote.decode(RemoteConversationCreate.self, from: request.body))
+                guard let body else { return .response(.error(400, "body must be {\"title\", \"quote\"}, each optional")) }
+                return .response(.json(try await host.createConversation(cardId: id, body), status: 201))
+
+            case ("GET", "cards/*/conversations/*"):
+                return .response(.json(try await host.conversation(cardId: id, conversationId: rest[3])))
+
+            case ("PATCH", "cards/*/conversations/*"):
+                guard let body = try? JSONDecoder.remote.decode(RemoteConversationUpdate.self, from: request.body) else {
+                    return .response(.error(400, "body must be {\"title\", \"read\", \"archived\"}, each optional"))
+                }
+                return .response(.json(try await host.updateConversation(cardId: id, conversationId: rest[3], body)))
+
+            case ("GET", "cards/*/conversations/*/images"):
+                guard let message = request.query["message"], !message.isEmpty,
+                      let index = Int(request.query["index"] ?? ""), index >= 0 else {
+                    return .response(.error(400, "query must be ?message=<id>&index=<n>"))
+                }
+                let image = try await host.conversationImage(cardId: id, conversationId: rest[3], messageId: message, index: index)
+                return .response(RemoteHTTPResponse(
+                    status: 200, headers: [("Content-Type", RemotePromptImages.mimeType(of: image))], body: image))
+
+            case ("GET", "cards/*/conversations-raw"):
+                let offset = max(Int(request.query["offset"] ?? "") ?? 0, 0)
+                let raw = try await host.rawConversations(cardId: id, offset: offset)
+                return .response(RemoteHTTPResponse(
+                    status: 200,
+                    headers: [("Content-Type", "application/octet-stream"),
+                              (RemoteRawTranscript.conversationLogSizeHeader, String(raw.size))],
+                    body: raw.data))
+
             case ("GET", "cards/*/slash-commands"):
                 return .response(.json(try await host.slashCommands(cardId: id)))
 
             case ("POST", "cards/*/pasted-image"):
                 return .response(.json(try await host.storePastedImage(cardId: id, image: request.body), status: 201))
+
+            case ("POST", "cards/*/files"):
+                switch RemotePromptFileChunk.parse(query: request.query, body: request.body) {
+                case .failure(let error):
+                    return .response(.error(400, error.localizedDescription))
+                case .success(let chunk):
+                    let stored = try await host.storePromptFileChunk(cardId: id, chunk)
+                    return .response(.json(stored, status: stored.isComplete ? 201 : 200))
+                }
 
             case ("DELETE", "cards/*/side-chat/*"):
                 try await host.cancelSideChat(cardId: id, runId: rest[3])
@@ -659,9 +713,10 @@ public final class RemoteControlServer: Sendable {
     private static let knownShapes: Set<String> = [
         "me", "board", "machines", "cards/search", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
         "cards/*/interrupt", "cards/*/resume", "events", "cards/*/terminal",
-        "cards/*/move", "cards/*/fork", "cards/*/handover", "cards/*/transcript/raw",
+        "cards/*/move", "cards/*/fork", "cards/*/handover", "cards/*/transcript/raw", "cards/*/transcript/images",
         "cards/*/worktree/remove", "cards/*/discover", "cards/*/side-chat", "cards/*/side-chat/*",
-        "cards/*/slash-commands", "cards/*/pasted-image",
+        "cards/*/slash-commands", "cards/*/pasted-image", "cards/*/files",
+        "cards/*/conversations", "cards/*/conversations/*", "cards/*/conversations-raw", "cards/*/conversations/*/images",
     ]
 
     static func response(for error: Error) -> RemoteHTTPResponse {

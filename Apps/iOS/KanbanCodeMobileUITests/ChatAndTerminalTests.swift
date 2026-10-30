@@ -260,27 +260,20 @@ final class ChatAndTerminalTests: KanbanUITestCase {
         XCTAssertTrue(waitFor(15) { message(containing: "Compare [Image #1] with the design").exists })
         XCTAssertFalse(message(containing: "[image]").exists)
         XCTAssertFalse(attachment.exists)
+        // The transcript lists it with its image, fetched from the master
+        // as a thumbnail that opens full screen.
+        let image = app.buttons.matching(identifier: "messageImage").firstMatch
+        XCTAssertTrue(waitFor(15) { image.exists && image.label == "Image" })
         tapConversation()
         sleep(1)
         shot("27-image-sent")
-    }
-
-    /// Picks the first photo of the library through + > Photos.
-    private func pickFirstPhoto() {
-        app.buttons["attach"].tap()
-        app.buttons["Photos"].firstMatch.tap()
-        // The system picker: pick the first photo, then Done.
-        let photo = app.images.matching(identifier: "PXGGridLayout-Info").firstMatch
-        XCTAssertTrue(photo.waitForExistence(timeout: 15), "no photos in the simulator; add one with xcrun simctl addmedia")
-        // The picker's first-run privacy notice covers the grid.
-        let close = app.buttons["Close"].firstMatch
-        if close.waitForExistence(timeout: 2) { close.tap() }
-        sleep(1)
-        // The grid sits under an overlay that XCUITest counts as covering it.
-        photo.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        let done = app.buttons["Done"].firstMatch
-        XCTAssertTrue(waitEnabled(done))
-        done.tap()
+        image.tap()
+        let viewer = app.descendants(matching: .any).matching(identifier: "imageViewer").firstMatch
+        XCTAssertTrue(viewer.waitForExistence(timeout: 10))
+        shot("27b-image-viewer")
+        app.buttons["imageViewerClose"].tap()
+        XCTAssertTrue(waitFor(5) { !viewer.exists })
+        XCTAssertTrue(composer.exists)
     }
 
     // MARK: Selection

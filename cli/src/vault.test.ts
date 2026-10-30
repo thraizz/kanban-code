@@ -22,6 +22,7 @@ import {
   parseSecretName,
   secretDisplay,
   execProviderAnswer,
+  withShortNames,
   LOG_COMMAND_LIMIT,
   leasePolicyFlags,
   leaseText,
@@ -143,7 +144,13 @@ async function fakeMaster(handler: (method: string, path: string, body: any) => 
 }
 
 function io(url: string, notes: string[]): VaultIO {
-  return { env: { KANBAN_VAULT_URL: url, KANBAN_CARD_ID: "card_x" }, fetch, stderr: (t) => notes.push(t), sleep: async () => {} };
+  return {
+    env: { KANBAN_VAULT_URL: url, KANBAN_CARD_ID: "card_x" },
+    fetch,
+    stderr: (t) => notes.push(t),
+    sleep: async () => {},
+    moved: { names: {} },
+  };
 }
 
 test("a pending release waits for the approval and says so", async () => {
@@ -813,4 +820,14 @@ test("a kv rm plan is a JSON array or one name per line", () => {
   assert.deepEqual(readNamePlan('["A", "p/dev/B"]'), ["A", "p/dev/B"]);
   assert.deepEqual(readNamePlan("A\n# note\n  p/dev/B  \n"), ["A", "p/dev/B"]);
   assert.throws(() => readNamePlan('[{"from": "A"}]'), /JSON array of secret names/);
+});
+
+test("kv run also gives a project secret under its bare key, unless two released secrets share it", () => {
+  assert.deepEqual(withShortNames({ "laze/prod/QA_PASSWORD": "a", SHARED: "b" }), {
+    "laze/prod/QA_PASSWORD": "a",
+    QA_PASSWORD: "a",
+    SHARED: "b",
+  });
+  assert.deepEqual(withShortNames({ "a/dev/KEY": "1", "b/dev/KEY": "2" }), { "a/dev/KEY": "1", "b/dev/KEY": "2" });
+  assert.deepEqual(withShortNames({ "a/dev/KEY": "1", KEY: "0" }), { "a/dev/KEY": "1", KEY: "0" });
 });

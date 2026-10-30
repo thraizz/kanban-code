@@ -51,7 +51,8 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
                 liveSessions: store.state.tmuxSessions,
                 rushQueues: store.state.rushQueues,
                 machine: store.state.localMachineIdentity,
-                machineNames: store.state.peerMachineNames
+                machineNames: store.state.peerMachineNames,
+                conversations: store.state.conversations
             )
         }
         await watchRushQueues()
@@ -128,7 +129,8 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     @MainActor
     private func remoteCard(_ cardId: String) throws -> RemoteCard {
         RemoteBoardMapper.card(try card(cardId), liveSessions: store.state.tmuxSessions, rushQueues: store.state.rushQueues,
-                               machine: store.state.localMachineIdentity, machineNames: store.state.peerMachineNames)
+                               machine: store.state.localMachineIdentity, machineNames: store.state.peerMachineNames,
+                               conversations: store.state.conversations[cardId] ?? [])
     }
 
     public func transcript(cardId: String, limit: Int, before: String?) async throws -> RemoteTranscript {
@@ -240,10 +242,19 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     public func sendPrompt(cardId: String, _ request: RemotePromptRequest, images: [RemotePromptImages.Decoded]) async throws {
         if let owner = await ownerClient(cardId) {
             let encoded = images.map { RemoteImage(mediaType: Self.mediaType(ofExtension: $0.fileExtension), data: $0.bytes.base64EncodedString()) }
-            return try await forwarded {
+            try await forwarded {
                 try await owner.sendPrompt(cardId: cardId, text: request.text, mode: request.mode ?? .queue, images: encoded,
-                                           human: request.human == true)
+                                           human: request.human == true, conversation: request.conversation)
             }
+            if request.conversation != nil { await engine.mirrorConversations(cardId: cardId) }
+            return
+        }
+        let conversation = try await MainActor.run { () throws -> RemoteConversation? in
+            guard let id = request.conversation else { return nil }
+            guard let found = store.state.conversations[cardId]?.first(where: { $0.id == id }) else {
+                throw RemoteHostError.notFound("no conversation \(id) on card \(cardId)")
+            }
+            return found
         }
         let (session, busy) = try await MainActor.run { try liveSession(cardId) }
         let imagePaths = try RemotePromptImages.write(images, to: RemotePromptImages.promptDirectory)
@@ -253,13 +264,22 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             // to Claude mid-turn; the card's own queue is not used. rush
             // puts each image right after its [Image #N] marker.
             let human = request.human == true
+            var text = request.text
+            if let conversation {
+                text = ConversationPrompt.wrap(request.text, conversation: conversation)
+                try await MainActor.run {
+                    try engine.appendConversation(cardId: cardId, [
+                        .message(conversation.id, id: KSUID.generate(prefix: "msg"), role: .human, text: request.text, images: imagePaths)
+                    ])
+                }
+            }
             if human {
                 let (sessionId, log) = await MainActor.run {
                     (store.state.links[cardId]?.sessionLink?.sessionId, engine.humanMessages)
                 }
-                log.append(cardId: cardId, HumanMessageRecord(text: request.text, sessionId: sessionId))
+                log.append(cardId: cardId, HumanMessageRecord(text: text, sessionId: sessionId))
             }
-            try await rushFor(session).send(id: rushId, text: request.text, imagePaths: imagePaths, now: mode == .now, human: human)
+            try await rushFor(session).send(id: rushId, text: text, imagePaths: imagePaths, now: mode == .now, human: human)
             await readRushQueue(session: session, rushId: rushId)
             return
         }
@@ -269,7 +289,8 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         await MainActor.run {
             let prompt = QueuedPrompt(body: request.text, sendAutomatically: true,
                                       imagePaths: imagePaths.isEmpty ? nil : imagePaths,
-                                      humanWrittenAt: request.human == true ? .now : nil)
+                                      humanWrittenAt: request.human == true ? .now : nil,
+                                      conversation: conversation?.id)
             store.dispatch(.addQueuedPrompt(cardId: cardId, prompt: prompt, placement: .back))
             // A queued prompt on a busy card goes out when the turn ends; the
             // rest goes out now, as the chat's send button does.
@@ -469,6 +490,48 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         await engine.cancelSideChat(cardId: cardId, runId: runId)
     }
 
+    public func conversations(cardId: String) async throws -> [RemoteConversation] {
+        try await engine.conversations(cardId: cardId)
+    }
+
+    public func createConversation(cardId: String, _ request: RemoteConversationCreate) async throws -> RemoteConversation {
+        try await engine.createConversation(cardId: cardId, request)
+    }
+
+    public func conversation(cardId: String, conversationId: String) async throws -> RemoteConversationDetail {
+        try await engine.conversation(cardId: cardId, id: conversationId)
+    }
+
+    public func updateConversation(cardId: String, conversationId: String, _ update: RemoteConversationUpdate) async throws -> RemoteConversation {
+        try await engine.updateConversation(cardId: cardId, id: conversationId, update)
+    }
+
+    /// Image `index` of the user message `messageId` (`<line offset>.<n>`),
+    /// read from the line of the card's transcript the id names.
+    public func transcriptImage(cardId: String, messageId: String, index: Int) async throws -> Data {
+        if let owner = await ownerClient(cardId) {
+            return try await forwarded { try await owner.transcriptImage(cardId: cardId, messageId: messageId, index: index) }
+        }
+        let path = try await MainActor.run { () throws -> String? in
+            let card = try card(cardId)
+            return card.link.sessionLink?.sessionPath ?? card.session?.jsonlPath
+        }
+        guard let path, let line = messageId.split(separator: ".").first.flatMap({ Int($0) }), line >= 0,
+              let images = try? await TranscriptReader.loadImagesAtOffset(from: path, byteOffset: line),
+              images.indices.contains(index) else {
+            throw RemoteHostError.notFound("no image \(index + 1) on message \(messageId)")
+        }
+        return images[index]
+    }
+
+    public func conversationImage(cardId: String, conversationId: String, messageId: String, index: Int) async throws -> Data {
+        try await engine.conversationImage(cardId: cardId, id: conversationId, messageId: messageId, index: index)
+    }
+
+    public func rawConversations(cardId: String, offset: Int) async throws -> RemoteRawTranscript {
+        try await engine.rawConversations(cardId: cardId, offset: offset)
+    }
+
     public func slashCommands(cardId: String) async throws -> [RemoteSlashCommand] {
         try await engine.slashCommands(cardId: cardId)
     }
@@ -640,6 +703,21 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         return RemotePastedImage(path: try PastedImages.store(image, kanbanHome: home))
     }
 
+    public func storePromptFileChunk(cardId: String, _ chunk: RemotePromptFileChunk) async throws -> RemotePromptFile {
+        if let owner = await ownerClient(cardId) {
+            return try await forwarded { try await owner.uploadPromptFileChunk(cardId: cardId, chunk) }
+        }
+        _ = try await MainActor.run { try card(cardId) }
+        do {
+            return try await engine.receivePromptFileChunk(cardId: cardId, chunk)
+        } catch let error as PromptFileError {
+            switch error {
+            case .badRequest(let message), .tooLarge(let message): throw RemoteHostError.badRequest(message)
+            case .offsetMismatch: throw RemoteHostError.conflict(error.localizedDescription)
+            }
+        }
+    }
+
     public func discoverBranches(cardId: String) async throws {
         if let owner = await ownerClient(cardId) {
             return try await forwarded { try await owner.discoverBranches(cardId: cardId) }
@@ -761,6 +839,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             _ = store.state.configuredProjects
             _ = store.state.peerStatuses
             _ = store.state.attentionRequests
+            _ = store.state.conversations
         } onChange: {
             continuation.yield()
             Task { @MainActor in observe(store: store, continuation: continuation, alive: alive) }

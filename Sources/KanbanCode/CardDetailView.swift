@@ -1,6 +1,7 @@
 import SwiftUI
 import KanbanCodeCore
 import MarkdownUI
+import KanbanCodeRemoteKit
 import Darwin
 
 /// Bundles tab-management notification listeners into a single ViewModifier
@@ -585,6 +586,17 @@ struct CardDetailView: View {
     // MARK: - Terminal View
 
     /// Whether the Claude tab is selected (nil = Claude tab, no browser tab selected).
+    /// The card's conversations (docs/conversations.md), most recent first.
+    private var cardConversations: [RemoteConversation] {
+        AppComposition.shared.store.state.conversations[card.id] ?? []
+    }
+
+    /// The conversation the card's chat shows, nil for Main.
+    private var openConversation: RemoteConversation? {
+        guard let id = AppComposition.shared.store.state.openConversations[card.id] else { return nil }
+        return cardConversations.first { $0.id == id }
+    }
+
     private var isClaudeTabSelected: Bool {
         selectedTerminalSession == nil && selectedBrowserTabId == nil
     }
@@ -734,7 +746,8 @@ struct CardDetailView: View {
                 }
             },
             githubBaseURL: githubBaseURL,
-            failedPrompts: AppComposition.shared.store.state.failedPrompts[card.id] ?? [],
+            // A conversation's failed sends show in that conversation.
+            failedPrompts: (AppComposition.shared.store.state.failedPrompts[card.id] ?? []).filter { $0.prompt.conversation == nil },
             onDismissFailedPrompt: { failed in
                 AppComposition.shared.store.dispatch(.dismissFailedPrompt(cardId: card.id, promptId: failed.id))
             },
@@ -868,6 +881,20 @@ struct CardDetailView: View {
                         .fixedSize()
                     }
 
+                    if isClaudeTabSelected, card.link.sessionLink != nil || card.link.tmuxLink != nil {
+                        Button {
+                            ConversationActions.start(cardId: card.id)
+                        } label: {
+                            Label("New Conversation", systemImage: "square.and.pencil")
+                                .font(.app(.caption))
+                        }
+                        .buttonStyle(.borderless)
+                        .help("Start a new conversation with this card's agent")
+                        .padding(.leading, 16)
+                        .fixedSize()
+                        .accessibilityIdentifier("new-conversation")
+                    }
+
                 }
                 .padding(.horizontal, 12)
                 .padding(.vertical, 0)
@@ -986,10 +1013,14 @@ struct CardDetailView: View {
                             .allowsHitTesting(false)
                             .transition(.opacity)
                     }
+                    if isClaudeTabSelected, let conversation = openConversation {
+                        ConversationChatView(card: card, conversation: conversation)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
                 }
                 // Floating chat/terminal toggle — only on assistant tab
                 .overlay(alignment: .topTrailing) {
-                    if isClaudeTabSelected {
+                    if isClaudeTabSelected, openConversation == nil {
                     Button {
                         preferChatView.toggle()
                         if !preferChatView {
