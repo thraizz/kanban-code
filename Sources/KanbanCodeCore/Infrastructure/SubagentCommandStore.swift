@@ -11,6 +11,9 @@ public enum SubagentCommandOperation: String, Codable, Sendable {
     /// Point a card at a different transcript, for when reconciliation left it on
     /// a stale session. Also a links.json write, so also the app's to make.
     case relinkSession
+    /// Archive any card, for `kanban archive`. Unlike `archive` it has no owner
+    /// to check, so it does not need the requesting card to be a parent.
+    case archiveCard
     /// Record a model switch so resuming the card does not undo it.
     case setModel
     /// Retune a card's compaction schedule when the work turns out bigger or

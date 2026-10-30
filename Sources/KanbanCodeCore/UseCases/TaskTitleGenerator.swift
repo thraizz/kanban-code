@@ -32,7 +32,8 @@ public enum TaskTitleGenerator {
     static let instructions = """
         You write titles for tasks on a kanban board of coding tasks. \
         Given a task prompt, reply with a short, specific title of 3 to 7 words \
-        in the language of the prompt, in sentence case. Reply with the title only: \
+        in English, in sentence case. Always write the title in English, even when \
+        the prompt is in another language. Reply with the title only: \
         no quotes, no markdown, no trailing period.
         """
 

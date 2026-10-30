@@ -89,6 +89,7 @@ owner talking, and `[DM from @parser-bug (subagent)]` is one of your children re
   - `--mode interrupt` sends Escape first, so the agent stops what it is doing and reads the message immediately. Reserve it for genuine stop-work situations.
   - The same three modes back the auto-compact thresholds in Settings → Self-Compact.
 - `kanban relink <card> <session-id>` — point a card at a different transcript when it is stuck on a stale session. Never moves or deletes a `.jsonl`.
+- `kanban archive <card...>` — archive one or more cards, killing their tmux sessions like archiving in the app. Needs the app running.
 - `kanban self-compact - <<'EOF' … EOF` — compact your own session and hand yourself a post-compact continuation message. Always pass that handoff; without it you wake up with only the digest.
 - Read `kanban --help` in full. Do not pipe it through `head` or `tail`; the command list continues past the first screen.
 

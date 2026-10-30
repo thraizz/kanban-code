@@ -35,6 +35,7 @@ export type SubagentOperation =
   | "resume"
   | "enqueuePrompt"
   | "relinkSession"
+  | "archiveCard"
   | "setModel"
   | "setContextThreshold";
 

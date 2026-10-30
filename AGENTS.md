@@ -107,3 +107,6 @@ For memory/hang investigations, the app self-instruments under `~/.kanban-code/l
 - `main-thread-hangs.log` + `main-thread-samples/*.sample.txt` — watchdog fires `sample` on >500ms main-thread stalls. In sample output, check the THREAD header before blaming code: Swift async work shows under `com.apple.root.*-qos.cooperative` (off main), not `DispatchQueue_1`.
 - `memory-samples/` — `vmmap -summary` artifacts captured on growth/critical/pressure events.
 - `terminal-stats.log` — terminal feed throughput/backlog stats (no timestamps, relative intervals).
+
+## Other important notes
+- We never want to create upstream PRs.
