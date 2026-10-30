@@ -201,6 +201,7 @@ final class ServerMaster {
         }
         Task { await engine.runSelfCompactMonitor() }
         Task { await engine.runSessionModelMonitor() }
+        Task { await engine.runSessionResourceMonitor() }
         Task { await engine.runRushTokenMonitor() }
         Task { await engine.runOwnershipLoop() }
         Task { await engine.monitorSubagentCommands() }

@@ -1409,6 +1409,9 @@ struct ContentView: View {
             .task(id: "session-model-monitor") {
                 await engine.runSessionModelMonitor()
             }
+            .task(id: "session-resource-monitor") {
+                await engine.runSessionResourceMonitor(pressure: MemoryDiagnostics.shared.pressureLevels())
+            }
             .task(id: "rush-token-monitor") {
                 await engine.runRushTokenMonitor()
             }

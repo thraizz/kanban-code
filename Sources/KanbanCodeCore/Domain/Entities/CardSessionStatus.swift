@@ -98,6 +98,9 @@ public enum CardSessionStatus: Sendable, Equatable {
             if link.isRemote, let remote = link.remote, remote.mode == .boxd, let reason = remote.pausedReason {
                 return RemoteMachineOverlay.text(for: .paused(reason), remote: remote, lastActivity: link.lastActivity)
             }
+            if let hibernation = link.hibernation, link.tmuxLink == nil || link.tmuxLink?.isPrimaryDead == true {
+                return "\(assistant) session stopped to free memory (\(hibernation.reason.label))"
+            }
             return "\(assistant) session ended"
         }
     }

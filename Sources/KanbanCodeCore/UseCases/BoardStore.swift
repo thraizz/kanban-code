@@ -88,6 +88,9 @@ public final class AppState: @unchecked Sendable {
     /// Claude's statusline rather than derived from the card, so an in-session
     /// `/model` switch shows up.
     public var sessionModels: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
+    /// cardId → memory of the processes under its terminals, rounded so a
+    /// scan that barely moves does not rebuild the cards.
+    public var cardMemory: [String: CardMemory] = [:] { didSet { cardInputsVersion &+= 1 } }
     public var tmuxSessions: Set<String> = []                  // live tmux names
     /// Messages queued in each live rush host, by session name; hosts with
     /// an empty queue are left out.
@@ -388,6 +391,7 @@ public final class AppState: @unchecked Sendable {
                 isBusy: busyCards.contains(link.id),
                 isRateLimited: rateLimited,
                 liveModel: link.sessionLink.flatMap { sessionModels[$0.sessionId] },
+                memory: cardMemory[link.id],
                 owner: owner,
                 sessionStatus: CardSessionStatus.of(
                     link: link,
@@ -585,6 +589,11 @@ public enum Action: Sendable {
     case setSelfCompactContextThreshold(cardId: String, thresholdTokens: Int?)
     case relinkSession(cardId: String, sessionLink: SessionLink)
     case sessionModelsScanned([String: String])
+    /// What the processes under each card's terminals take, by card id.
+    case cardMemoryScanned([String: CardMemory])
+    /// Stops the card's assistant session to free memory. The card keeps its
+    /// session link and column, so a resume picks the conversation up.
+    case hibernateCard(cardId: String, reason: HibernationReason)
     case setCardModel(cardId: String, model: String?)
     case archiveCard(cardId: String)
     /// Brings an archived card back to the board.
@@ -1084,6 +1093,7 @@ public enum Reducer {
 
         case .launchCard(let cardId, _, let projectPath, let worktreeName, _, _):
             guard var link = state.links[cardId] else { return [] }
+            link.hibernation = nil
             state.cardStarts[cardId] = nil
             let projectName = (projectPath as NSString).lastPathComponent
             let effectiveName = (worktreeName?.isEmpty == false) ? worktreeName! : nil
@@ -1108,6 +1118,7 @@ public enum Reducer {
 
         case .resumeCard(let cardId):
             guard var link = state.links[cardId] else { return [] }
+            link.hibernation = nil
             state.cardStarts[cardId] = nil
             let sid = link.sessionLink?.sessionId ?? link.id
             let tmuxName = link.effectiveAssistant.resumeSessionName(sessionId: sid)
@@ -1277,6 +1288,35 @@ public enum Reducer {
             guard state.sessionModels != models else { return [] }
             state.sessionModels = models
             return []
+
+        case .cardMemoryScanned(let memory):
+            let rounded = memory.mapValues(\.rounded)
+            guard state.cardMemory != rounded else { return [] }
+            state.cardMemory = rounded
+            return []
+
+        case .hibernateCard(let cardId, let reason):
+            guard var link = state.links[cardId], let tmux = link.tmuxLink,
+                  tmux.isShellOnly != true, tmux.isPrimaryDead != true,
+                  link.isLaunching != true, !link.manuallyArchived else { return [] }
+            // A finished card, or a machine short of memory, loses its shell
+            // tabs too (they often hold dev servers). Otherwise only the
+            // assistant stops and the shells stay, as when its tab is closed.
+            let names = (reason == .done || reason == .memoryPressure) ? tmux.allSessionNames : [tmux.sessionName]
+            if names.count == tmux.allSessionNames.count {
+                link.tmuxLink = nil
+            } else {
+                link.tmuxLink?.isPrimaryDead = true
+            }
+            link.hibernation = CardHibernation(reason: reason)
+            // Without a session the column rules would move the card; it
+            // stays where it was until a resume hands it back to them.
+            link.manualOverrides.column = true
+            link.updatedAt = .now
+            state.links[cardId] = link
+            state.cardMemory[cardId] = nil
+            KanbanCodeLog.info("hibernate", "card=\(cardId.prefix(12)) reason=\(reason.rawValue) sessions=\(names.joined(separator: ","))")
+            return [.killTmuxSessions(names), .upsertLink(link), .cleanupTerminalCache(sessionNames: names)]
 
         case .setCardModel(let cardId, let model):
             guard var link = state.links[cardId] else { return [] }

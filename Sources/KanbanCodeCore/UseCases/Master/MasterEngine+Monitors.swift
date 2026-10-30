@@ -36,6 +36,64 @@ extension MasterEngine {
         }
     }
 
+    /// Runs until cancelled: once a minute measures what each card's
+    /// processes take and stops the sessions and browsers the resource
+    /// settings say to. Every level `pressure` yields runs a pass at once.
+    public func runSessionResourceMonitor(pressure: AsyncStream<HibernationPolicy.Pressure>? = nil) async {
+        let onPressure = pressure.map { stream in
+            Task { @MainActor [weak self] in
+                for await level in stream {
+                    await self?.evaluateSessionResources(pressure: level)
+                }
+            }
+        }
+        defer { onPressure?.cancel() }
+        while !Task.isCancelled {
+            await evaluateSessionResources()
+            try? await Task.sleep(for: .seconds(60))
+        }
+    }
+
+    @discardableResult
+    func evaluateSessionResources(pressure: HibernationPolicy.Pressure = .none) async -> [HibernationPolicy.Decision] {
+        let settings = (try? await settingsStore.read())?.resources ?? SessionResourceSettings()
+        async let table = SessionProcessTree.processTable()
+        let panes = await VaultCallerResolver.tmuxPanes()
+        let memoryBySession = SessionProcessTree.measure(
+            processes: await table,
+            paneRoots: panes.map { (session: $0.session, pid: Int32($0.pid)) })
+        guard !Task.isCancelled else { return [] }
+
+        let state = store.state
+        var memoryByCard = state.cardMemory(memoryBySession: memoryBySession)
+        for (id, memory) in memoryByCard {
+            memoryByCard[id]?.exceedsWarning = memory.totalBytes >= settings.memoryWarningBytes
+        }
+        store.dispatch(.cardMemoryScanned(memoryByCard))
+        let decisions = HibernationPolicy.decide(
+            cards: state.hibernationCandidates(memoryBySession: memoryBySession),
+            settings: settings, pressure: pressure)
+        var hibernated: [String] = []
+        for decision in decisions {
+            switch decision {
+            case .hibernate(let cardId, let reason):
+                store.dispatch(.hibernateCard(cardId: cardId, reason: reason))
+                hibernated.append(state.links[cardId]?.displayTitle ?? cardId)
+            case .closeBrowser(let cardId, let pids):
+                KanbanCodeLog.info("hibernate", "closing idle browser card=\(cardId.prefix(12)) pids=\(pids)")
+                SessionProcessTree.terminate(pids)
+            }
+        }
+        if pressure != .none {
+            KanbanCodeLog.info("hibernate", "memory pressure=\(pressure) decisions=\(decisions.count)")
+        }
+        if !hibernated.isEmpty {
+            let titles = hibernated.prefix(3).joined(separator: ", ") + (hibernated.count > 3 ? " and \(hibernated.count - 3) more" : "")
+            store.dispatch(.setNotice("Stopped \(hibernated.count == 1 ? "a quiet session" : "\(hibernated.count) quiet sessions") to free memory: \(titles). Resume brings them back.", kind: .success))
+        }
+        return decisions
+    }
+
     /// Runs until cancelled: reconciles every `interval()`, then `afterPass`.
     public func runReconcileLoop(interval: @escaping @MainActor () -> Duration = { .seconds(3) },
                                  afterPass: (@MainActor () -> Void)? = nil) async {

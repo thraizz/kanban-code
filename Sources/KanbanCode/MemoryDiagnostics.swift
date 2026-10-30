@@ -41,6 +41,8 @@ final class MemoryDiagnostics: @unchecked Sendable {
     private var relatedProcessPIDs = OSAllocatedUnfairLock(initialState: [String: Set<pid_t>]())
     private var mainActorMetricProviders = OSAllocatedUnfairLock(initialState: [String: MainActorMetricProvider]())
     private let pressureSource = OSAllocatedUnfairLock<DispatchSourceMemoryPressure?>(initialState: nil)
+    private let pressureListeners = OSAllocatedUnfairLock(
+        initialState: [UUID: AsyncStream<HibernationPolicy.Pressure>.Continuation]())
 
     private init() {}
 
@@ -89,6 +91,8 @@ final class MemoryDiagnostics: @unchecked Sendable {
             guard let self else { return }
             let event = DispatchSource.MemoryPressureEvent(rawValue: source.data)
             let level = event.contains(.critical) ? "critical" : "warning"
+            let listeners = self.pressureListeners.withLock { Array($0.values) }
+            for listener in listeners { listener.yield(event.contains(.critical) ? .critical : .warning) }
             guard let snapshot = Self.currentSnapshot() else { return }
             self.log(snapshot, reason: "pressure-\(level)")
             self.logSessionTrees(reason: "pressure-\(level)")
@@ -125,6 +129,18 @@ final class MemoryDiagnostics: @unchecked Sendable {
 
     func stop() {
         isRunning.withLock { $0 = false }
+    }
+
+    /// Every memory pressure event the kernel delivers from now on. Needs
+    /// `start()`, which installs the pressure source.
+    func pressureLevels() -> AsyncStream<HibernationPolicy.Pressure> {
+        let (stream, continuation) = AsyncStream<HibernationPolicy.Pressure>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        let id = UUID()
+        pressureListeners.withLock { $0[id] = continuation }
+        continuation.onTermination = { [weak self] _ in
+            self?.pressureListeners.withLock { _ = $0.removeValue(forKey: id) }
+        }
+        return stream
     }
 
     func setRelatedProcessPIDs(label: String, pids: Set<pid_t>) {

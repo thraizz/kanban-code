@@ -473,6 +473,25 @@ struct CardBadgesRow: View {
             }
         }
 
+        // Memory under the card's terminals: quiet below half a gigabyte,
+        // orange over the warning limit of Settings > Resources.
+        if let memory = card.memory, memory.exceedsWarning || memory.totalBytes >= 512 * 1024 * 1024 {
+            HStack(spacing: 2) {
+                Image(systemName: "memorychip")
+                Text(CardMemory.format(memory.totalBytes))
+            }
+            .font(.app(size: 9, weight: memory.exceedsWarning ? .bold : .medium))
+            .foregroundStyle(memory.exceedsWarning ? AnyShapeStyle(Color.orange) : AnyShapeStyle(Color.primary.opacity(0.45)))
+            .help(memoryHelp(memory))
+        }
+
+        if let hibernation = card.link.hibernation, card.link.tmuxLink == nil {
+            Image(systemName: "moon.zzz")
+                .font(.app(.caption2))
+                .foregroundStyle(.secondary)
+                .help("Session stopped to free memory (\(hibernation.reason.label)). Resume brings it back.")
+        }
+
         // PR badge(s) — worst status across all PRs
         if let primary = card.link.prLinks.sortedByPRDisplayPriority.first {
             let totalThreads = card.link.prLinks.compactMap(\.unresolvedThreads).reduce(0, +)
@@ -540,6 +559,19 @@ struct CardBadgesRow: View {
                 .font(.app(.caption2))
                 .foregroundStyle(.teal)
         }
+    }
+}
+
+extension CardBadgesRow {
+    func memoryHelp(_ memory: CardMemory) -> String {
+        var lines = ["\(CardMemory.format(memory.totalBytes)) under this card's terminals"]
+        if memory.browserBytes > 0 {
+            lines.append("Playwright browser: \(CardMemory.format(memory.browserBytes))")
+        }
+        if !memory.topCommand.isEmpty {
+            lines.append("Biggest: \(memory.topCommand) (\(CardMemory.format(memory.topBytes)))")
+        }
+        return lines.joined(separator: "\n")
     }
 }
 

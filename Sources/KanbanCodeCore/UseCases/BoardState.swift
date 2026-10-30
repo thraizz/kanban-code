@@ -29,6 +29,8 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     /// Claude's statusline, so it reflects an in-session `/model` switch that
     /// the card's own `modelOverride` knows nothing about.
     public let liveModel: String?
+    /// What the processes under the card's terminals take, as last measured.
+    public let memory: CardMemory?
     /// Another master that owns and runs the card; nil for this one.
     public let owner: CardOwner?
     /// Where its assistant session stands: running, starting, moving,
@@ -49,6 +51,7 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
         isBusy: Bool = false,
         isRateLimited: Bool = false,
         liveModel: String? = nil,
+        memory: CardMemory? = nil,
         owner: CardOwner? = nil,
         sessionStatus: CardSessionStatus? = nil
     ) {
@@ -59,6 +62,7 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
         self.isBusy = isBusy
         self.isRateLimited = isRateLimited
         self.liveModel = liveModel
+        self.memory = memory
         self.owner = owner
         self.sessionStatus = sessionStatus
             ?? CardSessionStatus.of(link: link, moving: nil, report: nil, machineState: nil)

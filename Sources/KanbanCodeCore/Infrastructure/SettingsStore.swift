@@ -34,6 +34,8 @@ public struct Settings: Codable, Sendable {
     public var remoteControl: RemoteControlSettings
     /// Other masters this one syncs cards with (Settings > Peers).
     public var peers: [PeerConfig]
+    /// When card sessions are stopped to free memory (Settings > Resources).
+    public var resources: SessionResourceSettings
 
     public init(
         projects: [Project] = [],
@@ -57,7 +59,8 @@ public struct Settings: Codable, Sendable {
         assistantCommands: [String: AssistantCommandTemplate] = [:],
         assistantRuntimes: [String: SessionRuntime] = [:],
         remoteControl: RemoteControlSettings = RemoteControlSettings(),
-        peers: [PeerConfig] = []
+        peers: [PeerConfig] = [],
+        resources: SessionResourceSettings = SessionResourceSettings()
     ) {
         self.projects = projects
         self.globalView = globalView
@@ -81,6 +84,7 @@ public struct Settings: Codable, Sendable {
         self.assistantRuntimes = assistantRuntimes
         self.remoteControl = remoteControl
         self.peers = peers
+        self.resources = resources
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -88,7 +92,7 @@ public struct Settings: Codable, Sendable {
         case promptTemplate, githubIssuePromptTemplate, columnOrder, hasCompletedOnboarding, defaultAssistant
         case enabledAssistants
         case apiServices, defaultAPIServiceIds
-        case selfCompact, subagents, assistantCommands, assistantRuntimes, remoteControl, peers
+        case selfCompact, subagents, assistantCommands, assistantRuntimes, remoteControl, peers, resources
         case skill // backward-compat: old name for promptTemplate
     }
 
@@ -150,6 +154,7 @@ public struct Settings: Codable, Sendable {
         }
         remoteControl = (try? container.decodeIfPresent(RemoteControlSettings.self, forKey: .remoteControl)) ?? RemoteControlSettings()
         peers = (try? container.decodeIfPresent([PeerConfig].self, forKey: .peers)) ?? []
+        resources = (try? container.decodeIfPresent(SessionResourceSettings.self, forKey: .resources)) ?? SessionResourceSettings()
     }
 
     public func encode(to encoder: Encoder) throws {
@@ -180,6 +185,7 @@ public struct Settings: Codable, Sendable {
         if !peers.isEmpty {
             try container.encode(peers, forKey: .peers)
         }
+        try container.encode(resources, forKey: .resources)
         // Note: "skill" is NOT encoded — only read for backward-compat
     }
 

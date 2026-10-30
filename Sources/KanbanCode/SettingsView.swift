@@ -129,6 +129,10 @@ struct SettingsView: View {
                 .tabItem { Label("Subagents", systemImage: "point.3.connected.trianglepath.dotted") }
             .trackUsage("settings", "Subagents")
 
+            ResourceSettingsView()
+                .tabItem { Label("Resources", systemImage: "memorychip") }
+            .trackUsage("settings", "Resources")
+
             NotificationSettingsView()
                 .tabItem { Label("Notifications", systemImage: "bell") }
             .trackUsage("settings", "Notifications")
@@ -232,6 +236,95 @@ struct SubagentSettingsView: View {
         Task {
             guard var settings = try? await settingsStore.read() else { return }
             settings.subagents.maximumDepth = maximumDepth
+            try? await settingsStore.write(settings)
+            NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
+        }
+    }
+}
+
+// MARK: - Resources
+
+struct ResourceSettingsView: View {
+    @State private var config = SessionResourceSettings()
+    @State private var loaded = false
+    private let settingsStore = SettingsStore()
+
+    var body: some View {
+        Form {
+            Section("Stop quiet sessions") {
+                limitRow("Cards in Done", value: $config.hibernateDoneAfterMinutes, defaultValue: 60,
+                         range: 0...1440, step: 15, unit: "min")
+                limitRow("Cards in Waiting and In Review", value: $config.hibernateIdleAfterHours, defaultValue: 24,
+                         range: 1...168, step: 1, unit: "h")
+                limitRow("Running sessions at most", value: $config.maxLiveSessions, defaultValue: 10,
+                         range: 1...50, step: 1, unit: nil)
+                Text("A stopped card keeps its conversation and column; Resume starts it again. Cards that work, wait on a permission, are open, have queued prompts or running subagents are never stopped.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Browsers") {
+                limitRow("Close a quiet Playwright browser after", value: $config.closeIdleBrowserAfterMinutes, defaultValue: 30,
+                         range: 5...240, step: 5, unit: "min")
+                Text("Only browsers that Playwright MCP opened. The MCP server keeps running and opens a new browser on its next call.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Section("Memory") {
+                Stepper(value: $config.memoryWarningMB, in: 512...16384, step: 512) {
+                    HStack {
+                        Text("Flag cards using more than")
+                        Spacer()
+                        Text(CardMemory.format(config.memoryWarningMB * 1024 * 1024)).foregroundStyle(.secondary)
+                    }
+                }
+                Toggle("Relieve memory pressure", isOn: $config.relieveMemoryPressure)
+                Text("When macOS reports memory pressure, quiet browsers close; when it turns critical, the three biggest cards quiet for 15 minutes are stopped.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
+        .padding()
+        .task {
+            config = (try? await settingsStore.read().resources) ?? SessionResourceSettings()
+            loaded = true
+        }
+        .onChange(of: config) { save() }
+    }
+
+    /// A limit that can be switched off: a toggle, and a stepper while on.
+    private func limitRow(_ title: String, value: Binding<Int?>, defaultValue: Int,
+                          range: ClosedRange<Int>, step: Int, unit: String?) -> some View {
+        let isOn = Binding(
+            get: { value.wrappedValue != nil },
+            set: { value.wrappedValue = $0 ? defaultValue : nil }
+        )
+        let amount = Binding(
+            get: { value.wrappedValue ?? defaultValue },
+            set: { value.wrappedValue = $0 }
+        )
+        return HStack {
+            Toggle(title, isOn: isOn)
+            Spacer()
+            if isOn.wrappedValue {
+                Stepper(value: amount, in: range, step: step) {
+                    Text(unit.map { "\(amount.wrappedValue) \($0)" } ?? "\(amount.wrappedValue)")
+                        .foregroundStyle(.secondary)
+                        .monospacedDigit()
+                }
+                .fixedSize()
+            }
+        }
+    }
+
+    private func save() {
+        guard loaded else { return }
+        let config = config
+        Task {
+            guard var settings = try? await settingsStore.read() else { return }
+            settings.resources = config
             try? await settingsStore.write(settings)
             NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
         }

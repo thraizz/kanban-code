@@ -293,6 +293,10 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// get a card of their own, also once the terminals are gone.
     public var absorbedSessionIds: [String]?
 
+    /// Set when the app stopped the card's session to free memory; cleared
+    /// when a session runs again.
+    public var hibernation: CardHibernation?
+
     // MARK: Peer sync
 
     /// The machine id of the master that runs this card's heavy state
@@ -448,6 +452,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         discoveredRepos: [String: String]? = nil,
         headless: Bool? = nil,
         absorbedSessionIds: [String]? = nil,
+        hibernation: CardHibernation? = nil,
         ownerMachine: String? = nil,
         rev: SyncStamp? = nil,
         ownerRev: SyncStamp? = nil,
@@ -491,6 +496,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.discoveredRepos = discoveredRepos
         self.headless = headless
         self.absorbedSessionIds = absorbedSessionIds
+        self.hibernation = hibernation
         self.ownerMachine = ownerMachine
         self.rev = rev
         self.ownerRev = ownerRev
@@ -507,7 +513,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, parentCardId, modelOverride, modelVariantOverride
         case selfCompactContextThresholdTokens
         case isRemote, remote, isLaunching, launchedAt, sortOrder, pinnedAt, pinnedSortOrder
-        case discoveredBranches, discoveredRepos, assistant, apiServiceId, headless, absorbedSessionIds
+        case discoveredBranches, discoveredRepos, assistant, apiServiceId, headless, absorbedSessionIds, hibernation
         case ownerMachine, rev, ownerRev, fieldRevs, migrating, deletedAt
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
@@ -550,6 +556,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         apiServiceId = try c.decodeIfPresent(String.self, forKey: .apiServiceId)
         headless = try c.decodeIfPresent(Bool.self, forKey: .headless)
         absorbedSessionIds = try? c.decodeIfPresent([String].self, forKey: .absorbedSessionIds)
+        hibernation = try? c.decodeIfPresent(CardHibernation.self, forKey: .hibernation)
         ownerMachine = try? c.decodeIfPresent(String.self, forKey: .ownerMachine)
         rev = try? c.decodeIfPresent(SyncStamp.self, forKey: .rev)
         ownerRev = try? c.decodeIfPresent(SyncStamp.self, forKey: .ownerRev)
@@ -660,6 +667,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(apiServiceId, forKey: .apiServiceId)
         try c.encodeIfPresent(headless, forKey: .headless)
         try c.encodeIfPresent(absorbedSessionIds, forKey: .absorbedSessionIds)
+        try c.encodeIfPresent(hibernation, forKey: .hibernation)
         try c.encodeIfPresent(ownerMachine, forKey: .ownerMachine)
         try c.encodeIfPresent(rev, forKey: .rev)
         try c.encodeIfPresent(ownerRev, forKey: .ownerRev)
