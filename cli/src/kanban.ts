@@ -404,6 +404,42 @@ program
     }
   });
 
+// ── kanban archive <card...> ─────────────────────────────────────────
+
+program
+  .command("archive")
+  .description("Archive cards, killing their tmux sessions like archiving in the app")
+  .argument("<cards...>", "Card IDs, ID prefixes, or name searches")
+  .option("-j, --json", "Output as JSON")
+  .action(async (cardQueries: string[], opts) => {
+    try {
+      const links = readLinks();
+      const cards = cardQueries.map((query) => {
+        const card = findCard(links, query);
+        if (!card) throw new Error(`Card not found: ${query}`);
+        return card;
+      });
+      // The running app flushes its own board over links.json, so the archive
+      // has to be the app's own write.
+      if (!kanbanCodeIsRunning()) {
+        throw new Error("Kanban Code is not running. Start it so the archive is not overwritten.");
+      }
+      const archived: string[] = [];
+      for (const card of cards) {
+        const response = await submitSubagentRequest(
+          makeSubagentRequest("archiveCard", card.id, { cardId: card.id })
+        );
+        if (!response.ok) throw new Error(response.error ?? `Kanban Code could not archive ${card.id}.`);
+        archived.push(card.id);
+        if (!opts.json) console.log(`Archived ${card.name ?? card.id}`);
+      }
+      if (opts.json) output({ archived }, { json: true });
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exit(1);
+    }
+  });
+
 // ── kanban send <card> <message> ─────────────────────────────────────
 
 /** A bad --mode is a usage error, not a crash. */

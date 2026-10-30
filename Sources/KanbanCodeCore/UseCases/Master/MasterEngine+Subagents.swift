@@ -71,6 +71,9 @@ extension MasterEngine {
         if request.operation == .relinkSession {
             return try await relinkCardSession(request)
         }
+        if request.operation == .archiveCard {
+            return try await archiveAnyCard(request)
+        }
         guard let parent = await waitForCard(request.parentCardId) else {
             throw SubagentCommandExecutionError.cardNotFound(request.parentCardId)
         }
@@ -100,6 +103,8 @@ extension MasterEngine {
             return try await enqueueCardPrompt(request)
         case .relinkSession:
             return try await relinkCardSession(request)
+        case .archiveCard:
+            return try await archiveAnyCard(request)
         case .setContextThreshold:
             let child = try ownedSubagent(from: parent.id, targetId: request.cardId)
             // The child's own assistant decides this, not whatever the parent runs.
@@ -252,6 +257,18 @@ extension MasterEngine {
         await waitForPersistedLink(cardId: card.id, reaching: "session \(sessionId.prefix(8))") {
             $0.sessionLink?.sessionId == sessionId
         }
+        return card.id
+    }
+
+    /// `kanban archive` targets any card, so it skips the ownership check the
+    /// subagent `archive` makes.
+    private func archiveAnyCard(_ request: SubagentCommandRequest) async throws -> String {
+        let targetId = request.cardId ?? request.parentCardId
+        guard let card = await waitForCard(targetId) else {
+            throw SubagentCommandExecutionError.cardNotFound(targetId)
+        }
+        store.dispatch(.archiveCard(cardId: card.id))
+        await waitForPersistedLink(cardId: card.id, reaching: "archived") { $0.manuallyArchived }
         return card.id
     }
 
