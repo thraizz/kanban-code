@@ -941,6 +941,8 @@ final class TerminalCache {
         }
         ownerWaits[sessionName] = nil
         startedSessions.insert(sessionName)
+        // A new terminal attaches; a hold from an earlier one is over.
+        try? FileManager.default.removeItem(atPath: Self.detachMarkerPath(for: sessionName))
 
         let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
         let script: String
@@ -1001,7 +1003,7 @@ final class TerminalCache {
     /// waits for the prompt, types the tmux attach and hands the pty over
     /// with `interact`. The shell on the machine prints the exit status of
     /// tmux behind a sentinel and exits, so a detach ends the connection and
-    /// a failed attach is retried. `connect` itself exits 0 whatever the
+    /// is attached again, and a failed attach is retried. `connect` itself exits 0 whatever the
     /// command did, so the sentinel is the only word on the outcome. The
     /// tmux client runs with `-u` so it writes UTF-8 whatever the locale of
     /// the machine.
@@ -1016,25 +1018,31 @@ final class TerminalCache {
     /// A machine reached over ssh (`sshTargets`, machine name to ssh target)
     /// needs none of that: `ssh -tt` sizes the remote pty and follows
     /// resizes, and it returns the exit status of the command, so the same
-    /// statuses drive the loop (`noSessionStatus` for a missing session, 255
-    /// for a connection that failed).
+    /// statuses drive the loop (`noSessionStatus` for a missing session,
+    /// `detachedStatus` for a detach, 255 for a connection that failed).
     static func remoteAttachScript(boxd: String, machine: String?, session: String, readyMarker: String? = nil, sshTargets: [String: String] = [:]) -> String {
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let fallback = quote(machine ?? "")
         let program = expectProgram(boxd: boxd, session: session)
         let boxdAttach = "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c \(quote(program)); r=$?"
-        let attach: String
+        var attach: String
         if sshTargets.isEmpty {
-            attach = "\(boxdAttach); [ $r -eq 0 ] && break"
+            attach = boxdAttach
         } else {
             let cases = sshTargets.sorted { $0.key < $1.key }
                 .map { "\(quote($0.key))) t=\(quote($0.value));;" }
                 .joined(separator: " ")
             let remote = "tmux has-session -t \(quote(session)) 2>/dev/null || exit \(noSessionStatus); "
-                + "COLORTERM=truecolor exec tmux -u -T hyperlinks attach-session -t \(quote(session))"
+                + "COLORTERM=truecolor tmux -u -T hyperlinks attach-session -t \(quote(session)) || exit; "
+                + "tmux has-session -t \(quote(session)) 2>/dev/null && exit \(detachedStatus); exit 0"
             let ssh = "/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 \"$t\" -- \(quote(remote)); r=$?"
-            attach = "t=; case \"$m\" in \(cases) esac; if [ -n \"$t\" ]; then \(ssh); else \(boxdAttach); fi; [ $r -eq 0 ] && break"
+            attach = "t=; case \"$m\" in \(cases) esac; if [ -n \"$t\" ]; then \(ssh); else \(boxdAttach); fi"
         }
+        // Detach Terminal holds the loop until Reattach Terminal. A detach
+        // from anywhere else leaves the session running: attach again,
+        // without using up a try.
+        attach += "; \(holdClause(session: session)); [ $r -eq 0 ] && break"
+            + "; if [ $r -eq \(detachedStatus) ]; then echo 'Detached, reattaching.'; sleep 1; continue; fi"
         // A missing session counts against the tries, a failed connection
         // only waits a little longer.
         let again = "if [ $r -eq \(noSessionStatus) ]; then n=$((n+1)); sleep 2; else sleep 3; fi"
@@ -1069,6 +1077,11 @@ final class TerminalCache {
     /// not there, as opposed to tmux ending or the connection dropping.
     static let noSessionStatus = 9
 
+    /// The status the shell on the machine reports when the tmux client
+    /// ended cleanly but the session is still there: a detach (`prefix d`,
+    /// `tmux detach-client` from elsewhere), not the end of the session.
+    static let detachedStatus = 10
+
     /// The word the shell on the machine prints when tmux exits, followed by
     /// the exit status of tmux.
     static let attachExitSentinel = "KANBAN_TMUX_EXIT"
@@ -1079,10 +1092,12 @@ final class TerminalCache {
     /// after the timeout anyway. The shell on the machine first asks tmux
     /// whether the session exists and reports `noSessionStatus` when it does
     /// not; otherwise it runs tmux, prints the sentinel with the exit status
-    /// of tmux and exits. `interact` watches the output for the sentinel,
-    /// swallows it, and ends with that status, so a session that is not
-    /// there yet is retried a bounded number of times, a detach (status 0)
-    /// ends the terminal, and a connection that never opens or drops before
+    /// of tmux (`detachedStatus` when tmux ended cleanly and the session is
+    /// still there) and exits. `interact` watches the output for the
+    /// sentinel, swallows it, and ends with that status, so a session that
+    /// is not there yet is retried a bounded number of times, a detach is
+    /// attached again, a session that ended (status 0) ends the terminal,
+    /// and a connection that never opens or drops before
     /// the sentinel (status 1) is retried for as long as the terminal is
     /// open. The WINCH trap copies the size of the local pty to the pty of
     /// `connect`, which forwards it to the machine.
@@ -1091,7 +1106,9 @@ final class TerminalCache {
         // `interact` sees as well, never matches the sentinel pattern. Only
         // what the shell prints after running it does.
         let attach = " tmux has-session -t \(session) 2>/dev/null || { echo \(attachExitSentinel):\\\"\(noSessionStatus)\\\"; exit; }; "
-            + "tmux -u -T hyperlinks attach-session -t \(session) 2>/dev/null; echo \(attachExitSentinel):$?; exit\\r"
+            + "tmux -u -T hyperlinks attach-session -t \(session) 2>/dev/null; r=$?; "
+            + "if test \\$r -eq 0 && tmux has-session -t \(session) 2>/dev/null; then r=\(detachedStatus); fi; "
+            + "echo \(attachExitSentinel):\\$r; exit\\r"
         return [
             "set timeout 20",
             "spawn -noecho {\(boxd)} machine connect $env(KANBAN_MACHINE)",
@@ -1108,13 +1125,23 @@ final class TerminalCache {
     /// agent writes arrives as ordinary text with no destination behind it.
     /// The flag is probed rather than assumed, because tmux gained it in 3.2
     /// and an older one answers a flag it does not know by refusing to start.
+    ///
+    /// A detach (`prefix d`, or `tmux detach-client` from another shell)
+    /// ends the client with status 0 while the session goes on, so the
+    /// client attaches again. A session that is gone, or a client that
+    /// fails, ends the terminal. Detach Terminal holds it off the session
+    /// until Reattach Terminal (`holdClause`).
     static func attachScript(tmux: String, session: String) -> String {
         let escaped = session.replacingOccurrences(of: "'", with: "'\\''")
-        let attach = { (flags: String) in "exec '\(tmux)' \(flags)attach-session -t '\(escaped)'" }
-        return "for i in $(seq 1 50); do '\(tmux)' has-session -t '\(escaped)' 2>/dev/null"
-            + " && if '\(tmux)' -T hyperlinks -V >/dev/null 2>&1;"
-            + " then \(attach("-T hyperlinks ")); else \(attach("")); fi;"
-            + " sleep 0.1; done; echo 'Session ended.'"
+        let alive = "'\(tmux)' has-session -t '\(escaped)' 2>/dev/null"
+        let attach = { (flags: String) in "'\(tmux)' \(flags)attach-session -t '\(escaped)'" }
+        return "for i in $(seq 1 50); do \(alive) && break; sleep 0.1; done;"
+            + " while \(alive); do"
+            + " if '\(tmux)' -T hyperlinks -V >/dev/null 2>&1;"
+            + " then \(attach("-T hyperlinks ")); else \(attach("")); fi; r=$?;"
+            + " \(holdClause(session: session));"
+            + " [ $r -eq 0 ] && \(alive) || break;"
+            + " echo 'Detached, reattaching.'; sleep 1; done; echo 'Session ended.'"
     }
 
     /// The shell command a terminal runs to show a rush session on an ssh
@@ -1156,7 +1183,60 @@ final class TerminalCache {
         }
     }
 
+    /// The marker that holds a terminal off its tmux session after Detach
+    /// Terminal. While the app's client is attached, tmux sizes the window
+    /// by it as well; detached, the other clients (a terminal on the machine
+    /// itself) get the whole window.
+    static func detachMarkerPath(for sessionName: String) -> String {
+        NSHomeDirectory() + "/.kanban-code/terminal-detached/" + sessionName
+    }
+
+    static func isHeldDetached(_ sessionName: String) -> Bool {
+        FileManager.default.fileExists(atPath: detachMarkerPath(for: sessionName))
+    }
+
+    /// What the attach loop does after its client ends: while the marker is
+    /// there it waits, then it attaches again.
+    static func holdClause(session: String) -> String {
+        let marker = "'" + detachMarkerPath(for: session).replacingOccurrences(of: "'", with: "'\\''") + "'"
+        return "if [ -e \(marker) ]; then echo 'Detached. Reattach Terminal in the card menu attaches again.'; "
+            + "while [ -e \(marker) ]; do sleep 1; done; continue; fi"
+    }
+
+    /// Detach Terminal: writes the marker, then ends the children of the
+    /// terminal's shell, which is the tmux client (or the ssh or expect that
+    /// carries it). Only this terminal's client goes; other clients of the
+    /// session stay attached.
+    func detach(_ sessionName: String) {
+        let path = Self.detachMarkerPath(for: sessionName)
+        try? FileManager.default.createDirectory(
+            atPath: (path as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        FileManager.default.createFile(atPath: path, contents: nil)
+        guard let pid = terminals[sessionName]?.process?.shellPid, pid > 0 else { return }
+        let pkill = Process()
+        pkill.executableURL = URL(fileURLWithPath: "/usr/bin/pkill")
+        pkill.arguments = ["-TERM", "-P", String(pid)]
+        try? pkill.run()
+        KanbanCodeLog.info("terminal-view", "detach session=\(sessionName) shellPid=\(pid)")
+    }
+
+    /// Reattach Terminal: the loop waiting on the marker attaches again.
+    func reattach(_ sessionName: String) {
+        try? FileManager.default.removeItem(atPath: Self.detachMarkerPath(for: sessionName))
+        KanbanCodeLog.info("terminal-view", "reattach session=\(sessionName)")
+    }
+
+    /// Whether Detach Terminal works for the session: a tmux attach of this
+    /// Mac's own, running in a terminal here. A card another master runs and
+    /// a rush view have no tmux client here.
+    func canDetach(_ sessionName: String) -> Bool {
+        startedSessions.contains(sessionName)
+            && !RushSessionName.isRush(sessionName)
+            && AppServices.peerCard(forSession: sessionName) == nil
+    }
+
     func remove(_ sessionName: String) {
+        try? FileManager.default.removeItem(atPath: Self.detachMarkerPath(for: sessionName))
         startedSessions.remove(sessionName)
         if let terminal = terminals.removeValue(forKey: sessionName) {
             terminal.removeURLMonitor()

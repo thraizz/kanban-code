@@ -186,4 +186,31 @@ struct CardActionCatalogTests {
         #expect(!Self.catalog(named, r).paletteEntries.contains { $0.title == "Generate Title from Prompt" })
         #expect(!Self.catalog(Self.card("noPrompt"), r).paletteEntries.contains { $0.title == "Generate Title from Prompt" })
     }
+
+    /// Detached, the card terminal leaves the tmux window to the other
+    /// clients, e.g. a terminal on the ssh machine itself.
+    @Test("the card terminal detaches and reattaches its own tmux client from the menu")
+    func detachTerminal() throws {
+        var detached: Set<String> = []
+        var calls: [String] = []
+        var env = Self.environment(Recorder())
+        env.canDetachTerminal = { $0 == "tmux-live" }
+        env.isTerminalDetached = { detached.contains($0) }
+        env.detachTerminal = { calls.append("detach \($0)"); detached.insert($0) }
+        env.reattachTerminal = { calls.append("reattach \($0)"); detached.remove($0) }
+        let catalog = { (card: KanbanCodeCard) in
+            CardActionCatalog(card: card, actions: Self.actions(Recorder()), environment: env)
+        }
+
+        let detach = try #require(catalog(Self.card("live")).paletteEntries.first { $0.title == "Detach Terminal" })
+        #expect(!catalog(Self.card("live")).paletteEntries.contains { $0.title == "Reattach Terminal" })
+        detach.run()
+        let reattach = try #require(catalog(Self.card("live")).paletteEntries.first { $0.title == "Reattach Terminal" })
+        #expect(!catalog(Self.card("live")).paletteEntries.contains { $0.title == "Detach Terminal" })
+        reattach.run()
+        #expect(calls == ["detach tmux-live", "reattach tmux-live"])
+
+        // No terminal of its own to detach: no entry.
+        #expect(!catalog(Self.card("other")).paletteEntries.contains { $0.title.hasSuffix("Terminal") })
+    }
 }

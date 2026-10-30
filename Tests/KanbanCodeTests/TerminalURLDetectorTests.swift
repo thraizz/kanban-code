@@ -267,7 +267,20 @@ struct TmuxAttachScriptTests {
         let script = TerminalCache.attachScript(tmux: "/opt/tmux", session: "claude-1")
 
         #expect(script.contains("'/opt/tmux' -T hyperlinks -V >/dev/null 2>&1"))
-        #expect(script.contains("else exec '/opt/tmux' attach-session -t 'claude-1'"))
+        #expect(script.contains("else '/opt/tmux' attach-session -t 'claude-1'"))
+    }
+
+    /// A detach (`prefix d`, `tmux detach-client`) ends the client with
+    /// status 0 while the session goes on. The terminal attaches again
+    /// instead of going dead.
+    @Test("a detach attaches again, a session that is gone ends the terminal")
+    func reattachesAfterDetach() {
+        let script = TerminalCache.attachScript(tmux: "/opt/tmux", session: "claude-1")
+
+        #expect(!script.contains("exec "))
+        #expect(script.contains(" while '/opt/tmux' has-session -t 'claude-1' 2>/dev/null; do"))
+        #expect(script.contains("fi; r=$?; \(TerminalCache.holdClause(session: "claude-1")); [ $r -eq 0 ] && '/opt/tmux' has-session -t 'claude-1' 2>/dev/null || break;"
+            + " echo 'Detached, reattaching.'; sleep 1; done; echo 'Session ended.'"))
     }
 
     @Test("a quote in the session name cannot break out of the command")

@@ -21,7 +21,7 @@ struct RemoteAttachScriptTests {
         let waitIndex = script.range(of: "[ -e '/Users/me/.kanban-code/remote-ready/repo-card_1' ] && break")
         let attachIndex = script.range(of: "KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '")
         #expect(script.contains("machine connect $env(KANBAN_MACHINE)"))
-        #expect(script.contains("send \" tmux has-session -t repo-card_1 2>/dev/null || { echo KANBAN_TMUX_EXIT:\\\"9\\\"; exit; }; tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; echo KANBAN_TMUX_EXIT:$?; exit\\r\""))
+        #expect(script.contains("send \" tmux has-session -t repo-card_1 2>/dev/null || { echo KANBAN_TMUX_EXIT:\\\"9\\\"; exit; }; tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; r=$?; if test \\$r -eq 0 && tmux has-session -t repo-card_1 2>/dev/null; then r=10; fi; echo KANBAN_TMUX_EXIT:\\$r; exit\\r\""))
         #expect(script.contains("m=\"$(cat '/Users/me/.kanban-code/remote-ready/repo-card_1' 2>/dev/null)\"; [ -n \"$m\" ] || m='kanban-repo-1'"))
         #expect(waitIndex != nil)
         #expect(attachIndex != nil)
@@ -40,7 +40,7 @@ struct RemoteAttachScriptTests {
         #expect(script.contains("while [ $n -lt 150 ]; do if [ -e '/tmp/marker.paused' ]; then echo 'Machine paused.'; while [ -e '/tmp/marker.paused' ]; do sleep 1; done; n=0; fi; "))
         // The machine is read from the marker on every try.
         #expect(script.contains("m=\"$(cat '/tmp/marker' 2>/dev/null)\"; [ -n \"$m\" ] || m='kanban-repo-1'; KANBAN_MACHINE=\"$m\" /usr/bin/expect -c '"))
-        #expect(script.contains("'; r=$?; [ $r -eq 0 ] && break; if [ -e '/tmp/marker.paused' ]; then continue; fi; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done; echo 'Session ended.'"))
+        #expect(script.contains("'; r=$?; \(TerminalCache.holdClause(session: "s")); [ $r -eq 0 ] && break; if [ $r -eq 10 ]; then echo 'Detached, reattaching.'; sleep 1; continue; fi; if [ -e '/tmp/marker.paused' ]; then continue; fi; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done; echo 'Session ended.'"))
         #expect(TerminalCache.pausedMarkerSuffix == ".paused")
         let pauseCheck = script.range(of: "if [ -e '/tmp/marker.paused' ]")
         let firstAttach = script.range(of: "KANBAN_MACHINE=\"$m\" /usr/bin/expect")
@@ -56,9 +56,57 @@ struct RemoteAttachScriptTests {
             boxd: "boxd", machine: nil, session: "claude-1234", readyMarker: "/tmp/marker",
             sshTargets: ["box": "root@10.0.0.1"])
         #expect(script.contains(#"t=; case "$m" in 'box') t='root@10.0.0.1';; esac; if [ -n "$t" ]; then "#))
-        #expect(script.contains(#"/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$t" -- 'tmux has-session -t '\''claude-1234'\'' 2>/dev/null || exit 9; COLORTERM=truecolor exec tmux -u -T hyperlinks attach-session -t '\''claude-1234'\'''; r=$?; else KANBAN_MACHINE="$m" /usr/bin/expect -c '"#))
-        // The same statuses drive the loop: 9 uses up a try, 0 ends it.
-        #expect(script.contains("fi; [ $r -eq 0 ] && break; if [ -e '/tmp/marker.paused' ]; then continue; fi; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done"))
+        #expect(script.contains(#"/usr/bin/ssh -tt -o BatchMode=yes -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 "$t" -- 'tmux has-session -t '\''claude-1234'\'' 2>/dev/null || exit 9; COLORTERM=truecolor tmux -u -T hyperlinks attach-session -t '\''claude-1234'\'' || exit; tmux has-session -t '\''claude-1234'\'' 2>/dev/null && exit 10; exit 0'; r=$?; else KANBAN_MACHINE="$m" /usr/bin/expect -c '"#))
+        // The same statuses drive the loop: 9 uses up a try, 10 attaches again, 0 ends it.
+        #expect(script.contains("fi; [ $r -eq 0 ] && break; if [ $r -eq 10 ]; then echo 'Detached, reattaching.'; sleep 1; continue; fi; if [ -e '/tmp/marker.paused' ]; then continue; fi; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done"))
+    }
+
+    /// A detach of the card terminal's client, with `prefix d` or with
+    /// `tmux detach-client` from another shell, leaves the session running.
+    /// The terminal must attach again instead of saying the session ended.
+    @Test("a detach on an ssh machine attaches again, only an ended session ends the terminal")
+    func sshDetachReattaches() throws {
+        let script = TerminalCache.remoteAttachScript(
+            boxd: "boxd", machine: "box", session: "s", sshTargets: ["box": "root@10.0.0.1"])
+        #expect(TerminalCache.detachedStatus == 10)
+        #expect(TerminalCache.detachedStatus != TerminalCache.noSessionStatus)
+        // The tmux client no longer replaces the shell, so the shell can ask
+        // tmux afterwards whether the session is still there.
+        #expect(!script.contains("exec tmux"))
+        #expect(script.contains("|| exit; tmux has-session -t '\\''s'\\'' 2>/dev/null && exit 10; exit 0'"))
+        // A detach skips the tries and the waits and connects again.
+        let detached = try #require(script.range(of: "if [ $r -eq 10 ]; then echo 'Detached, reattaching.'; sleep 1; continue; fi"))
+        let ended = try #require(script.range(of: "[ $r -eq 0 ] && break"))
+        #expect(ended.upperBound <= detached.lowerBound)
+    }
+
+    @Test("Detach Terminal holds the attach loop until the marker goes away")
+    func holdUntilReattach() throws {
+        let hold = TerminalCache.holdClause(session: "s")
+        let marker = "'" + TerminalCache.detachMarkerPath(for: "s") + "'"
+        #expect(TerminalCache.detachMarkerPath(for: "s").hasSuffix("/.kanban-code/terminal-detached/s"))
+        #expect(hold == "if [ -e \(marker) ]; then echo 'Detached. Reattach Terminal in the card menu attaches again.'; "
+            + "while [ -e \(marker) ]; do sleep 1; done; continue; fi")
+        // The hold comes before the clean end, so a client the app ends
+        // never reads as a session that ended.
+        for script in [
+            TerminalCache.remoteAttachScript(boxd: "boxd", machine: "box", session: "s"),
+            TerminalCache.remoteAttachScript(boxd: "boxd", machine: "box", session: "s", sshTargets: ["box": "root@10.0.0.1"]),
+            TerminalCache.attachScript(tmux: "/opt/tmux", session: "s"),
+        ] {
+            let held = try #require(script.range(of: hold))
+            let ended = try #require(script.range(of: "[ $r -eq 0 ] &&"))
+            #expect(held.upperBound <= ended.lowerBound)
+        }
+    }
+
+    @Test("a detach on a boxd machine reports its own status through the sentinel")
+    func boxdDetachReattaches() {
+        let program = TerminalCache.expectProgram(boxd: "boxd", session: "s")
+        // `$r` is escaped for Tcl, which would read it as a variable of its own.
+        #expect(program.contains("r=$?; if test \\$r -eq 0 && tmux has-session -t s 2>/dev/null; then r=10; fi; echo KANBAN_TMUX_EXIT:\\$r; exit"))
+        let script = TerminalCache.remoteAttachScript(boxd: "boxd", machine: "box", session: "s")
+        #expect(script.contains("[ $r -eq 0 ] && break; if [ $r -eq 10 ]; then echo 'Detached, reattaching.'; sleep 1; continue; fi"))
     }
 
     @Test("a rush session on an ssh machine opens rush there (agtop without it), in truecolor, after the ready marker")
@@ -99,7 +147,7 @@ struct RemoteAttachScriptTests {
     @Test("expect waits for the prompt, types the attach, and hands the pty over")
     func expectProgram() {
         let program = TerminalCache.expectProgram(boxd: "/opt/boxd", session: "repo-card_1")
-        let attach = " tmux has-session -t repo-card_1 2>/dev/null || { echo KANBAN_TMUX_EXIT:\\\"9\\\"; exit; }; tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; echo KANBAN_TMUX_EXIT:$?; exit\\r"
+        let attach = " tmux has-session -t repo-card_1 2>/dev/null || { echo KANBAN_TMUX_EXIT:\\\"9\\\"; exit; }; tmux -u -T hyperlinks attach-session -t repo-card_1 2>/dev/null; r=$?; if test \\$r -eq 0 && tmux has-session -t repo-card_1 2>/dev/null; then r=10; fi; echo KANBAN_TMUX_EXIT:\\$r; exit\\r"
         #expect(program == [
             "set timeout 20",
             "spawn -noecho {/opt/boxd} machine connect $env(KANBAN_MACHINE)",
@@ -121,7 +169,7 @@ struct RemoteAttachScriptTests {
     func retryLoop() {
         let script = TerminalCache.remoteAttachScript(boxd: "boxd", machine: "kanban-repo-1", session: "s")
         #expect(script.contains("/usr/bin/expect -c 'set timeout 20; spawn -noecho {boxd} machine connect $env(KANBAN_MACHINE); "))
-        #expect(script.hasSuffix("'; r=$?; [ $r -eq 0 ] && break; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done; echo 'Session ended.'"))
+        #expect(script.hasSuffix("'; r=$?; \(TerminalCache.holdClause(session: "s")); [ $r -eq 0 ] && break; if [ $r -eq 10 ]; then echo 'Detached, reattaching.'; sleep 1; continue; fi; if [ $r -eq 9 ]; then n=$((n+1)); sleep 2; else sleep 3; fi; done; echo 'Session ended.'"))
     }
 
     @Test("only a missing session uses up the tries, a lost connection is retried for as long as the terminal is open")

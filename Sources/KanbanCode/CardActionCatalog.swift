@@ -52,6 +52,12 @@ struct CardActionEnvironment {
     var continueTargets: [(label: String, target: String)]
     /// Whether a machine is an ssh machine, shared and always on.
     var isSharedMachine: (String) -> Bool
+    /// The card terminal's own tmux client, by session: whether it can be
+    /// detached, whether it is held detached, and the two moves.
+    var canDetachTerminal: (String) -> Bool = { _ in false }
+    var isTerminalDetached: (String) -> Bool = { _ in false }
+    var detachTerminal: (String) -> Void = { _ in }
+    var reattachTerminal: (String) -> Void = { _ in }
 
     @MainActor
     static func live(for card: KanbanCodeCard) -> CardActionEnvironment {
@@ -85,7 +91,11 @@ struct CardActionEnvironment {
                 }
             },
             continueTargets: continueTargets(for: card, state: AppComposition.shared.store.state),
-            isSharedMachine: { AppServices.sshTargets[$0] != nil }
+            isSharedMachine: { AppServices.sshTargets[$0] != nil },
+            canDetachTerminal: { TerminalCache.shared.canDetach($0) },
+            isTerminalDetached: { TerminalCache.isHeldDetached($0) },
+            detachTerminal: { TerminalCache.shared.detach($0) },
+            reattachTerminal: { TerminalCache.shared.reattach($0) }
         )
     }
 
@@ -269,6 +279,21 @@ struct CardActionCatalog {
             id: "trim", title: "Trim Session History", icon: "scissors",
             isDisabled: !hasSessionPath, kind: .perform(actions.onTrimSession)
         ))
+        // Detached, the card terminal leaves the tmux window to the other
+        // clients, so a terminal on the machine gets its full size.
+        if let tmux = card.link.tmuxLink?.sessionName, environment.canDetachTerminal(tmux) {
+            if environment.isTerminalDetached(tmux) {
+                items.append(CardActionItem(
+                    id: "terminal.reattach", title: "Reattach Terminal", icon: "rectangle.connected.to.line.below",
+                    kind: .perform { environment.reattachTerminal(tmux) }
+                ))
+            } else {
+                items.append(CardActionItem(
+                    id: "terminal.detach", title: "Detach Terminal", icon: "rectangle.portrait.and.arrow.right",
+                    kind: .perform { environment.detachTerminal(tmux) }
+                ))
+            }
+        }
         if let onShowPromptHistory = actions.onShowPromptHistory {
             items.append(CardActionItem(
                 id: "promptHistory", title: "Prompt History", icon: "list.bullet.rectangle.portrait",
