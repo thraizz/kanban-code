@@ -6,11 +6,13 @@ import KanbanCodeCore
 enum SidebarMode: String, CaseIterable {
     case sessions
     case prompts
+    case overview
 
     var label: String {
         switch self {
         case .sessions: "Sessions"
         case .prompts: "Prompts"
+        case .overview: "Overview"
         }
     }
 }

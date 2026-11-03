@@ -89,6 +89,7 @@ struct ContentView: View {
     /// Preset the next New Task dialog opens with, from the prompt library.
     @State var newTaskPreset: PromptPreset?
     @AppStorage("sidebarMode") var sidebarModeRaw = SidebarMode.sessions.rawValue
+    @State var boardOverview = BoardOverviewModel()
     @State var showOnboarding = false
     @AppStorage("appearanceMode") var appearanceMode: AppearanceMode = .auto
     @AppStorage("boardViewMode") var boardViewModeRaw = BoardViewMode.kanban.rawValue
@@ -402,9 +403,14 @@ struct ContentView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
 
-            if SidebarMode(rawValue: sidebarModeRaw) == .prompts {
+            switch SidebarMode(rawValue: sidebarModeRaw) {
+            case .prompts:
                 PromptLibraryView(onNewTask: { preset in presentNewTask(preset: preset) })
-            } else {
+            case .overview:
+                BoardOverviewView(store: store, model: boardOverview, onOpenCard: { cardId in
+                    store.dispatch(.selectCard(cardId: cardId))
+                })
+            default:
                 sidebarListView
             }
         }
