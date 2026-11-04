@@ -103,17 +103,36 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
             throw RushCommandFailed(arguments: ["start"], message: "rush sessions start with RushCliAdapter.start")
         }
         try await adapter(for: name).createSession(name: name, path: path, command: command, environment: environment)
+        // tmux refuses a name that is taken, so an old session under it is
+        // gone: a kill still owed to it would hit the new one.
+        registry.clearPendingKill(sessionName: name)
     }
 
     public func killSession(name: String) async throws {
-        if let id = RushSessionName.rushId(fromName: name) {
-            try await rush(forSession: name).stop(id: id)
-            registry.unassign(sessionName: name)
-            return
+        do {
+            if let id = RushSessionName.rushId(fromName: name) {
+                try await rush(forSession: name).stop(id: id)
+            } else {
+                try await adapter(for: name).killSession(name: name)
+            }
+        } catch {
+            queueKillIfMachineAway(name, error: error)
+            throw error
         }
-        let target = try adapter(for: name)
-        try await target.killSession(name: name)
         registry.unassign(sessionName: name)
+    }
+
+    /// A kill that did not reach the machine of the session is done when the
+    /// machine connects again (see `BoxdMachineSupervisor`), so a card
+    /// archived while its machine was away does not leave its session
+    /// running there. An answer from tmux or rush (no such session) is
+    /// final, and a destroyed machine took its sessions with it.
+    private func queueKillIfMachineAway(_ name: String, error: Error) {
+        guard let machine = registry.machine(forSession: name) else { return }
+        if error is TmuxError || error is RushCommandFailed { return }
+        if let unavailable = error as? RemoteMachineUnavailable, unavailable.state == .destroyed { return }
+        registry.queueKill(sessionName: name, on: machine)
+        KanbanCodeLog.info("tmux", "kill of \(name) did not reach \(machine) (\(error.localizedDescription)), done when it reconnects")
     }
 
     public func sendInterrupt(sessionName: String) async throws {

@@ -27,8 +27,21 @@ public final class RemoteSessionRegistry: @unchecked Sendable {
     private let lock = NSLock()
     private var machines: [String: MachineEntry] = [:]
     private var machineBySession: [String: String] = [:]
+    /// Sessions a kill did not reach, by machine: the machine was away when
+    /// the card was archived, deleted or closed. They are killed when the
+    /// machine connects again.
+    private var pendingKills: [String: Set<String>] = [:]
+    /// Where `pendingKills` is kept across restarts. Nil keeps it in memory.
+    private let pendingKillsPath: String?
 
-    public init() {}
+    public init(pendingKillsPath: String? = nil) {
+        self.pendingKillsPath = pendingKillsPath
+        if let pendingKillsPath,
+           let data = FileManager.default.contents(atPath: pendingKillsPath),
+           let saved = try? JSONDecoder().decode([String: [String]].self, from: data) {
+            pendingKills = saved.filter { !$0.value.isEmpty }.mapValues(Set.init)
+        }
+    }
 
     // MARK: - Machines
 
@@ -68,10 +81,13 @@ public final class RemoteSessionRegistry: @unchecked Sendable {
         machines[name] = entry
     }
 
+    /// Forgets a machine that is gone, with the kills still owed to it: its
+    /// sessions went with it.
     public func removeMachine(_ name: String) {
         lock.lock(); defer { lock.unlock() }
         machines[name] = nil
         machineBySession = machineBySession.filter { $0.value != name }
+        if pendingKills.removeValue(forKey: name) != nil { savePendingKillsLocked() }
     }
 
     public func state(of machine: String) -> RemoteMachineState? {
@@ -147,6 +163,49 @@ public final class RemoteSessionRegistry: @unchecked Sendable {
         guard var entry = machines[machine] else { return }
         entry.knownSessions[sessionName] = nil
         machines[machine] = entry
+    }
+
+    // MARK: - Kills owed to a machine
+
+    /// Remembers that `sessionName` must die on `machine` once it is back.
+    public func queueKill(sessionName: String, on machine: String) {
+        lock.lock(); defer { lock.unlock() }
+        guard pendingKills[machine]?.contains(sessionName) != true else { return }
+        pendingKills[machine, default: []].insert(sessionName)
+        savePendingKillsLocked()
+    }
+
+    /// The sessions still to kill on `machine`, sorted.
+    public func pendingKills(on machine: String) -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return (pendingKills[machine] ?? []).sorted()
+    }
+
+    /// Drops the owed kill of `sessionName`, on whichever machine: it was
+    /// done, the session was gone already, or a new session took the name.
+    public func clearPendingKill(sessionName: String) {
+        lock.lock(); defer { lock.unlock() }
+        var changed = false
+        for (machine, var names) in pendingKills where names.contains(sessionName) {
+            names.remove(sessionName)
+            pendingKills[machine] = names.isEmpty ? nil : names
+            changed = true
+        }
+        if changed { savePendingKillsLocked() }
+    }
+
+    private func savePendingKillsLocked() {
+        guard let pendingKillsPath else { return }
+        let fm = FileManager.default
+        if pendingKills.isEmpty {
+            try? fm.removeItem(atPath: pendingKillsPath)
+            return
+        }
+        guard let data = try? JSONEncoder().encode(pendingKills.mapValues { $0.sorted() }) else { return }
+        try? fm.createDirectory(
+            atPath: (pendingKillsPath as NSString).deletingLastPathComponent,
+            withIntermediateDirectories: true)
+        try? data.write(to: URL(fileURLWithPath: pendingKillsPath), options: .atomic)
     }
 
     /// Re-seeds the name → machine map from persisted links, so remote
