@@ -1382,8 +1382,10 @@ public enum Reducer {
             }
             // An archived card no longer needs its boxd machine. The machine
             // is only destroyed when no other card (a subagent, for example)
-            // still runs on it.
-            if let remote = link.remote, remote.mode == .boxd {
+            // still runs on it. An ssh machine stays, and so does the
+            // card's record of it: the worktree is still there, and its
+            // cleanup has to run on that machine, not on this Mac.
+            if state.runsOnDisposableMachine(cardId) {
                 effects.append(contentsOf: releaseRemoteMachine(of: &link, in: state, destroy: true))
             }
             state.links[cardId] = link

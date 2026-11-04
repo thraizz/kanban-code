@@ -251,6 +251,26 @@ struct BoxdReducerTests {
         #expect(state.links["card_2"]?.remote?.machineName == "kanban-repo-1")
     }
 
+    @Test("archiveCard on an ssh machine kills the sessions but keeps the machine record, so the worktree is removed there")
+    func archiveKeepsSshMachineRecord() throws {
+        var card = remoteCard(id: "card_1", machine: "box", sessionName: "repo-card_1")
+        card.worktreeLink = WorktreeLink(path: "/work/repo/.claude/worktrees/calm-harbor", branch: "feat/x")
+        var state = stateWith([card])
+        state.boxdSettings = BoxdSettings(sshMachines: [SshMachine(name: "box", target: "root@10.0.0.1")])
+
+        let effects = Reducer.reduce(state: &state, action: .archiveCard(cardId: "card_1"))
+
+        let link = try #require(state.links["card_1"])
+        #expect(link.manuallyArchived == true)
+        #expect(link.tmuxLink == nil)
+        #expect(link.remote?.machineName == "box")
+        #expect(link.isRemote == true)
+        #expect(effects.killedSessions == ["repo-card_1"])
+        #expect(effects.destroyedMachines.isEmpty)
+        #expect(effects.stoppedMachines.isEmpty)
+        #expect(state.worktreePlacement("card_1") == .sshMachine(name: "box"))
+    }
+
     // MARK: - deleteCard
 
     @Test("deleteCard destroys the machine of the card it removed")
