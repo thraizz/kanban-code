@@ -653,6 +653,34 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         }
     }
 
+    /// Kills the sessions a kill could not reach while the machine was away,
+    /// such as the session of a card archived then. A session that is gone
+    /// already counts as killed; one the machine could not be asked about
+    /// stays owed until the next connect.
+    func killOwedSessions(machineName: String) async {
+        for name in registry.pendingKills(on: machineName) {
+            do {
+                if let id = RushSessionName.rushId(fromName: name) {
+                    // A machine without rush has no rush session to stop.
+                    if let rush = registry.rush(for: machineName) { try await rush.stop(id: id) }
+                } else {
+                    guard let tmux = registry.tmux(for: machineName) else { return }
+                    try await tmux.killSession(name: name)
+                }
+                KanbanCodeLog.info(Self.subsystem, "\(machineName): killed \(name), owed since the machine was away")
+            } catch is TmuxError {
+                // tmux answered: no such session.
+            } catch is RushCommandFailed {
+                // rush answered: no such session.
+            } catch {
+                KanbanCodeLog.warn(Self.subsystem, "\(machineName): owed kill of \(name) failed, kept for the next connect: \(error.localizedDescription)")
+                continue
+            }
+            registry.clearPendingKill(sessionName: name)
+            registry.unassign(sessionName: name)
+        }
+    }
+
     /// Runs before the assistant in a tmux session on a machine: a tmux
     /// server started with `NO_COLOR` set would otherwise pass it on.
     public static let sessionPreamble = "unset NO_COLOR"
@@ -1299,6 +1327,7 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
         if host {
             await prepareSessions(machineName: machineName, bridge: bridge, remoteHome: runtime.remoteHome)
         }
+        await killOwedSessions(machineName: machineName)
         setPausedMarkers(machineName: machineName, paused: false)
         await report(machineName, state: .connected)
         KanbanCodeLog.info(Self.subsystem, "\(machineName): connected (agent \(await bridge.agentVersion ?? "?"))")

@@ -70,7 +70,8 @@ final class AppComposition {
 
         let coordination = CoordinationStore()
         let settings = SettingsStore()
-        let remoteRegistry = RemoteSessionRegistry()
+        let remoteRegistry = RemoteSessionRegistry(
+            pendingKillsPath: (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/pending-remote-kills.json"))
         let tmux = RoutingTmuxAdapter(local: TmuxAdapter(), registry: remoteRegistry)
         let machinePort = MachinePortRouter(
             boxd: BoxdCliAdapter(),
