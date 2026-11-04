@@ -34,10 +34,12 @@ struct SelectableMarkdownText: NSViewRepresentable {
             links: self.links, lineLimit: self.lineLimit)
     }
 
+    /// Measures without rendering. Replacing the text storage here, in the
+    /// middle of a layout pass, invalidates the layout that is asking.
     func sizeThatFits(
         _ proposal: ProposedViewSize, nsView: WrappingTextView, context: Context
     ) -> CGSize? {
-        nsView.configure(
+        nsView.update(
             content: self.content, appearance: self.appearance, highlight: self.highlight,
             links: self.links, lineLimit: self.lineLimit)
         return nsView.fittingSize(for: proposal)
@@ -80,7 +82,10 @@ struct SelectableMarkdownText: NSViewRepresentable {
             textView.isRichText = true
             textView.textContainerInset = CGSize.zero
             textView.isHorizontallyResizable = false
-            textView.isVerticallyResizable = true
+            // SwiftUI owns the frame. A resizable text view sizes itself to its
+            // text whenever the storage changes, which overrides the frame
+            // SwiftUI just placed and asks for another layout pass.
+            textView.isVerticallyResizable = false
             textView.linkTextAttributes = [.cursor: NSCursor.pointingHand]
             return textView
         }
@@ -113,6 +118,21 @@ struct SelectableMarkdownText: NSViewRepresentable {
             links: ChatTextLinks = ChatTextLinks(),
             lineLimit: Int? = nil
         ) {
+            self.update(
+                content: content, appearance: appearance, highlight: highlight, links: links,
+                lineLimit: lineLimit)
+            self.render(width: self.bounds.width)
+        }
+
+        /// Takes the new inputs without touching the text storage, so a sizing
+        /// probe can measure them.
+        func update(
+            content: ChatTextContent,
+            appearance: ChatTextAppearance,
+            highlight: ChatTextHighlight?,
+            links: ChatTextLinks = ChatTextLinks(),
+            lineLimit: Int? = nil
+        ) {
             let changed =
                 content != self.content || appearance != self.textAppearance
                 || highlight != self.highlight || links != self.links
@@ -130,15 +150,13 @@ struct SelectableMarkdownText: NSViewRepresentable {
             }
             self.textContainer?.maximumNumberOfLines = lineLimit ?? 0
             self.textContainer?.lineBreakMode = lineLimit == nil ? .byWordWrapping : .byTruncatingTail
-            self.render(width: self.bounds.width)
         }
 
-        /// The width this row is laid out at, kept so a probe can answer with it.
-        private var layoutWidth: CGFloat = 0
+        /// The width a row is measured at when no width is proposed.
+        static let idealWidth: CGFloat = 700
 
-        func fittingSize(for proposal: ProposedViewSize) -> CGSize? {
-            guard let width = self.resolveWidth(proposal) else { return nil }
-            return self.fittingSize(forWidth: width)
+        func fittingSize(for proposal: ProposedViewSize) -> CGSize {
+            self.fittingSize(forWidth: Self.resolveWidth(proposal))
         }
 
         /// SwiftUI probes a representable with zero, unspecified and infinite
@@ -146,12 +164,17 @@ struct SelectableMarkdownText: NSViewRepresentable {
         /// text view's own fitting size, which follows whatever was last
         /// rendered: a stale narrow answer becomes a narrow frame, and a table
         /// laid out one character per column over the message below it.
-        private func resolveWidth(_ proposal: ProposedViewSize) -> CGFloat? {
+        ///
+        /// The answer must depend on the proposal alone. SwiftUI caches sizes,
+        /// and an answer that follows the last width probed changes the ideal
+        /// size of everything above the row on every pass. A hosting view turns
+        /// its ideal size into constraints, so each pass asks for another one,
+        /// until AppKit gives up on the window and throws.
+        private static func resolveWidth(_ proposal: ProposedViewSize) -> CGFloat {
             if let proposed = proposal.width, proposed > 1, proposed.isFinite {
-                self.layoutWidth = proposed
                 return proposed
             }
-            return self.layoutWidth > 1 ? self.layoutWidth : nil
+            return Self.idealWidth
         }
 
         /// Nothing here has a size of its own: every answer comes from
@@ -390,6 +413,26 @@ struct ChatText: View {
         )
         .frame(minHeight: self.heightFloor, alignment: .top)
         .onChange(of: self.content) { self.heightFloor = nil }
+    }
+}
+
+extension ChatText {
+    /// An assistant's markdown answer, drawn as the chat draws one.
+    ///
+    /// Use this, not `Markdown(…).textSelection(.enabled)`, for selectable
+    /// markdown. SwiftUI's selection overlay is a text field with one font,
+    /// and for a paragraph with bold or code runs it sets the other font on
+    /// every update. Each change invalidates its intrinsic size and asks the
+    /// window for another constraint pass, which loops.
+    init(answer text: String, font: NSFont = .systemFont(ofSize: 13)) {
+        let content: ChatTextContent = text.containsBlockMarkdown ? .markdown(text) : .inlineMarkdown(text)
+        // As in the chat: only the inline path carries line spacing of its
+        // own, a markdown answer takes it from the theme.
+        let lineSpacing: CGFloat
+        if case .inlineMarkdown = content { lineSpacing = 4 } else { lineSpacing = 0 }
+        self.init(
+            content: content,
+            appearance: .init(font: font, foregroundColor: .labelColor, lineSpacing: lineSpacing))
     }
 }
 

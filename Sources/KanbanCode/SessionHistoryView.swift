@@ -674,6 +674,7 @@ struct TurnBlockView: View {
             result = AttributedString(text)
         }
         result.foregroundColor = color
+        Self.flattenFontIntents(in: &result)
 
         // Search highlighting (use offset-based mapping for markdown compatibility)
         if let query = highlightText?.lowercased(), !query.isEmpty {
@@ -705,6 +706,30 @@ struct TurnBlockView: View {
     private static let urlRegex: NSRegularExpression? = {
         try? NSRegularExpression(pattern: "https?://[^\\s<>\"'\\])*]*[^\\s<>\"'\\]).,:;!?]")
     }()
+
+    /// Keeps the whole text in one font. These rows are selectable, and
+    /// SwiftUI's selection overlay is a text field with a single font: for a
+    /// text with bold or code runs it sets the other font on every update.
+    /// Each change invalidates the field's intrinsic size and asks the window
+    /// for another constraint pass, so resizing the pane loops until AppKit
+    /// throws. Emphasis is shown with colour instead of weight.
+    static func flattenFontIntents(in attr: inout AttributedString) {
+        var styled: [(Range<AttributedString.Index>, InlinePresentationIntent)] = []
+        for run in attr.runs {
+            if let intent = run.inlinePresentationIntent, !intent.isEmpty {
+                styled.append((run.range, intent))
+            }
+        }
+        for (range, intent) in styled {
+            attr[range].inlinePresentationIntent = nil
+            if intent.contains(.stronglyEmphasized) {
+                attr[range].foregroundColor = .white
+            }
+            if intent.contains(.strikethrough) {
+                attr[range].strikethroughStyle = .single
+            }
+        }
+    }
 
     private static func addURLLinks(to attr: inout AttributedString) {
         guard let regex = urlRegex else { return }

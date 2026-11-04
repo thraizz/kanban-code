@@ -143,22 +143,28 @@ struct ChatTextHeightTests {
     }
 
     /// SwiftUI asks for the minimum, ideal and maximum size with zero,
-    /// unspecified and infinite widths. Those have to answer with the width the
-    /// row is laid out at: nil sends SwiftUI to the text view's own fitting
-    /// size, which follows whatever was last rendered, and a stale narrow
-    /// answer becomes a narrow frame.
-    @Test("probes for minimum, ideal and maximum answer with the layout width")
-    func probesAnswerWithTheLayoutWidth() {
+    /// unspecified and infinite widths. Those answer with a fixed width, never
+    /// nil: nil sends SwiftUI to the text view's own fitting size, which follows
+    /// whatever was last rendered, and a stale narrow answer becomes a narrow
+    /// frame. Nor may the answer follow the widths probed before it: SwiftUI
+    /// caches sizes, and an ideal size that moves with every pass keeps asking
+    /// the window for another one until AppKit throws.
+    @Test("probes for minimum, ideal and maximum answer the same whatever came before")
+    func probesAnswerTheSameWhateverCameBefore() {
         let view = SelectableMarkdownText.WrappingTextView.make()
         view.configure(
             content: .markdown("| A | B |\n| --- | --- |\n| 1 | 2 |"),
             appearance: Self.appearance, highlight: nil)
-        _ = view.fittingSize(for: ProposedViewSize(width: Self.width, height: nil))
+        let ideal = view.fittingSize(forWidth: SelectableMarkdownText.WrappingTextView.idealWidth)
 
-        for probe in [
-            ProposedViewSize.zero, ProposedViewSize.unspecified, ProposedViewSize.infinity,
-        ] {
-            #expect(view.fittingSize(for: probe)?.width == Self.width)
+        for width: CGFloat in [Self.width, 320, 1400] {
+            _ = view.fittingSize(for: ProposedViewSize(width: width, height: nil))
+            view.setFrameSize(NSSize(width: width, height: 200))
+            for probe in [
+                ProposedViewSize.zero, ProposedViewSize.unspecified, ProposedViewSize.infinity,
+            ] {
+                #expect(view.fittingSize(for: probe) == ideal)
+            }
         }
     }
 
@@ -170,16 +176,16 @@ struct ChatTextHeightTests {
         let view = SelectableMarkdownText.WrappingTextView.make()
         view.configure(content: .inlineMarkdown("Short."), appearance: Self.appearance, highlight: nil)
         let narrow = view.fittingSize(for: ProposedViewSize(width: Self.width, height: nil))
-        #expect((narrow?.width ?? Self.width) < 100)
-        view.setFrameSize(narrow ?? .zero)
+        #expect(narrow.width < 100)
+        view.setFrameSize(narrow)
 
         view.configure(
             content: .markdown("Short.\n\n\(Self.table(rows: 3))"),
             appearance: Self.appearance, highlight: nil)
         let wide = view.fittingSize(for: ProposedViewSize(width: Self.width, height: nil))
-        #expect(wide?.width == Self.width)
+        #expect(wide.width == Self.width)
 
-        view.setFrameSize(wide ?? .zero)
+        view.setFrameSize(wide)
         guard let layout = view.layoutManager, let container = view.textContainer else {
             Issue.record("no layout")
             return
@@ -192,7 +198,7 @@ struct ChatTextHeightTests {
         ) { rect, used, _, _, _ in
             bottom = max(bottom, max(rect.maxY, used.maxY))
         }
-        #expect(bottom <= (wide?.height ?? 0) + 0.5)
+        #expect(bottom <= wide.height + 0.5)
     }
 
     @Test("a table wider than the container still reports what it draws")

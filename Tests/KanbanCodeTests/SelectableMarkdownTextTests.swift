@@ -73,6 +73,45 @@ struct SelectableMarkdownTextTests {
         #expect(view.textStorage?.length == 0)
     }
 
+    /// The representable's `sizeThatFits` runs inside SwiftUI's layout pass.
+    /// New text arriving there must not reach the text storage or the frame:
+    /// either change invalidates the layout that is asking, and on a long
+    /// transcript that kept a window relaying itself out until AppKit threw.
+    @Test("new text taken during a sizing pass leaves the live view alone")
+    func updateDuringSizingLeavesTheViewAlone() {
+        let view = SelectableMarkdownText.WrappingTextView.make()
+        view.configure(content: .plain("First."), appearance: Self.appearance, highlight: nil)
+        view.setFrameSize(NSSize(width: 500, height: 40))
+        let storage = view.textStorage?.string
+        let frame = view.frame
+
+        for width: CGFloat in [300, 690, 500, 1200] {
+            view.update(
+                content: .markdown(Self.tableMarkdown), appearance: Self.appearance,
+                highlight: nil)
+            _ = view.fittingSize(for: .init(width: width, height: nil))
+            _ = view.fittingSize(for: .unspecified)
+        }
+        #expect(view.textStorage?.string == storage)
+        #expect(view.frame == frame)
+    }
+
+    /// SwiftUI owns the frame. A text view that sizes itself to new text
+    /// overrides the frame it was just given and asks for another pass.
+    @Test("rendering keeps the frame SwiftUI gave the view")
+    func renderingKeepsTheFrame() {
+        let view = SelectableMarkdownText.WrappingTextView.make()
+        view.configure(
+            content: .plain(String(repeating: "lorem ipsum ", count: 300)),
+            appearance: Self.appearance, highlight: nil)
+        for size in [NSSize(width: 500, height: 100), NSSize(width: 400, height: 900)] {
+            view.setFrameSize(size)
+            #expect(view.frame.size == size)
+        }
+        view.configure(content: .plain("Short."), appearance: Self.appearance, highlight: nil)
+        #expect(view.frame.size == NSSize(width: 400, height: 900))
+    }
+
     /// System notices sit inside a centring `HStack`. A row that reports the
     /// full proposed width leaves the spacers nothing to take, so it drifts to
     /// the leading edge instead of staying centred.

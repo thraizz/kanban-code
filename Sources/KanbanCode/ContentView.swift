@@ -84,11 +84,11 @@ struct ContentView: View {
     @State var terminalHadFocusBeforeSearch = false
     @State var deepSearchTrigger = false
     @AppStorage("showBoardInExpanded") var showBoardInExpanded = false
-    @State var sidebarVisibility: NavigationSplitViewVisibility = .detailOnly
     @State var showNewTask = false
     /// Preset the next New Task dialog opens with, from the prompt library.
     @State var newTaskPreset: PromptPreset?
     @AppStorage("sidebarMode") var sidebarModeRaw = SidebarMode.sessions.rawValue
+    @State var boardOverview = BoardOverviewModel()
     @State var showOnboarding = false
     @AppStorage("appearanceMode") var appearanceMode: AppearanceMode = .auto
     @AppStorage("boardViewMode") var boardViewModeRaw = BoardViewMode.kanban.rawValue
@@ -185,13 +185,10 @@ struct ContentView: View {
         )
     }
 
-    private var showInspector: Binding<Bool> {
-        Binding(
-            get: { store.state.openDrawer != .none },
-            set: { visible in
-                if !visible { store.dispatch(.closeDrawer) }
-            }
-        )
+    /// The card detail pane shows while a drawer is open, and closes when the
+    /// store closes the drawer (the toolbar toggle, deselecting the card).
+    private var isDetailPaneOpen: Bool {
+        store.state.openDrawer != .none
     }
 
     init() {
@@ -208,11 +205,6 @@ struct ContentView: View {
             .appendingPathComponent(".kanban-code/hook-events.jsonl")
         self.settingsFilePath = (NSHomeDirectory() as NSString)
             .appendingPathComponent(".kanban-code/settings.json")
-
-        // Set sidebar visibility synchronously too
-        if UserDefaults.standard.bool(forKey: "showBoardInExpanded") {
-            _sidebarVisibility = State(initialValue: .doubleColumn)
-        }
     }
 
     static func loadEnabledAssistants() -> [CodingAssistant] {
@@ -388,8 +380,7 @@ struct ContentView: View {
         }
     }
 
-    /// Sidebar content for expanded mode — always list view.
-    /// Toolbar items only included when sidebar is visible to avoid duplication in window toolbar.
+    /// Sidebar content: the session list, the prompt library or the overview.
     private var sidebarContent: some View {
         VStack(spacing: 0) {
             Picker("Sidebar", selection: $sidebarModeRaw) {
@@ -402,39 +393,32 @@ struct ContentView: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
 
-            if SidebarMode(rawValue: sidebarModeRaw) == .prompts {
+            switch SidebarMode(rawValue: sidebarModeRaw) {
+            case .prompts:
                 PromptLibraryView(onNewTask: { preset in presentNewTask(preset: preset) })
-            } else {
+            case .overview:
+                BoardOverviewView(store: store, model: boardOverview, onOpenCard: { cardId in
+                    store.dispatch(.selectCard(cardId: cardId))
+                })
+            default:
                 sidebarListView
             }
         }
-            .toolbar {
-                // The live visibility, not the persisted flag: the flag can
-                // still say "open" from a past session while the sidebar is
-                // hidden, and its items would then double the detail's.
-                if sidebarVisibility != .detailOnly {
-                    ToolbarItemGroup(placement: .automatic) {
-                        Button { presentNewTask() } label: {
-                            Image(systemName: "square.and.pencil")
-                        }
-                        .help("New task (⌘N)")
+    }
 
-                        Button { Task { await store.reconcile() } } label: {
-                            Image(systemName: "arrow.clockwise")
-                        }
-                        .disabled(store.state.isLoading)
-                        .help("Refresh sessions")
-
-                        Button {
-                            appearanceMode = appearanceMode.next
-                            applyAppearance()
-                        } label: {
-                            Image(systemName: appearanceMode.icon)
-                        }
-                        .help(appearanceMode.helpText)
-                    }
-                }
-            }
+    /// The sidebar as a panel of its own under the window toolbar, inset
+    /// from the window's edges and drawn as the board's columns are.
+    private var sidebarPanel: some View {
+        sidebarContent
+            .environment(\.configuredProjects, store.state.configuredProjects)
+            // Outside a split view a sidebar list draws a background of its
+            // own, grey over the panel. The panel is the background here.
+            .scrollContentBackground(.hidden)
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+            .clipShape(RoundedRectangle(cornerRadius: 12))
+            .glassColumn()
+            .padding(.leading, 8)
+            .padding(.bottom, 8)
     }
 
     /// Cmd+Enter on a card: what its status bar offers, the machine when a
@@ -682,13 +666,20 @@ struct ContentView: View {
                     expandedEmptyState
                 }
             } else {
-                // Normal: kanban board with inspector.
-                boardView
-                    .ignoresSafeArea(edges: .top)
-                    .inspector(isPresented: showInspector) {
-                        inspectorContent
-                            .inspectorColumnWidth(min: 600, ideal: 800, max: 1000)
-                    }
+                // Normal: kanban board with the card detail pane beside it.
+                // Not `.inspector`: see PaneResizeHandle for why.
+                SidePaneSplit(
+                    edge: .trailing, isPaneOpen: isDetailPaneOpen,
+                    rule: .cardDetail, storageKey: "detailPaneWidth"
+                ) {
+                    boardView
+                        .ignoresSafeArea(edges: .top)
+                } pane: {
+                    // Wrapping text makes the content's own min and max size
+                    // follow the width. A fixed range keeps that out of layout.
+                    inspectorContent
+                        .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                }
             }
         }
             .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)
@@ -719,19 +710,9 @@ struct ContentView: View {
             .onChange(of: store.state.detailExpanded) {
                 if !store.state.detailExpanded {
                     showBoardInExpanded = false
-                    sidebarVisibility = .detailOnly
                     boardViewModeRaw = BoardViewMode.kanban.rawValue
                 }
                 detailExpandedPersisted = store.state.detailExpanded
-            }
-            .onChange(of: showBoardInExpanded) {
-                withAnimation(.easeInOut(duration: 0.2)) {
-                    sidebarVisibility = showBoardInExpanded ? .doubleColumn : .detailOnly
-                }
-            }
-            .onChange(of: sidebarVisibility) {
-                // Sync built-in sidebar toggle back to our state
-                showBoardInExpanded = (sidebarVisibility != .detailOnly)
             }
             .overlay {
                 FolderDropZone(isTargeted: $isDroppingFolder) { url in
@@ -1544,18 +1525,23 @@ struct ContentView: View {
     }
 
     var body: some View {
-        NavigationSplitView(columnVisibility: $sidebarVisibility) {
-            sidebarContent
+        // Not `NavigationSplitView`: its sidebar is a glass panel the height
+        // of the window with the toolbar inside it, and it is an NSSplitView
+        // (see PaneResizeHandle). Here the toolbar runs across the window and
+        // the sidebar is a panel under it.
+        SidePaneSplit(
+            edge: .leading, isPaneOpen: showBoardInExpanded,
+            rule: .sidebar, storageKey: "sidebarWidth", handleStyle: .gap
+        ) {
+            boardWithHandlers
                 .environment(\.configuredProjects, store.state.configuredProjects)
-                .navigationSplitViewColumnWidth(min: 280, ideal: 320, max: 720)
-        } detail: {
-        boardWithHandlers
-            .environment(\.configuredProjects, store.state.configuredProjects)
+        } pane: {
+            sidebarPanel
+        }
             .toolbar {
                 // Use tested ToolbarVisibility model to drive all conditions
                 let tbVis = ToolbarVisibility(
                     isExpandedDetail: isExpandedDetail,
-                    showBoardInExpanded: showBoardInExpanded,
                     hasSelectedCard: store.state.selectedCardId != nil
                 )
 
@@ -1579,8 +1565,12 @@ struct ContentView: View {
                             Image(systemName: appearanceMode.icon)
                         }
                         .help(appearanceMode.helpText)
-                    }
 
+                        Button { showBoardInExpanded.toggle() } label: {
+                            Image(systemName: "sidebar.left")
+                        }
+                        .help("Toggle sidebar (\(AppShortcut.toggleSidebar.displayString))")
+                    }
                 }
 
                 ToolbarItem(placement: .navigation) {
@@ -1705,8 +1695,6 @@ struct ContentView: View {
                 }
             }
             .background { shortcutButtons }
-        } // detail
-        .toolbar(removing: .sidebarToggle)
         .overlay {
             // Unanimated on purpose. The palette is a keyboard tool reached
             // dozens of times an hour, and a fade and scale on the way in is

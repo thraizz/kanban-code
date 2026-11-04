@@ -301,13 +301,17 @@ private struct TranscriptTerminalRowView: View {
     }
 
     /// `Name(argument)` with the name in bold, as the terminal draws it.
+    ///
+    /// Not selectable. SwiftUI's selection overlay is a text field with one
+    /// font, and for a text of two fonts it sets the other one on every
+    /// update. Each change invalidates the field's intrinsic size, which asks
+    /// the window for another constraint pass, until AppKit throws.
     private func toolTitle(_ title: String) -> some View {
         let open = title.firstIndex(of: "(")
         let name = open.map { String(title[..<$0]) } ?? title
         let rest = open.map { String(title[$0...]) } ?? ""
         return (Text(name).font(Font(Self.boldFont)) + Text(rest).font(Font(Self.font)))
             .foregroundStyle(Color(nsColor: Self.text))
-            .textSelection(.enabled)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
 

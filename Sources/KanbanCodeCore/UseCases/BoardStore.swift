@@ -801,6 +801,9 @@ public struct ReconciliationResult: Sendable {
     /// Cards the reconciler merged into another card with the same
     /// session: duplicate id to keeper id.
     public let mergedDuplicates: [String: String]
+    /// Sessions discovery left out as headless runs in an excluded folder.
+    /// Unclaimed cards still pointing at one are dropped.
+    public let excludedHeadlessSessionIds: Set<String>
 
     public init(
         links: [Link],
@@ -811,9 +814,11 @@ public struct ReconciliationResult: Sendable {
         excludedPaths: [String] = [],
         discoveredProjectPaths: [String] = [],
         globalRemoteSettings: RemoteSettings? = nil,
-        mergedDuplicates: [String: String] = [:]
+        mergedDuplicates: [String: String] = [:],
+        excludedHeadlessSessionIds: Set<String> = []
     ) {
         self.mergedDuplicates = mergedDuplicates
+        self.excludedHeadlessSessionIds = excludedHeadlessSessionIds
         self.links = links
         self.sessions = sessions
         self.activityMap = activityMap
@@ -2207,8 +2212,13 @@ public enum Reducer {
             if !exclusion.isEmpty {
                 var dropped = 0
                 for (id, link) in mergedLinks
-                where link.isUnclaimedHeadless && link.isLaunching != true
-                    && state.isOwnedLocally(link) && exclusion.matches(link.projectPath) {
+                where link.isLaunching != true && state.isOwnedLocally(link)
+                    && exclusion.matches(link.projectPath)
+                    && (link.isUnclaimedHeadless
+                        // A card made before its session was known to be
+                        // headless (an Agent SDK run) never got the flag.
+                        || (!link.isClaimed && link.sessionLink.map {
+                            result.excludedHeadlessSessionIds.contains($0.sessionId) } == true)) {
                     mergedLinks.removeValue(forKey: id)
                     dropped += 1
                 }
@@ -3153,6 +3163,7 @@ public final class BoardStore: @unchecked Sendable {
             let exclusion = state.pathExclusion
             discovery.setHeadlessExclusion(exclusion)
             let allSessions = try await discovery.discoverSessions()
+            let excludedHeadlessIds = discovery.excludedHeadlessSessionIds()
             var sessions = allSessions.filter {
                 !state.deletedSessionIds.contains($0.id)
                     && !($0.isHeadless && exclusion.matches($0.projectPath))
@@ -3443,7 +3454,8 @@ public final class BoardStore: @unchecked Sendable {
                 excludedPaths: excludedPaths,
                 discoveredProjectPaths: discoveredProjectPaths,
                 globalRemoteSettings: globalRemoteSettings,
-                mergedDuplicates: mergedDuplicates
+                mergedDuplicates: mergedDuplicates,
+                excludedHeadlessSessionIds: excludedHeadlessIds
             )
             dispatch(.reconciled(result))
             ph.end(t5, "dispatch")

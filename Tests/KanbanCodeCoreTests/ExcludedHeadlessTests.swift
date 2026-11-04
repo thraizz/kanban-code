@@ -138,4 +138,53 @@ struct ExcludedHeadlessTests {
         #expect(state.tombstones["h1"]?.promptBody == nil)
         #expect(effects.contains { if case .persistLinks = $0 { true } else { false } })
     }
+
+    // MARK: - Agent SDK runs
+
+    @Test("Every Agent SDK entrypoint counts as headless")
+    func sdkEntrypoints() {
+        #expect(Session.isHeadless(entrypoint: "sdk-cli"))
+        #expect(Session.isHeadless(entrypoint: "sdk-ts"))
+        #expect(Session.isHeadless(entrypoint: "sdk-py"))
+        #expect(!Session.isHeadless(entrypoint: "cli"))
+        #expect(!Session.isHeadless(entrypoint: nil))
+    }
+
+    @Test("Discovery skips Agent SDK runs in an excluded folder and names them")
+    func discoverySkipsSdkRuns() async throws {
+        let (root, project) = try makeClaudeDir()
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        try writeSession("ts1", in: project, entrypoint: "sdk-ts")
+        try writeSession("i1", in: project, entrypoint: "cli")
+
+        let discovery = ClaudeCodeSessionDiscovery(claudeDir: root)
+        discovery.setHeadlessExclusion(PathExclusion(["/Users/me/judge-lab"]))
+        #expect(try await discovery.discoverSessions().map(\.id) == ["i1"])
+        #expect(discovery.excludedHeadlessSessionIds() == ["ts1"])
+
+        discovery.setHeadlessExclusion(.none)
+        _ = try await discovery.discoverSessions()
+        #expect(discovery.excludedHeadlessSessionIds().isEmpty)
+    }
+
+    @Test("Reconcile drops unflagged cards whose session discovery skipped, unless claimed")
+    func reconcileDropsUnflaggedSkipped() {
+        let state = AppState()
+        let links = [
+            card("old", headless: nil),
+            card("named", headless: nil, name: "Keep me"),
+            card("interactive", headless: nil),
+        ]
+        for link in links { state.links[link.id] = link }
+        _ = Reducer.reduce(state: state, action: .settingsLoaded(
+            projects: [], excludedPaths: ["/Users/me/judge-lab"], remote: nil))
+
+        _ = Reducer.reduce(state: state, action: .reconciled(ReconciliationResult(
+            links: links, sessions: [], activityMap: [:], tmuxSessions: [],
+            excludedHeadlessSessionIds: ["s-old", "s-named"]
+        )))
+
+        #expect(Set(state.links.keys) == ["named", "interactive"])
+        #expect(state.tombstones["old"] != nil)
+    }
 }

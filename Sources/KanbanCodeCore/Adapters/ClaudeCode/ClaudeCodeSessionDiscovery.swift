@@ -29,6 +29,10 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
             ?? (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
     }
 
+    public func excludedHeadlessSessionIds() -> Set<String> {
+        dirSkippedIds.values.reduce(into: Set<String>()) { $0.formUnion($1) }
+    }
+
     public func setHeadlessExclusion(_ exclusion: PathExclusion) {
         guard exclusion != headlessExclusion else { return }
         headlessExclusion = exclusion
@@ -125,7 +129,7 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
                 }
                 if mayBeExcluded, cachedSessions[sessionId] == nil,
                    let launch = try? await JsonlParser.extractLaunchContext(from: filePath),
-                   launch.entrypoint == Session.headlessEntrypoint,
+                   Session.isHeadless(entrypoint: launch.entrypoint),
                    headlessExclusion.matches(indexById[sessionId]?.projectPath
                        ?? launch.cwd ?? JsonlParser.decodeDirectoryName(dirName)) {
                     skipped.insert(sessionId)

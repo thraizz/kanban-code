@@ -1,7 +1,6 @@
 import SwiftUI
 import KanbanCodeCore
 import KanbanCodeRemoteKit
-import MarkdownUI
 
 /// The side chats of the cards, kept while the app runs so a side chat
 /// stays with its card when another card is shown.
@@ -236,9 +235,7 @@ private struct SideChatEntryView: View {
                 CatchUpSummaryView(summary: summary, refs: entry.refs, onJump: onJump)
             } else if !entry.answer.isEmpty, entry.kind == .btw || !entry.isRunning {
                 // A catch-up that did not parse reads as the text it is.
-                Markdown(entry.answerText)
-                    .markdownTextStyle { FontSize(13) }
-                    .textSelection(.enabled)
+                ChatText(answer: entry.answerText)
             }
             if entry.kind == .catchup, !entry.isRunning, entry.error == nil {
                 HStack(spacing: 8) {

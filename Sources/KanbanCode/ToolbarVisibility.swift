@@ -2,14 +2,12 @@
 /// Extracted from ContentView so it can be unit-tested independently.
 struct ToolbarVisibility {
     let isExpandedDetail: Bool
-    let showBoardInExpanded: Bool
     let hasSelectedCard: Bool
 
-    /// New task, refresh, dark mode, project selector — shown when sidebar is NOT visible.
-    /// When the sidebar is open these controls live in the sidebar toolbar.
-    var showBoardControls: Bool {
-        !showBoardInExpanded
-    }
+    /// New task, refresh, dark mode, sidebar toggle. The sidebar is a panel
+    /// under the window toolbar, with no toolbar of its own, so these stay in
+    /// the window's whether it is open or not.
+    var showBoardControls: Bool { true }
 
     /// Kanban/list segmented picker — always visible (toggles between kanban and expanded+sidebar).
     var showViewModePicker: Bool { true }
