@@ -37,11 +37,10 @@ struct IssueTabView: View {
 
                 Divider()
 
-                // Markdown body
+                // Markdown body. Not selectable: see `prBody`.
                 if let body = issue.body, !body.isEmpty {
                     Markdown(body)
                         .markdownTheme(.compact)
-                        .textSelection(.enabled)
                 } else {
                     Text("No description provided.")
                         .foregroundStyle(.tertiary)
@@ -136,9 +135,13 @@ struct PRTabView: View {
                     }
                     .padding(.vertical, 8)
                 } else if let body = prBody ?? card.link.prLink?.body, !body.isEmpty {
+                    // Not selectable. SwiftUI's selection overlay is a text
+                    // field with one font, and for a paragraph with bold or
+                    // code runs it sets the other font on every update, each
+                    // change asking the window for another constraint pass.
+                    // `ChatText` selects without that, but draws no images.
                     Markdown(htmlToMarkdownImages(body))
                         .markdownTheme(.compact)
-                        .textSelection(.enabled)
                 } else {
                     Text("No description provided.")
                         .foregroundStyle(.tertiary)

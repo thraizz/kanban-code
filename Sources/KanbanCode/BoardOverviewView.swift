@@ -1,7 +1,6 @@
 import SwiftUI
 import KanbanCodeCore
 import KanbanCodeRemoteKit
-import MarkdownUI
 
 /// The orchestrator's state: the agents' last messages the digest reads,
 /// and the questions asked about the board with their answers.
@@ -127,11 +126,10 @@ struct BoardOverviewView: View {
 
     @ViewBuilder private var usageTrackedBody: some View {
         let rows = model.rows(store.state)
-        VSplitView {
+        StackedPaneSplit(rule: .overviewList, storageKey: "overviewListHeight") {
             boardList(rows)
-                .frame(minHeight: 120, idealHeight: 280)
+        } bottom: {
             chat
-                .frame(minHeight: 200)
         }
         .task(id: messageSignature) { await model.refreshMessages(store.state.filteredCards) }
     }
@@ -317,9 +315,7 @@ struct BoardOverviewView: View {
                     Text("Reading the board…").font(.app(.caption)).foregroundStyle(.secondary)
                 }
             } else {
-                Markdown(answer)
-                    .markdownTheme(.compact)
-                    .textSelection(.enabled)
+                ChatText(answer: answer)
             }
         }
     }

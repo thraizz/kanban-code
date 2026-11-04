@@ -416,6 +416,26 @@ struct ChatText: View {
     }
 }
 
+extension ChatText {
+    /// An assistant's markdown answer, drawn as the chat draws one.
+    ///
+    /// Use this, not `Markdown(…).textSelection(.enabled)`, for selectable
+    /// markdown. SwiftUI's selection overlay is a text field with one font,
+    /// and for a paragraph with bold or code runs it sets the other font on
+    /// every update. Each change invalidates its intrinsic size and asks the
+    /// window for another constraint pass, which loops.
+    init(answer text: String, font: NSFont = .systemFont(ofSize: 13)) {
+        let content: ChatTextContent = text.containsBlockMarkdown ? .markdown(text) : .inlineMarkdown(text)
+        // As in the chat: only the inline path carries line spacing of its
+        // own, a markdown answer takes it from the theme.
+        let lineSpacing: CGFloat
+        if case .inlineMarkdown = content { lineSpacing = 4 } else { lineSpacing = 0 }
+        self.init(
+            content: content,
+            appearance: .init(font: font, foregroundColor: .labelColor, lineSpacing: lineSpacing))
+    }
+}
+
 /// Measures attributed text off screen, memoised per text and width.
 ///
 /// Every mounted message is asked for its size on each layout pass, so an

@@ -75,6 +75,13 @@ private nonisolated func watchFile(path: String) async {
 
 This applies to **any** GCD callback (`setEventHandler`, `setCancelHandler`, `DispatchQueue.global().async`) called from a `@MainActor` context.
 
+## Critical: Constraint-Pass Crashes
+
+AppKit throws once a window asks for more update-constraints passes in one display cycle than it has views: *"…more Update Constraints in Window passes than there are views in the window"*, or an `EXC_BAD_ACCESS` in `swift_beginAccess` right after it. Two patterns have caused it:
+
+- **Dragging an `NSSplitView` divider.** `.inspector`, `NavigationSplitView`, `HSplitView` and `VSplitView` are `NSSplitView`s. While their divider is dragged, the split view runs its own tracking loop, and every pass of the whole drag counts against one cycle. Around live content, a few seconds of dragging crash the app. Build splits from `PaneResizeHandle` instead (`SidePaneSplit` for the sidebar and the card detail, `StackedPaneSplit` for the Overview): a `DragGesture` gets each event through the normal loop, so the count starts over each step. Sizes are `PaneSizeRule`s. (The main window is not a `NavigationSplitView` for a second reason: on macOS 26 its sidebar is a glass panel the height of the window with the toolbar inside it.)
+- **`.textSelection(.enabled)` on text with more than one font** (`Markdown(…)`, an `AttributedString` with bold or code runs, `Text + Text` in two fonts). SwiftUI's selection overlay is a one-font text field that swaps fonts on every update, and each swap asks for another pass, forever. For selectable markdown use `ChatText(answer:)` (one `NSTextView`); otherwise flatten to one font (`TurnBlockView.flattenFontIntents`) or drop the selection.
+
 ## Toolbar Layout (macOS 26 Liquid Glass)
 
 Toolbar uses SwiftUI `.toolbar` with `ToolbarSpacer` (macOS 26+) for separate glass pills:

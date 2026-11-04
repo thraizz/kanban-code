@@ -243,7 +243,6 @@ final class PromptEditorScrollView: NSScrollView {
         )
         textView.frame.size.width = contentWidth
 
-        textView.layoutSubtreeIfNeeded()
         layoutManager.ensureLayout(for: textContainer)
         let textHeight = layoutManager.usedRect(for: textContainer).height
             + textView.textContainerInset.height * 2
@@ -271,14 +270,15 @@ final class PromptEditorScrollView: NSScrollView {
         }
     }
 
+    // Measuring here would resize the text view and invalidate this view's
+    // intrinsic size in the middle of the layout pass that is resizing it.
+    // Dragging the detail pane does that on every step, and AppKit's layout
+    // does not survive re-entry: it crashes in its own exclusivity checks.
+    // The height is worked out after the pass instead, once per width.
     override func setFrameSize(_ newSize: NSSize) {
+        let widthChanged = abs(newSize.width - frame.width) > 0.5
         super.setFrameSize(newSize)
-        recalcIntrinsicHeight()
-    }
-
-    override func layout() {
-        super.layout()
-        recalcIntrinsicHeight()
+        if widthChanged { scheduleRecalcIntrinsicHeight() }
     }
 }
 
