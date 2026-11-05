@@ -415,11 +415,21 @@ final class SubmitTextView: NSTextView {
         }
 
         if isTab {
+            // Option+Tab types a literal tab, as in any macOS text field.
+            if event.modifierFlags.contains(.option) {
+                insertText("\t", replacementRange: selectedRange())
+                return
+            }
+            if hasShift {
+                window?.selectPreviousKeyView(self)
+                return
+            }
+            // Tab completes an open slash menu, otherwise moves focus on.
             if let handler = onTabIntercept, let replacement = handler() {
                 replaceTextAndCursorToEnd(replacement)
                 return
             }
-            super.keyDown(with: event)
+            window?.selectNextKeyView(self)
             return
         }
 

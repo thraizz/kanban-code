@@ -94,6 +94,15 @@ final class CommandNSTextView: NSTextView {
             insertNewlineIgnoringFieldEditor(self)
             return
         }
+        // Tab and Shift+Tab move focus; Option+Tab types a literal tab.
+        if event.keyCode == 48 && !modifiers.contains(.option) {
+            if modifiers.contains(.shift) {
+                window?.selectPreviousKeyView(self)
+            } else {
+                window?.selectNextKeyView(self)
+            }
+            return
+        }
         super.keyDown(with: event)
     }
 }
