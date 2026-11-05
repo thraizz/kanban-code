@@ -57,4 +57,21 @@ struct KanbanCodeCardTests {
         let card = KanbanCodeCard(link: link)
         #expect(card.column == .inReview)
     }
+
+    @Test("A discovered worktree without a session or terminal is hidden")
+    func bareWorktreeHidden() {
+        let link = Link(column: .done, worktreeLink: WorktreeLink(path: "/tmp/wt", branch: "feat/x"))
+        #expect(KanbanCodeCard(link: link).isHiddenWorktree)
+    }
+
+    @Test("A hibernated worktree card with a session stays on the board")
+    func hibernatedWorktreeCardVisible() {
+        var link = Link(
+            column: .done,
+            sessionLink: SessionLink(sessionId: "s1"),
+            worktreeLink: WorktreeLink(path: "/tmp/wt", branch: "feat/x")
+        )
+        link.hibernation = CardHibernation(at: .now, reason: .done)
+        #expect(!KanbanCodeCard(link: link).isHiddenWorktree)
+    }
 }
