@@ -84,6 +84,10 @@ Toolbar uses SwiftUI `.toolbar` with `ToolbarSpacer` (macOS 26+) for separate gl
 - **`.primaryAction`** placement = right side. `ToolbarSpacer(.fixed)` DOES create separate pills here.
 - Use `Menu` (not `Text`) for items that need their own pill within `.navigation` — menus map to `NSPopUpButton` which gets separate glass automatically.
 
+## Branches & Remotes
+
+Commit straight to `main` and push to the fork (`git push fork main`). Do not create feature branches. The `fork` remote (thraizz) is where work goes; `upstream` (langwatch) only receives changes when explicitly asked.
+
 ## Commits
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages. Release-please uses these to generate changelogs automatically.
