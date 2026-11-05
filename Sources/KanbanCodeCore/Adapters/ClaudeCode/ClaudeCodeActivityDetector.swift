@@ -146,7 +146,10 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
                 // No activity for 5min-1hr — likely needs attention
                 states[sessionId] = .needsAttention
             } else if timeSinceModified < 86400 {
-                states[sessionId] = .ended
+                // A quiet transcript is not an exit: a session left open in a
+                // terminal outside Kanban Code reads the same. Only SessionEnd
+                // says the session is over (`.ended` moves the card to Done).
+                states[sessionId] = .needsAttention
             } else {
                 states[sessionId] = .stale
             }

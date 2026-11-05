@@ -60,7 +60,7 @@ struct GeminiActivityDetectorTests {
         #expect(result["s1"] == .idleWaiting)
     }
 
-    @Test("File modified 2 hours ago → ended")
+    @Test("File modified 2 hours ago → idleWaiting (quiet is not an exit)")
     func ended() async throws {
         let path = try writeTempFile()
         defer { cleanup(path) }
@@ -69,7 +69,7 @@ struct GeminiActivityDetectorTests {
         let detector = GeminiActivityDetector()
         let result = await detector.pollActivity(sessionPaths: ["s1": path])
 
-        #expect(result["s1"] == .ended)
+        #expect(result["s1"] == .idleWaiting)
     }
 
     @Test("File modified 2 days ago → stale")
@@ -136,7 +136,7 @@ struct GeminiActivityDetectorTests {
             cleanup(path2)
         }
         try setModTime(path1, secondsAgo: 10)   // active
-        try setModTime(path2, secondsAgo: 7200)  // ended
+        try setModTime(path2, secondsAgo: 7200)  // quiet
 
         let detector = GeminiActivityDetector()
         let result = await detector.pollActivity(sessionPaths: [
@@ -145,7 +145,7 @@ struct GeminiActivityDetectorTests {
         ])
 
         #expect(result["s1"] == .activelyWorking)
-        #expect(result["s2"] == .ended)
+        #expect(result["s2"] == .idleWaiting)
     }
 
     // MARK: - Cached State

@@ -654,7 +654,7 @@ struct ActivityDetectorTests {
         #expect(states["s1"] == .needsAttention)
     }
 
-    @Test("Poll activity: file 2 hours old → ended")
+    @Test("Poll activity: file 2 hours old → needsAttention (quiet is not an exit)")
     func pollEndedFile() async {
         let dir = NSTemporaryDirectory() + "kanban-code-poll-ended-test-\(UUID().uuidString)"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
@@ -667,7 +667,7 @@ struct ActivityDetectorTests {
 
         let detector = ClaudeCodeActivityDetector()
         let states = await detector.pollActivity(sessionPaths: ["s1": path])
-        #expect(states["s1"] == .ended)
+        #expect(states["s1"] == .needsAttention)
     }
 
     @Test("Poll activity: file 2 days old → stale")

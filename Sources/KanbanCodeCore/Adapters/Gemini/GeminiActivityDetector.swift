@@ -95,10 +95,11 @@ public actor GeminiActivityDetector: ActivityDetector {
                 states[sessionId] = .activelyWorking
             } else if timeSinceModified < attentionThreshold {
                 states[sessionId] = .needsAttention
-            } else if timeSinceModified < 3600 {
-                states[sessionId] = .idleWaiting
             } else if timeSinceModified < 86400 {
-                states[sessionId] = .ended
+                // Quiet is not an exit: the process may still be open in a
+                // terminal. `.ended` (which moves a card to Done) is kept for
+                // a real end signal.
+                states[sessionId] = .idleWaiting
             } else {
                 states[sessionId] = .stale
             }

@@ -113,8 +113,9 @@ public actor OpenCodeActivityDetector: ActivityDetector {
     static func state(sinceLastWrite elapsed: TimeInterval, active: TimeInterval, attention: TimeInterval) -> ActivityState {
         if elapsed < active { return .activelyWorking }
         if elapsed < attention { return .needsAttention }
-        if elapsed < 3600 { return .idleWaiting }
-        if elapsed < 86400 { return .ended }
+        // Quiet is not an exit: the session may still be open in a terminal.
+        // `.ended` (which moves a card to Done) comes from SessionEnd only.
+        if elapsed < 86400 { return .idleWaiting }
         return .stale
     }
 }

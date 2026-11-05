@@ -147,7 +147,7 @@ struct AssignColumnTests {
         #expect(col == .waiting)
     }
 
-    @Test("Ended with worktree → waiting")
+    @Test("Ended with worktree, card in All Sessions and not recent → waiting")
     func endedWithWorktree() {
         let link = Link(sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: link, activityState: .ended, hasWorktree: true)
@@ -168,11 +168,63 @@ struct AssignColumnTests {
         #expect(col == .allSessions)
     }
 
-    @Test("Ended without worktree, recent → waiting")
+    @Test("Ended without worktree, recent → done")
     func endedNoWorktreeRecent() {
         let link = Link(lastActivity: Date.now.addingTimeInterval(-3600), sessionLink: SessionLink(sessionId: "s1"))
         let col = AssignColumn.assign(link: link, activityState: .ended)
-        #expect(col == .waiting)
+        #expect(col == .done)
+    }
+
+    @Test("Ended session outside Kanban Code, quiet for days, card on the board → done")
+    func endedOnBoardOld() {
+        let link = Link(column: .waiting, lastActivity: Date.now.addingTimeInterval(-3 * 86400),
+                        source: .discovered, sessionLink: SessionLink(sessionId: "s1"))
+        #expect(AssignColumn.assign(link: link, activityState: .ended) == .done)
+    }
+
+    @Test("Ended with a worktree → done")
+    func endedWithWorktreeOnBoard() {
+        let link = Link(column: .waiting, lastActivity: Date.now.addingTimeInterval(-600),
+                        sessionLink: SessionLink(sessionId: "s1"))
+        #expect(AssignColumn.assign(link: link, activityState: .ended, hasWorktree: true) == .done)
+    }
+
+    @Test("Done card stays done while its session stays ended")
+    func endedStaysDone() {
+        let link = Link(column: .done, lastActivity: Date.now.addingTimeInterval(-5 * 86400),
+                        sessionLink: SessionLink(sessionId: "s1"))
+        #expect(AssignColumn.assign(link: link, activityState: .ended) == .done)
+    }
+
+    @Test("Ended but the card's own terminal is still up → waiting")
+    func endedLiveSessionWaits() {
+        let link = Link(column: .waiting, lastActivity: Date.now.addingTimeInterval(-600),
+                        sessionLink: SessionLink(sessionId: "s1"))
+        #expect(AssignColumn.assign(link: link, activityState: .ended,
+                                    hasWorktree: true, hasLiveSession: true) == .waiting)
+    }
+
+    @Test("Ended because Kanban Code hibernated the card → not done")
+    func endedHibernatedNotDone() {
+        var link = Link(column: .waiting, lastActivity: Date.now.addingTimeInterval(-600),
+                        sessionLink: SessionLink(sessionId: "s1"))
+        link.hibernation = CardHibernation(reason: .memoryPressure)
+        #expect(AssignColumn.assign(link: link, activityState: .ended) == .waiting)
+    }
+
+    @Test("Still running outside Kanban Code (no SessionEnd) → waiting, not done")
+    func runningOutsideStaysWaiting() {
+        let link = Link(column: .waiting, lastActivity: Date.now.addingTimeInterval(-7200),
+                        source: .discovered, sessionLink: SessionLink(sessionId: "s1"))
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention) == .waiting)
+        #expect(AssignColumn.assign(link: link, activityState: .idleWaiting) == .waiting)
+    }
+
+    @Test("Ended with a PR still open → inReview")
+    func endedWithOpenPR() {
+        let link = Link(column: .waiting, lastActivity: Date.now.addingTimeInterval(-600),
+                        sessionLink: SessionLink(sessionId: "s1"))
+        #expect(AssignColumn.assign(link: link, activityState: .ended, hasPR: true) == .inReview)
     }
 
     @Test("Ended without worktree, old → allSessions")

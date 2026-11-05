@@ -91,6 +91,21 @@ public enum AssignColumn {
                 // Only .activelyWorking should keep a card in In Progress.
                 return .waiting
             case .ended:
+                // The session exited (SessionEnd): the work is finished, so
+                // the card goes to Done. This covers sessions run outside
+                // Kanban Code too; one still open there never sends
+                // SessionEnd and stays in Waiting. Not while a terminal of the
+                // card's own is still up, and not for a hibernated card: its
+                // session was stopped by Kanban Code, not finished. Only cards
+                // on the board or active in the last day move, so old
+                // sessions in All Sessions don't all flood into Done.
+                let isRecent = link.lastActivity.map {
+                    Date.now.timeIntervalSince($0) < 24 * 3600
+                } ?? false
+                if !hasLiveSession && link.hibernation == nil
+                    && (link.column != .allSessions || isRecent) {
+                    return .done
+                }
                 if hasWorktree { return .waiting }
                 // No worktree: fall through to recency check below
             case .stale:
