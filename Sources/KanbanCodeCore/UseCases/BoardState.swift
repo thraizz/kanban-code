@@ -37,10 +37,12 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     /// failed, ended. The one value every surface renders.
     public let sessionStatus: CardSessionStatus
 
-    /// A worktree card without a terminal stays off the board, unless one
-    /// is launching or busy.
+    /// A discovered worktree that never had a session stays off the board,
+    /// unless one is launching or busy. A card whose session exists keeps
+    /// its place after its terminal stops: hibernation and a session that
+    /// ended both drop the tmux link, and the card must stay in its column.
     public var isHiddenWorktree: Bool {
-        link.worktreeLink != nil && link.tmuxLink == nil
+        link.worktreeLink != nil && link.tmuxLink == nil && link.sessionLink == nil
             && link.isLaunching != true && !isBusy
     }
 
