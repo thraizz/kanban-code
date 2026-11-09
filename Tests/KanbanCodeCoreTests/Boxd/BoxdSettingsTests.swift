@@ -33,17 +33,28 @@ struct BoxdSettingsTests {
         #expect(boxd.initCommand.contains("${repo_url}"))
     }
 
-    @Test("The default init command survives a checkout with changed files")
-    func initCommandStashes() {
+    @Test("The default init command only fetches and never touches the checkout")
+    func initCommandOnlyFetches() {
         let command = BoxdSettings.defaultInitCommand
-        #expect(command.contains("git stash push"))
-        #expect(command.contains("git pull --ff-only"))
+        #expect(command.contains(#"git -C "${repo_dir}" fetch --prune origin"#))
+        #expect(!command.contains("git pull"))
+        #expect(!command.contains("git checkout"))
+        #expect(!command.contains("git stash"))
     }
 
     @Test("A stored init command from an older version is replaced by the current default")
     func legacyInitCommandUpgraded() throws {
         let json = #"{"boxd": {"initCommand": "if [ -d \"${repo_dir}\" ]; then\n  cd \"${repo_dir}\" && git pull --ff-only\nelse\n  git clone \"${repo_url}\" \"${repo_dir}\" && cd \"${repo_dir}\"\nfi"}}"#
         #expect(try decode(json).boxd?.initCommand == BoxdSettings.defaultInitCommand)
+    }
+
+    @Test("Every earlier default init command is replaced by the current default")
+    func previousDefaultInitCommandsUpgraded() throws {
+        for previous in BoxdSettings.supersededInitCommands {
+            let data = try JSONEncoder().encode(["boxd": ["initCommand": previous]])
+            let json = String(decoding: data, as: UTF8.self)
+            #expect(try decode(json).boxd?.initCommand == BoxdSettings.defaultInitCommand)
+        }
     }
 
     @Test("An edited init command is kept as it is")

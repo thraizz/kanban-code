@@ -2063,8 +2063,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
 
     /// The worktree script of the machine. A worktree that is already there
     /// is left as the assistant left it, with no network access. A new
-    /// worktree branches from the checkout as it is; `fetch` is for a branch
-    /// the card already has, which may only exist on origin.
+    /// branch starts from origin, not from the checkout: from the remote
+    /// branch the checkout tracks, or from origin's default branch when it
+    /// tracks none or its remote branch was deleted. The checkout itself is
+    /// never touched, so the branch it sits on and its local changes do not
+    /// matter. `fetch` is for a branch the card already has, which may only
+    /// exist on origin.
     nonisolated static func remoteWorktreeScript(repo: String, worktreePath: String, branch: String, fetch: Bool = true) -> String {
         let repoQ = shellEscape(repo)
         let worktreeQ = shellEscape(worktreePath)
@@ -2080,7 +2084,12 @@ public actor BoxdMachineSupervisor: RemoteMachineControl {
           elif git show-ref --verify --quiet refs/remotes/origin/\(branchQ); then
             git worktree add --track -b \(branchQ) \(worktreeQ) origin/\(branchQ)
           else
-            git worktree add -b \(branchQ) \(worktreeQ)
+            base=$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null || true)
+            if [ -z "$base" ] || ! git rev-parse --verify --quiet "$base^{commit}" >/dev/null; then
+              git remote set-head origin --auto >/dev/null 2>&1 || true
+              base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)
+            fi
+            git worktree add --no-track -b \(branchQ) \(worktreeQ) "${base:-HEAD}"
           fi
         fi
         """

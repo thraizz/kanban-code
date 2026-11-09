@@ -408,13 +408,65 @@ struct BoxdMachineSupervisorTests {
         #expect(script.contains("git worktree add '/home/boxd/repo/.claude/worktrees/feature' 'feature'"))
         // Branch only on origin.
         #expect(script.contains("git worktree add --track -b 'feature' '/home/boxd/repo/.claude/worktrees/feature' origin/'feature'"))
-        // Branch nowhere yet.
-        #expect(script.contains("git worktree add -b 'feature' '/home/boxd/repo/.claude/worktrees/feature'"))
+        // Branch nowhere yet: it starts from origin, not from the checkout.
+        #expect(script.contains("git worktree add --no-track -b 'feature' '/home/boxd/repo/.claude/worktrees/feature' \"${base:-HEAD}\""))
+        #expect(script.contains("refs/remotes/origin/HEAD"))
         // An existing worktree is left as the assistant left it.
         #expect(!script.contains("git pull"))
         let fresh = BoxdMachineSupervisor.remoteWorktreeScript(
             repo: "/home/boxd/repo", worktreePath: "/home/boxd/repo/.claude/worktrees/new", branch: "new", fetch: false)
         #expect(!fresh.contains("git fetch"))
+    }
+
+    @Test("A new remote worktree starts from origin even when the checkout sits on a deleted branch")
+    func remoteWorktreeIgnoresStaleCheckout() async throws {
+        let root = NSTemporaryDirectory() + "kanban-remote-\(UUID().uuidString)"
+        try FileManager.default.createDirectory(atPath: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repo = root + "/checkout"
+        // origin has stage as its default branch. The machine's checkout sits
+        // on a feature branch that origin deleted after it was merged, with a
+        // changed file, and has not seen the newest stage commit yet.
+        let setup = """
+        set -e
+        export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t
+        cd \(BoxdMachineSupervisor.shellEscape(root))
+        git init -q --bare -b stage origin.git
+        git clone -q origin.git seed && cd seed
+        git commit -q --allow-empty -m one && git push -q origin stage
+        cd .. && git clone -q origin.git checkout && cd checkout
+        git checkout -q -b feature && git commit -q --allow-empty -m feature && git push -q -u origin feature
+        echo dirty > changed.txt
+        cd ../seed && git push -q origin --delete feature
+        git commit -q --allow-empty -m two && git push -q origin stage
+        """
+        let setupResult = try await ShellCommand.run("/bin/bash", arguments: ["-c", setup], currentDirectory: root)
+        #expect(setupResult.succeeded, "\(setupResult.stderr)")
+
+        let initScript = BoxdLaunchPlanner.initScript(
+            template: BoxdSettings.defaultInitCommand,
+            repoDir: repo, repoURL: root + "/origin.git", repoName: "checkout", branch: "calm-otter")
+        let initResult = try await ShellCommand.run("/bin/bash", arguments: ["-c", initScript], currentDirectory: root)
+        #expect(initResult.succeeded, "\(initResult.stderr)")
+
+        let worktree = repo + "/.claude/worktrees/calm-otter"
+        let script = BoxdMachineSupervisor.remoteWorktreeScript(
+            repo: repo, worktreePath: worktree, branch: "calm-otter", fetch: false)
+        let result = try await ShellCommand.run("/bin/bash", arguments: ["-c", script], currentDirectory: root)
+        #expect(result.succeeded, "\(result.stderr)")
+
+        let git = ShellCommand.findExecutable("git") ?? "/usr/bin/git"
+        func output(_ arguments: [String], in dir: String) async throws -> String {
+            try await ShellCommand.run(git, arguments: arguments, currentDirectory: dir)
+                .stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        #expect(try await output(["log", "-1", "--format=%s"], in: worktree) == "two")
+        #expect(try await output(["rev-parse", "--abbrev-ref", "HEAD"], in: worktree) == "calm-otter")
+        // The new branch tracks nothing, so a pull or push never hits stage.
+        #expect(try await output(["config", "--get", "branch.calm-otter.merge"], in: repo).isEmpty)
+        // The checkout is left as it was.
+        #expect(try await output(["rev-parse", "--abbrev-ref", "HEAD"], in: repo) == "feature")
+        #expect(FileManager.default.fileExists(atPath: repo + "/changed.txt"))
     }
 
     @Test("shellEscape wraps in single quotes and escapes the quotes inside")

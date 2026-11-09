@@ -255,13 +255,14 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
     /// while it is still starting up.
     public static let minimumInactivityTimeoutSeconds = 60
 
+    /// Only brings the machine's checkout up to date with origin. It never
+    /// checks out, pulls or stashes there: the checkout may sit on any
+    /// branch, even one deleted on origin, with any local changes. Each card
+    /// gets its own worktree, branched from origin, so the checkout's state
+    /// never decides whether a launch works.
     public static let defaultInitCommand = """
     if [ -d "${repo_dir}" ]; then
-      cd "${repo_dir}" || exit 1
-      git pull --ff-only || {
-        git stash push --include-untracked --message "kanban-code init $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
-        git pull --ff-only
-      }
+      git -C "${repo_dir}" fetch --prune origin
     else
       git clone "${repo_url}" "${repo_dir}"
     fi
@@ -271,6 +272,38 @@ public struct BoxdSettings: Codable, Sendable, Equatable {
     /// matches one of them is replaced by the current default, so a checkout
     /// with changed files does not block every launch.
     static let supersededInitCommands = [
+        """
+        if [ -d "${repo_dir}" ]; then
+          cd "${repo_dir}" || exit 1
+          git fetch --prune origin || exit 1
+          if ! git rev-parse --verify --quiet "@{upstream}" >/dev/null; then
+            git remote set-head origin --auto >/dev/null 2>&1
+            base=$(git symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##')
+            [ -n "$base" ] || base=main
+            git checkout "$base" || {
+              git stash push --include-untracked --message "kanban-code init $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+              git checkout "$base" || exit 1
+            }
+          fi
+          git pull --ff-only || {
+            git stash push --include-untracked --message "kanban-code init $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+            git pull --ff-only
+          }
+        else
+          git clone "${repo_url}" "${repo_dir}"
+        fi
+        """,
+        """
+        if [ -d "${repo_dir}" ]; then
+          cd "${repo_dir}" || exit 1
+          git pull --ff-only || {
+            git stash push --include-untracked --message "kanban-code init $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+            git pull --ff-only
+          }
+        else
+          git clone "${repo_url}" "${repo_dir}"
+        fi
+        """,
         """
         if [ -d "${repo_dir}" ]; then
           cd "${repo_dir}" && git pull --ff-only
