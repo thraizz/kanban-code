@@ -53,7 +53,8 @@ public struct SessionExclusion: Codable, Sendable, Equatable {
 
     public static func matches(pattern: String, text: String) -> Bool {
         if pattern.contains(where: { "*?[".contains($0) }) {
-            return fnmatch(pattern, text, FNM_CASEFOLD) == 0
+            // FNM_CASEFOLD (1 << 4 in glibc and Darwin); glibc hides it behind _GNU_SOURCE.
+            return fnmatch(pattern, text, 1 << 4) == 0
         }
         return text.range(of: pattern, options: .caseInsensitive) != nil
     }
