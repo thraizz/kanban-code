@@ -8,8 +8,9 @@ import Glibc
 // Headless Kanban Code master: the remote control API (docs/remote-control.md)
 // over the kanban home of this machine, for hosts without the Mac app.
 //
-//   kanban-code-server                      serve on loopback + Tailscale, port from settings (7780)
-//   kanban-code-server pair <name> [--scope full|agent|peer|terminal]
+//   kanban-code-server [--bind <addr>]...   serve on loopback + the bind addresses (--bind, else
+//                                           settings remoteControl.bindAddresses), port from settings (7780)
+//   kanban-code-server pair <name> [--scope full|agent|peer|terminal] [--public-url <url>]
 //                                           add a device, print its token and pair link
 
 struct ServerOptions {
@@ -17,6 +18,9 @@ struct ServerOptions {
     var port: Int?
     var devicesPath: String?
     var loopbackOnly = false
+    /// `--bind`, repeatable; overrides settings `remoteControl.bindAddresses`.
+    var binds: [String] = []
+    var publicURL: String?
     var hostName: String?
     var pairName: String?
     var reconciles = true
@@ -43,6 +47,8 @@ struct ServerOptions {
             case "--scope": o.scope = RemoteScope(rawValue: value()) ?? .full
             case "--host-name": o.hostName = value()
             case "--loopback-only": o.loopbackOnly = true
+            case "--bind": o.binds += RemoteNetworkAddresses.parse(value())
+            case "--public-url": o.publicURL = value()
             case "--reconcile": o.reconciles = true
             case "--no-reconcile": o.reconciles = false
             case "-h", "--help": usage(nil)
@@ -56,12 +62,19 @@ struct ServerOptions {
     static func usage(_ error: String?) -> Never {
         if let error { FileHandle.standardError.write(Data("error: \(error)\n\n".utf8)) }
         say("""
-        usage: kanban-code-server [--home <dir>] [--port <n>] [--devices <path>] [--host-name <name>] [--loopback-only] [--no-reconcile]
-               kanban-code-server pair <name> [--scope full|agent|peer|terminal] [--home <dir>] [--devices <path>]
+        usage: kanban-code-server [--home <dir>] [--port <n>] [--devices <path>] [--host-name <name>]
+                                  [--bind <addr>]... [--loopback-only] [--no-reconcile]
+               kanban-code-server pair <name> [--scope full|agent|peer|terminal] [--public-url <url>]
+                                  [--bind <addr>]... [--home <dir>] [--devices <path>]
 
           --home       kanban home (default ~/.kanban-code): links.json, settings.json, remote/devices.json
           --port       listen port (default: settings remoteControl.port, else \(RemoteAPI.defaultPort))
           --host-name  name clients show for this machine (default: the host name)
+          --bind       also listen on this address, e.g. the LAN or WireGuard IP; repeatable.
+                       Overrides settings remoteControl.bindAddresses. Without either the server
+                       listens on 127.0.0.1 only; 0.0.0.0 or :: binds every interface.
+          --loopback-only  listen on 127.0.0.1 only, whatever is configured
+          --public-url URL in the pair link (default: the first bind address, else 127.0.0.1)
           --no-reconcile  do not keep the cards in step with their sessions (on by default; only the
                        sessions this master launched or adopted have cards)
           pair         adds a device and prints its token and kanbancode:// pair link; a running
@@ -98,8 +111,8 @@ let hostName = options.hostName ?? RemoteControlServer.defaultHostName
 
 if let name = options.pairName {
     let (device, token) = try devices.add(name: name, scope: options.scope)
-    let address = RemoteNetworkAddresses.tailscale().first(where: { !$0.contains(":") }) ?? RemoteNetworkAddresses.loopback
-    let base = "http://\(address):\(port)"
+    let configured = options.binds.isEmpty ? (settings?.remoteControl.bindAddresses ?? []) : options.binds
+    let base = options.publicURL ?? RemoteNetworkAddresses.publicBaseURL(configured: configured, port: port)
     say("paired \(device.name) (\(device.scope.rawValue)), id \(device.id)")
     say("token: \(token)")
     say("pair link: \(RemotePairLink.make(url: base, token: token, name: hostName))")
@@ -118,11 +131,19 @@ Task.detached(priority: .utility) { await scrubber.runSchedule() }
 Task.detached(priority: .utility) { await ProcessMemory.runMaintenance() }
 
 let loopbackOnly = options.loopbackOnly
+let binds = options.binds
+let home = options.home
 let server = RemoteControlServer(
     host: host,
     devices: devices,
     port: port,
-    bindAddresses: { loopbackOnly ? [RemoteNetworkAddresses.loopback] : RemoteNetworkAddresses.bindable() },
+    // Re-read on every address check, so an address added to settings gets
+    // a listener without a restart.
+    bindAddresses: {
+        if loopbackOnly { return [RemoteNetworkAddresses.loopback] }
+        let configured = binds.isEmpty ? RemoteControlSettings.load(home: home).bindAddresses : binds
+        return RemoteNetworkAddresses.bindable(configured: configured)
+    },
     options: .init(appVersion: KanbanCodeServerVersion.current, hostName: hostName),
     peerServer: peerServer,
     syncEngine: master.agentSync,

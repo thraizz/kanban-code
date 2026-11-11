@@ -1,6 +1,6 @@
 [Unit]
-Description=Kanban Code headless master (remote control API on loopback and Tailscale)
-After=network-online.target tailscaled.service
+Description=Kanban Code headless master (remote control API on loopback and the bind addresses)
+After=network-online.target
 Wants=network-online.target
 
 [Service]
@@ -9,6 +9,8 @@ User=root
 Environment=HOME=/root
 Environment=SHELL=/bin/bash
 Environment=PATH=/root/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+# Listens on 127.0.0.1 plus settings remoteControl.bindAddresses; add
+# `--bind <addr>` (repeatable) here to override them.
 ExecStart=/usr/local/bin/kanban-code-server
 Restart=always
 RestartSec=3

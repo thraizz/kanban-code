@@ -9,7 +9,7 @@ import SystemConfiguration
 import Synchronization
 
 /// The HTTP + WebSocket server of docs/remote-control.md. It listens on
-/// loopback and on the Mac's Tailscale addresses, one listener per address,
+/// loopback and on the configured bind addresses, one listener per address,
 /// and serves the host's board, transcripts, prompts and terminals.
 ///
 /// Everything here runs off the main actor: Network.framework callbacks run
@@ -101,7 +101,7 @@ public final class RemoteControlServer: Sendable {
         host: any RemoteControlHost,
         devices: RemoteDeviceStore,
         port: Int = RemoteAPI.defaultPort,
-        bindAddresses: @escaping @Sendable () -> [String] = RemoteNetworkAddresses.bindable,
+        bindAddresses: @escaping @Sendable () -> [String] = { RemoteNetworkAddresses.bindable(configured: []) },
         options: Options = Options(),
         peerServer: (any PeerLinksServing)? = nil,
         syncEngine: AgentSyncEngine? = nil,

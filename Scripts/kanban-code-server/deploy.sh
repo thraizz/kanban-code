@@ -4,7 +4,10 @@
 #   Scripts/kanban-code-server/deploy.sh [user@host]      (default root@51.159.202.175)
 #
 # The host needs a Swift 6.2 toolchain in /opt/swift (swift.org tarball for the
-# distribution) plus zlib1g-dev. The committed tree (HEAD) is unpacked into
+# distribution) or on its PATH, plus zlib (zlib1g-dev on Debian). The target user
+# may be root or a normal user; a normal user needs passwordless sudo (`sudo -n`)
+# for the install and systemctl steps, and the service then runs as that user
+# with its HOME. The committed tree (HEAD) is unpacked into
 # ~/Projects/kanban-server on the host, built there in release mode with a static
 # Swift runtime, installed as /usr/local/bin/kanban-code-server and restarted,
 # with the `kanban export` helper next to it in /usr/local/bin/kanban-code-export.
@@ -28,6 +31,9 @@ git -C "$ROOT" archive --format=tar HEAD | ssh "$HOST" "cat > $TARBALL"
 ssh "$HOST" flock /tmp/kanban-code-deploy.lock bash -s <<REMOTE
 set -euo pipefail
 export PATH=/opt/swift/usr/bin:\$PATH
+SUDO=""
+if [ "\$(id -u)" -ne 0 ]; then SUDO="sudo -n"; fi
+RUN_USER=\$(id -un)
 mkdir -p $REMOTE_DIR
 cd $REMOTE_DIR
 find . -mindepth 1 -maxdepth 1 ! -name .build -exec rm -rf {} +
@@ -35,15 +41,17 @@ tar xf $TARBALL
 rm -f $TARBALL
 swift build -c release -j 4 --product kanban-code-server --static-swift-stdlib
 swift build -c release -j 4 --product kanban-code-export --static-swift-stdlib
-install -m 0755 .build/release/kanban-code-server /usr/local/bin/kanban-code-server
-install -m 0755 .build/release/kanban-code-export /usr/local/bin/kanban-code-export
-install -m 0644 Scripts/kanban-code-server/kanban-code-server.service /etc/systemd/system/kanban-code-server.service
-systemctl daemon-reload
-systemctl enable kanban-code-server >/dev/null
+\$SUDO install -m 0755 .build/release/kanban-code-server /usr/local/bin/kanban-code-server
+\$SUDO install -m 0755 .build/release/kanban-code-export /usr/local/bin/kanban-code-export
+# The unit is written for root; run it as the deploying user, with their HOME.
+sed -e "s|^User=root|User=\$RUN_USER|" -e "s|/root|\$HOME|g" Scripts/kanban-code-server/kanban-code-server.service \\
+  | \$SUDO tee /etc/systemd/system/kanban-code-server.service >/dev/null
+\$SUDO systemctl daemon-reload
+\$SUDO systemctl enable kanban-code-server >/dev/null
 # Everything is built and installed before this point, so the API is down
 # only for the restart itself.
 RESTART_AT=\$(date +%s.%N)
-systemctl restart kanban-code-server
+\$SUDO systemctl restart kanban-code-server
 for i in \$(seq 1 600); do curl -fsS -m 1 -o /dev/null http://127.0.0.1:7780/v1/health && break; sleep 0.1; done
 awk -v a=\$RESTART_AT -v b=\$(date +%s.%N) 'BEGIN { printf "remote API back %.2f s after the restart\\n", b - a }'
 systemctl --no-pager --lines=5 status kanban-code-server
@@ -63,6 +71,6 @@ mv "\$NEW" ~/.kanban-code/cli
 rm -rf ~/.kanban-code/cli.old ~/.kanban-code/cli.new
 /usr/bin/node ~/.kanban-code/cli/dist/kanban.js --version
 mkdir -p ~/.local/bin
-printf '#!/bin/sh\nexec /usr/bin/node /root/.kanban-code/cli/dist/kv.js "\$@"\n' > ~/.local/bin/kv
+printf '#!/bin/sh\nexec /usr/bin/node %s/.kanban-code/cli/dist/kv.js "\$@"\n' "\$HOME" > ~/.local/bin/kv
 chmod 755 ~/.local/bin/kv
 REMOTE

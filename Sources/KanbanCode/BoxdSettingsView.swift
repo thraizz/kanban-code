@@ -17,7 +17,7 @@ extension RemoteMode {
     var settingsDescription: String {
         switch self {
         case .ssh:
-            "Run cards on always-on machines you own, reached over ssh or Tailscale."
+            "Run cards on always-on machines you own, reached over ssh."
         case .boxd:
             "Each card gets its own boxd cloud machine, paused when idle. Needs a boxd account."
         case .mutagen:

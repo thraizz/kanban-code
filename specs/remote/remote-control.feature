@@ -1,18 +1,22 @@
 Feature: Remote control from a phone and from other agents
   As a developer away from my Mac
   I want my phone and my other agents to drive Kanban Code on the Mac
-  So that sessions keep running on the Mac while I pilot them from anywhere on my tailnet
+  So that sessions keep running on the Mac while I pilot them from my LAN or VPN
 
   # Contract: docs/remote-control.md. Wire types: KanbanCodeRemoteKit.
 
   Background:
     Given Settings > Remote Control is on
-    And the Mac is on Tailscale
+    And its bind addresses are the Mac's LAN and WireGuard addresses
 
-  Scenario: The server is reachable only on loopback and the tailnet
-    Then it listens on 127.0.0.1 and the Mac's Tailscale addresses on port 7780
-    And it does not listen on the LAN address
-    And when Tailscale comes up after the app, the server binds its address then
+  Scenario: The server is reachable only on loopback and the bind addresses
+    Then it listens on 127.0.0.1 and the bind addresses on port 7780
+    And it does not listen on any other address, nor on 0.0.0.0
+    And when the WireGuard address comes up after the app, the server binds it then
+
+  Scenario: No bind addresses
+    Given the bind addresses are empty
+    Then it listens on 127.0.0.1 only
 
   Scenario: Pairing a phone
     When I add a device named "iPhone" with scope full in Settings > Remote Control

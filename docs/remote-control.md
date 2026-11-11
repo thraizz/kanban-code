@@ -5,14 +5,18 @@ The Mac app serves an HTTP API that lets other devices drive it: the iOS app on 
 ```
 iPhone (KanbanCodeMobile) ─┐                      ┌─ rush hosts
                            ├─ HTTP + WebSocket ──▶ Mac app ─┼─ tmux sessions
-agent: kanban remote ... ──┘   :7780, tailnet     └─ ~/.claude transcripts
+agent: kanban remote ... ──┘   :7780, LAN / VPN   └─ ~/.claude transcripts
 ```
 
 ## Network and auth
 
 - Off by default. Settings > Remote Control turns it on.
-- The server listens on port 7780 (configurable) on `127.0.0.1` and on the Mac's Tailscale addresses (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). It never binds `0.0.0.0`, so the LAN and public Wi-Fi cannot reach it. When Tailscale comes up later, the server binds its address then.
-- `tailscale serve --bg --https=7780 http://127.0.0.1:7780` puts HTTPS with a valid certificate in front of it at `https://<mac>.<tailnet>.ts.net:7780`. Both forms work.
+- The server listens on port 7780 (configurable) on `127.0.0.1` and on the configured bind addresses, one listener per address. Configure them in Settings > Remote Control (settings `remoteControl.bindAddresses`, a list of IP literals, e.g. `["192.168.1.20", "10.8.0.2"]` for the LAN and WireGuard address) or, on `kanban-code-server`, with `--bind <addr>` (repeatable, overrides the setting). The default is an empty list: loopback only.
+- It never binds a wildcard unless `0.0.0.0` or `::` is configured explicitly; then it binds only the wildcards, which already cover loopback.
+- A configured address the machine does not have yet (a VPN that is down) is skipped, and the server checks again every 10 s and on network changes, so it binds the address once it appears. `kanban-code-server` re-reads `remoteControl.bindAddresses` on that check too; the Mac app restarts the server when the setting changes.
+- Remote callers connect directly, so the server sees their real address. Keep it that way: a reverse proxy on the same host would make every request look like loopback, and tokenless loopback requests may call `/v1/vault/*` and `/v1/scrub/*`.
+- Traffic is plain HTTP. Bind only private addresses (LAN, VPN), and limit the port with the host firewall where other machines share that network.
+- The pair link uses the first bind address (`kanban-code-server pair ... --public-url <url>` overrides it), else `127.0.0.1`.
 - Every request except `GET /v1/health` needs `Authorization: Bearer <token>`. WebSocket clients that cannot set headers may pass `?token=`.
 - A token belongs to one device and has a scope:
   - `full`: everything, including terminals. For a phone.

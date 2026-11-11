@@ -15,8 +15,6 @@ final class RemoteControlController {
     private(set) var port = RemoteAPI.defaultPort
     private(set) var addresses: [String] = []
     private(set) var lastError: String?
-    /// The Mac's Tailscale MagicDNS name, e.g. `mac.tailnet.ts.net`.
-    private(set) var magicDNSName: String?
     private(set) var devices: [RemoteDevice] = []
 
     @ObservationIgnored let deviceStore = RemoteDeviceStore()
@@ -71,8 +69,13 @@ final class RemoteControlController {
         guard let engine else { return }
         let host = MasterRemoteControlHost(engine: engine)
         let store = engine.store
+        // A changed list restarts the server (above); the server's own
+        // periodic check binds a configured address once it appears.
+        let configured = settings.bindAddresses
         let server = RemoteControlServer(
-            host: host, devices: deviceStore, port: settings.port, peerServer: peerServer, syncEngine: syncEngine,
+            host: host, devices: deviceStore, port: settings.port,
+            bindAddresses: { RemoteNetworkAddresses.bindable(configured: configured) },
+            peerServer: peerServer, syncEngine: syncEngine,
             vault: vault, scrubber: scrubber,
             // The phone using a card this Mac owns keeps the Mac awake for a while.
             activity: { cardId in
@@ -90,7 +93,6 @@ final class RemoteControlController {
             KanbanCodeLog.warn("remote", "remote control did not start: \(error)")
         }
         refreshStatus()
-        await refreshMagicDNSName()
     }
 
     private func stopServer() {
@@ -104,10 +106,6 @@ final class RemoteControlController {
         addresses = server?.listeningAddresses ?? []
         if let server { port = server.port }
         devices = deviceStore.list().sorted { $0.createdAt > $1.createdAt }
-    }
-
-    func refreshMagicDNSName() async {
-        magicDNSName = await Self.tailscaleDNSName()
     }
 
     // MARK: - Devices
@@ -124,29 +122,14 @@ final class RemoteControlController {
         refreshStatus()
     }
 
-    /// The URL a device on the tailnet reaches the server at.
+    /// The URL another device reaches the server at: the first bind address
+    /// listened on, else the first configured one, else loopback.
     var baseURL: String {
-        if let magicDNSName { return "http://\(magicDNSName):\(port)" }
-        if let ip = addresses.first(where: { $0 != RemoteNetworkAddresses.loopback && !$0.contains(":") }) {
-            return "http://\(ip):\(port)"
-        }
-        return "http://127.0.0.1:\(port)"
+        let listening = addresses.filter { $0 != RemoteNetworkAddresses.loopback }
+        return RemoteNetworkAddresses.publicBaseURL(configured: listening + (applied?.bindAddresses ?? []), port: port)
     }
 
     func pairLink(token: String) -> String {
         RemotePairLink.make(url: baseURL, token: token, name: RemoteControlServer.defaultHostName)
-    }
-
-    /// `Self.DNSName` of `tailscale status --json`, without the final dot.
-    nonisolated static func tailscaleDNSName() async -> String? {
-        let candidates = ["/Applications/Tailscale.app/Contents/MacOS/Tailscale"]
-        guard let tailscale = ShellCommand.findExecutable("tailscale")
-                ?? candidates.first(where: { FileManager.default.isExecutableFile(atPath: $0) }) else { return nil }
-        guard let result = try? await ShellCommand.run(tailscale, arguments: ["status", "--json"], timeout: 5),
-              result.exitCode == 0,
-              let json = try? JSONSerialization.jsonObject(with: Data(result.stdout.utf8)) as? [String: Any],
-              let me = json["Self"] as? [String: Any],
-              let name = me["DNSName"] as? String, !name.isEmpty else { return nil }
-        return name.hasSuffix(".") ? String(name.dropLast()) : name
     }
 }

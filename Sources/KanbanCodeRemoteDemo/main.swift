@@ -851,7 +851,8 @@ let host = DemoHost(rushId: options.rushId, tmuxSocket: options.tmuxSocket, mach
                     cards: options.cards, foreign: options.foreign)
 let loopbackOnly = options.loopbackOnly
 let bindAddresses: @Sendable () -> [String] = {
-    loopbackOnly ? [RemoteNetworkAddresses.loopback] : RemoteNetworkAddresses.bindable()
+    loopbackOnly ? [RemoteNetworkAddresses.loopback] : RemoteNetworkAddresses.bindable(configured: RemoteControlSettings.load(
+        home: (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")).bindAddresses)
 }
 let server = RemoteControlServer(
     host: host, devices: devices, port: options.port,
@@ -871,7 +872,6 @@ do {
     exit(1)
 }
 
-let tailscale = RemoteNetworkAddresses.tailscale()
 let urls = server.listeningAddresses.map { addr in
     addr.contains(":") ? "http://[\(addr)]:\(server.port)" : "http://\(addr):\(server.port)"
 }
@@ -881,7 +881,8 @@ print("devices file: \(devices.path)")
 
 if let name = options.pairName {
     let (device, token) = try devices.add(name: name, scope: options.scope)
-    let base = tailscale.first(where: { !$0.contains(":") }).map { "http://\($0):\(server.port)" } ?? "http://127.0.0.1:\(server.port)"
+    let base = RemoteNetworkAddresses.publicBaseURL(
+        configured: server.listeningAddresses.filter { $0 != RemoteNetworkAddresses.loopback }, port: server.port)
     let link = RemotePairLink.make(url: base, token: token, name: options.machine?.name ?? RemoteControlServer.defaultHostName)
     print("paired \(device.name) (\(device.scope.rawValue)), id \(device.id)")
     print("token: \(token)")

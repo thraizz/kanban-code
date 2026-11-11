@@ -5,11 +5,12 @@ import KanbanCodeRemoteKit
 import SwiftUI
 
 /// Settings > Remote Control: the server phones and other agents use to
-/// drive this Mac over Tailscale (docs/remote-control.md).
+/// drive this Mac over the LAN or a VPN (docs/remote-control.md).
 struct RemoteControlSettingsView: View {
     @State private var controller = RemoteControlController.shared
     @State private var enabled = false
     @State private var portText = String(RemoteAPI.defaultPort)
+    @State private var bindText = ""
     @State private var loaded = false
     @State private var showAddDevice = false
     private let settingsStore = SettingsStore()
@@ -27,8 +28,15 @@ struct RemoteControlSettingsView: View {
                         .multilineTextAlignment(.trailing)
                         .onSubmit { save() }
                 }
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Bind addresses")
+                    TextField("e.g. 192.168.1.20, 10.8.0.2", text: $bindText, axis: .vertical)
+                        .font(.system(.body, design: .monospaced))
+                        .lineLimit(1...4)
+                        .onSubmit { save() }
+                }
                 statusRow
-                Text("The server listens on this Mac (127.0.0.1) and on its Tailscale addresses only, never on the local network. Every request needs the token of a paired device.")
+                Text("The server always listens on this Mac (127.0.0.1), and also on the addresses above, e.g. this Mac's LAN or WireGuard address, separated by commas or line breaks. An address the Mac does not have yet is bound once it appears. 0.0.0.0 listens on every interface. Every request from another device needs the token of a paired device.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -44,28 +52,10 @@ struct RemoteControlSettingsView: View {
                             copyButton(url)
                         }
                     }
-                    if !hasTailscale {
-                        Text("Tailscale is not connected, so only this Mac can reach the server. Start Tailscale and the server listens on its address too.")
+                    if !hasNetworkAddress {
+                        Text("Only this Mac can reach the server. Add a bind address above, or the configured one is not on this Mac right now.")
                             .font(.caption)
                             .foregroundStyle(.orange)
-                    }
-                    if let name = controller.magicDNSName {
-                        VStack(alignment: .leading, spacing: 4) {
-                            Text("For HTTPS with a valid certificate, run once:")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                            HStack {
-                                Text(serveCommand)
-                                    .font(.system(.caption, design: .monospaced))
-                                    .textSelection(.enabled)
-                                Spacer()
-                                copyButton(serveCommand)
-                            }
-                            Text("Then use https://\(name):\(controller.port)")
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                                .textSelection(.enabled)
-                        }
                     }
                 }
             }
@@ -116,8 +106,8 @@ struct RemoteControlSettingsView: View {
             let settings = (try? await settingsStore.read())?.remoteControl ?? RemoteControlSettings()
             enabled = settings.enabled
             portText = String(settings.port)
+            bindText = settings.bindAddresses.joined(separator: ", ")
             loaded = true
-            await controller.refreshMagicDNSName()
             // The CLI pairs and revokes devices too; keep the list current.
             while !Task.isCancelled {
                 controller.refreshStatus()
@@ -143,21 +133,16 @@ struct RemoteControlSettingsView: View {
         .font(.caption)
     }
 
-    private var hasTailscale: Bool {
+    private var hasNetworkAddress: Bool {
         controller.addresses.contains { $0 != RemoteNetworkAddresses.loopback }
     }
 
     private var urls: [String] {
         var out: [String] = []
-        if let name = controller.magicDNSName { out.append("http://\(name):\(controller.port)") }
         for address in controller.addresses {
             out.append(address.contains(":") ? "http://[\(address)]:\(controller.port)" : "http://\(address):\(controller.port)")
         }
         return out
-    }
-
-    private var serveCommand: String {
-        "tailscale serve --bg --https=\(controller.port) http://127.0.0.1:\(controller.port)"
     }
 
     private func deviceDetail(_ device: RemoteDevice) -> String {
@@ -188,7 +173,9 @@ struct RemoteControlSettingsView: View {
         let port = Int(portText.trimmingCharacters(in: .whitespaces)).flatMap { (1...65535).contains($0) ? $0 : nil }
             ?? RemoteAPI.defaultPort
         portText = String(port)
-        let value = RemoteControlSettings(enabled: enabled, port: port)
+        let binds = RemoteNetworkAddresses.parse(bindText)
+        bindText = binds.joined(separator: ", ")
+        let value = RemoteControlSettings(enabled: enabled, port: port, bindAddresses: binds)
         Task {
             var settings = (try? await settingsStore.read()) ?? Settings()
             settings.remoteControl = value

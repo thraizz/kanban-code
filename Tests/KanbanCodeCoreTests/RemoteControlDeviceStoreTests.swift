@@ -83,16 +83,65 @@ struct RemoteControlDeviceStoreTests {
         #expect(first == second)
     }
 
-    @Test("tailscale ranges")
-    func tailscaleRanges() {
-        #expect(RemoteNetworkAddresses.isTailscaleV4([100, 64, 0, 1]))
-        #expect(RemoteNetworkAddresses.isTailscaleV4([100, 127, 255, 255]))
-        #expect(!RemoteNetworkAddresses.isTailscaleV4([100, 128, 0, 1]))
-        #expect(!RemoteNetworkAddresses.isTailscaleV4([192, 168, 1, 2]))
-        #expect(RemoteNetworkAddresses.isTailscaleV6([0xfd, 0x7a, 0x11, 0x5c, 0xa1, 0xe0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]))
-        #expect(!RemoteNetworkAddresses.isTailscaleV6([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]))
-        #expect(RemoteNetworkAddresses.bindable().first == "127.0.0.1")
-        #expect(!RemoteNetworkAddresses.bindable().contains("0.0.0.0"))
+    @Test("bindable: loopback only by default, never a wildcard unless configured")
+    func bindableDefaults() {
+        #expect(RemoteNetworkAddresses.bindable(configured: []) == ["127.0.0.1"])
+        let lan = { ["127.0.0.1", "192.168.1.20", "10.8.0.2", "fe80::1"] }
+        #expect(RemoteNetworkAddresses.bindable(configured: [], local: lan) == ["127.0.0.1"])
+        #expect(!RemoteNetworkAddresses.bindable(configured: ["192.168.1.20"], local: lan).contains("0.0.0.0"))
+    }
+
+    @Test("bindable: configured addresses the machine has, in order, after loopback")
+    func bindableConfigured() {
+        let local = { ["127.0.0.1", "192.168.1.20", "10.8.0.2", "fd00::5"] }
+        #expect(RemoteNetworkAddresses.bindable(configured: ["10.8.0.2", "192.168.1.20"], local: local)
+            == ["127.0.0.1", "10.8.0.2", "192.168.1.20"])
+        // Not on an interface yet (VPN down): left out until it appears.
+        #expect(RemoteNetworkAddresses.bindable(configured: ["10.9.9.9", "192.168.1.20"], local: local)
+            == ["127.0.0.1", "192.168.1.20"])
+        // Loopback, duplicates, brackets and blanks.
+        #expect(RemoteNetworkAddresses.bindable(configured: [" 127.0.0.1", "[fd00::5]", "192.168.1.20", "192.168.1.20", ""], local: local)
+            == ["127.0.0.1", "fd00::5", "192.168.1.20"])
+        // Interface addresses of this machine: loopback is always there.
+        #expect(RemoteNetworkAddresses.local().contains("127.0.0.1"))
+    }
+
+    @Test("bindable: an explicit wildcard replaces the other addresses")
+    func bindableWildcard() {
+        let local = { ["127.0.0.1", "192.168.1.20"] }
+        #expect(RemoteNetworkAddresses.bindable(configured: ["192.168.1.20", "0.0.0.0"], local: local) == ["0.0.0.0"])
+        #expect(RemoteNetworkAddresses.bindable(configured: ["::", "0.0.0.0"], local: local) == ["::", "0.0.0.0"])
+    }
+
+    @Test("bind addresses: field parsing and the pair link base URL")
+    func bindAddressParsing() {
+        #expect(RemoteNetworkAddresses.parse("192.168.1.20, 10.8.0.2\nfd00::5;  ,") == ["192.168.1.20", "10.8.0.2", "fd00::5"])
+        #expect(RemoteNetworkAddresses.parse("") == [])
+        #expect(RemoteNetworkAddresses.normalized(["fe80::1%en0", "[::1]"]) == ["fe80::1", "::1"])
+        #expect(RemoteNetworkAddresses.publicBaseURL(configured: [], port: 7780) == "http://127.0.0.1:7780")
+        #expect(RemoteNetworkAddresses.publicBaseURL(configured: ["0.0.0.0", "192.168.1.20"], port: 7780) == "http://192.168.1.20:7780")
+        #expect(RemoteNetworkAddresses.publicBaseURL(configured: ["fd00::5", "10.8.0.2"], port: 7781) == "http://10.8.0.2:7781")
+        #expect(RemoteNetworkAddresses.publicBaseURL(configured: ["fd00::5"], port: 7780) == "http://[fd00::5]:7780")
+    }
+
+    @Test("settings: remoteControl.bindAddresses round trip, default empty")
+    func bindAddressSettings() throws {
+        let old = try JSONDecoder().decode(RemoteControlSettings.self, from: Data(#"{"enabled":true,"port":7780}"#.utf8))
+        #expect(old.bindAddresses == [])
+        let bad = try JSONDecoder().decode(RemoteControlSettings.self, from: Data(#"{"bindAddresses":"nope"}"#.utf8))
+        #expect(bad.bindAddresses == [])
+        let value = RemoteControlSettings(enabled: true, port: 7781, bindAddresses: ["192.168.1.20", "10.8.0.2"])
+        let json = try JSONEncoder().encode(value)
+        #expect(String(decoding: json, as: UTF8.self).contains("bindAddresses"))
+        #expect(try JSONDecoder().decode(RemoteControlSettings.self, from: json) == value)
+
+        let home = FileManager.default.temporaryDirectory.appendingPathComponent("kc-bind-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: home, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: home) }
+        #expect(RemoteControlSettings.load(home: home.path) == RemoteControlSettings())
+        try Data(#"{"projects":[],"remoteControl":{"enabled":true,"bindAddresses":[" 10.8.0.2 "]}}"#.utf8)
+            .write(to: home.appendingPathComponent("settings.json"))
+        #expect(RemoteControlSettings.load(home: home.path).bindAddresses == ["10.8.0.2"])
     }
 
     @Test("websocket frames: masked round trip and fragmentation of big payloads")

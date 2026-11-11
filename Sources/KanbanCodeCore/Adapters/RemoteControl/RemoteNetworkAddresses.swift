@@ -9,14 +9,54 @@ import Foundation
 public enum RemoteNetworkAddresses {
     public static let loopback = "127.0.0.1"
 
-    /// Loopback plus the Mac's Tailscale addresses. Never a wildcard.
-    public static func bindable() -> [String] {
-        [loopback] + tailscale()
+    /// The addresses that mean "every interface". Bound only when configured
+    /// explicitly.
+    public static let wildcards: Set<String> = ["0.0.0.0", "::"]
+
+    /// Loopback plus the configured addresses this machine has right now
+    /// (settings `remoteControl.bindAddresses`, or `--bind` on the server).
+    /// A configured address that is not on an interface yet is left out, and
+    /// the server's periodic check binds it once it appears. Never a
+    /// wildcard, unless one is configured: then only the wildcards, since
+    /// they already cover loopback.
+    public static func bindable(configured: [String], local: () -> [String] = RemoteNetworkAddresses.local) -> [String] {
+        let wanted = normalized(configured)
+        let wild = wanted.filter { wildcards.contains($0) }
+        if !wild.isEmpty { return wild }
+        guard !wanted.isEmpty else { return [loopback] }
+        let present = Set(local())
+        return [loopback] + wanted.filter { $0 != loopback && present.contains($0) }
     }
 
-    /// The Mac's addresses in Tailscale's ranges: 100.64.0.0/10 and
-    /// fd7a:115c:a1e0::/48.
-    public static func tailscale() -> [String] {
+    /// Trims, drops brackets around IPv6 literals and an `%zone` suffix,
+    /// drops empty entries and duplicates, keeps the order.
+    public static func normalized(_ addresses: [String]) -> [String] {
+        var seen = Set<String>()
+        return addresses.compactMap { raw -> String? in
+            var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            if s.hasPrefix("["), s.hasSuffix("]") { s = String(s.dropFirst().dropLast()) }
+            if let zone = s.firstIndex(of: "%") { s = String(s[..<zone]) }
+            guard !s.isEmpty, seen.insert(s).inserted else { return nil }
+            return s
+        }
+    }
+
+    /// Splits a settings field: addresses separated by commas, spaces or
+    /// line breaks.
+    public static func parse(_ text: String) -> [String] {
+        normalized(text.components(separatedBy: CharacterSet(charactersIn: ",;").union(.whitespacesAndNewlines)))
+    }
+
+    /// The first configured address a client can reach, as an `http` base
+    /// URL; loopback when none is configured. Wildcards are skipped.
+    public static func publicBaseURL(configured: [String], port: Int) -> String {
+        let reachable = normalized(configured).filter { !wildcards.contains($0) }
+        let address = reachable.first(where: { !$0.contains(":") }) ?? reachable.first ?? loopback
+        return address.contains(":") ? "http://[\(address)]:\(port)" : "http://\(address):\(port)"
+    }
+
+    /// Every address on an interface that is up, numeric, without zone.
+    public static func local() -> [String] {
         var out: [String] = []
         var head: UnsafeMutablePointer<ifaddrs>?
         guard getifaddrs(&head) == 0, let first = head else { return [] }
@@ -25,30 +65,12 @@ public enum RemoteNetworkAddresses {
         while let ifa = cursor {
             defer { cursor = ifa.pointee.ifa_next }
             guard let sa = ifa.pointee.ifa_addr, (ifa.pointee.ifa_flags & UInt32(IFF_UP)) != 0 else { continue }
-            switch Int32(sa.pointee.sa_family) {
-            case AF_INET:
-                let addr = sa.withMemoryRebound(to: sockaddr_in.self, capacity: 1) { $0.pointee.sin_addr.s_addr }
-                let bytes = withUnsafeBytes(of: addr) { Array($0) }
-                if isTailscaleV4(bytes), let s = numeric(sa) { out.append(s) }
-            case AF_INET6:
-                let bytes = sa.withMemoryRebound(to: sockaddr_in6.self, capacity: 1) { p in
-                    withUnsafeBytes(of: p.pointee.sin6_addr) { Array($0) }
-                }
-                if isTailscaleV6(bytes), let s = numeric(sa) { out.append(s) }
-            default:
-                break
-            }
+            let family = Int32(sa.pointee.sa_family)
+            guard family == AF_INET || family == AF_INET6, let s = numeric(sa) else { continue }
+            out.append(s)
         }
         var seen = Set<String>()
         return out.filter { seen.insert($0).inserted }
-    }
-
-    static func isTailscaleV4(_ b: [UInt8]) -> Bool {
-        b.count == 4 && b[0] == 100 && (b[1] & 0xC0) == 64
-    }
-
-    static func isTailscaleV6(_ b: [UInt8]) -> Bool {
-        b.count == 16 && b[0] == 0xfd && b[1] == 0x7a && b[2] == 0x11 && b[3] == 0x5c && b[4] == 0xa1 && b[5] == 0xe0
     }
 
     private static func numeric(_ sa: UnsafeMutablePointer<sockaddr>) -> String? {
@@ -60,7 +82,7 @@ public enum RemoteNetworkAddresses {
         #endif
         guard getnameinfo(sa, len, &host, socklen_t(host.count), nil, 0, NI_NUMERICHOST) == 0 else { return nil }
         let s = String(cString: host)
-        // Drop a zone suffix, Tailscale addresses are global.
+        // Drop a zone suffix: a configured address is written without one.
         return s.split(separator: "%").first.map(String.init)
     }
 }
