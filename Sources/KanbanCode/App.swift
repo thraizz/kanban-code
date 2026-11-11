@@ -163,6 +163,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
                 } else if !granted {
                     print("[Kanban Code] Notification permission denied")
                 }
+                Task.detached(priority: .utility) { await MacAttentionNotificationClient.recordAuthorization() }
             }
         }
     }
@@ -220,6 +221,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
     /// relaunch the app (which would trip the quit-protection dialog).
     func applicationDidBecomeActive(_ notification: Notification) {
         checkPendingOpenProject()
+        // Notification permission is changed in System Settings, so coming
+        // back to the app is when it may have changed.
+        Task.detached(priority: .utility) { await MacAttentionNotificationClient.recordAuthorization() }
     }
 
     /// Check for a pending project open request from the CLI.
@@ -651,6 +655,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, UNUs
             completionHandler()
             return
         }
+        KanbanCodeLog.info("notify", "Notification clicked: card=\(info["cardId"] as? String ?? "-") attention=\(info[MacAttentionNotificationClient.requestIdKey] as? String ?? "-")")
         if let attentionId = info[MacAttentionNotificationClient.requestIdKey] as? String {
             // Opens the card, then the request's details over it.
             if let cardId = info["cardId"] as? String {

@@ -17,10 +17,31 @@ public actor MacAttentionNotificationClient: MacAttentionNotifier {
 
     public init() {}
 
+    /// `~/.kanban-code/mac-notifications`: "allowed" or "denied". Other
+    /// notifiers on this Mac (the Omni bridge) read it to leave a card's
+    /// alert to Kanban Code only while Kanban Code may post one.
+    public static var authorizationRecordPath: String {
+        (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code/mac-notifications")
+    }
+
+    /// Writes whether macOS lets Kanban Code notify to `authorizationRecordPath`.
+    public static func recordAuthorization() async {
+        guard Bundle.main.bundleIdentifier != nil else { return }
+        recordAuthorization(await UNUserNotificationCenter.current().notificationSettings().authorizationStatus)
+    }
+
+    static func recordAuthorization(_ status: UNAuthorizationStatus) {
+        let value = (status == .authorized || status == .provisional) ? "allowed" : "denied"
+        let path = authorizationRecordPath
+        if (try? String(contentsOfFile: path, encoding: .utf8)) == value { return }
+        try? value.write(toFile: path, atomically: true, encoding: .utf8)
+    }
+
     public func post(_ request: AttentionRequest, cardName: String?) async {
         guard Bundle.main.bundleIdentifier != nil else { return }
         let center = UNUserNotificationCenter.current()
         let settings = await center.notificationSettings()
+        Self.recordAuthorization(settings.authorizationStatus)
         guard settings.authorizationStatus == .authorized || settings.authorizationStatus == .provisional else {
             KanbanCodeLog.warn("attention", "Mac notification for \(request.id) not posted: Kanban Code may not notify (authorization=\(settings.authorizationStatus.rawValue))")
             return
