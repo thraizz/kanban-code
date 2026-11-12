@@ -15,6 +15,18 @@ public struct CardOwner: Sendable, Equatable, Hashable {
     }
 }
 
+/// Why the board does not show a card in its columns.
+public enum BoardHiddenReason: String, Sendable, Equatable, CaseIterable {
+    /// A Claude Desktop scheduled task, hidden by Settings > Global View.
+    case scheduledTask
+    /// The prompt or title matches a pattern of Settings > Global View.
+    case titlePattern
+    /// The project path is excluded from the global view.
+    case excludedPath
+    /// A discovered worktree (branch) that never had a session.
+    case worktreeOnly
+}
+
 public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     public let id: String // link.id — stable across refreshes
     public let link: Link
@@ -44,6 +56,21 @@ public struct KanbanCodeCard: Identifiable, Sendable, Equatable {
     public var isHiddenWorktree: Bool {
         link.worktreeLink != nil && link.tmuxLink == nil && link.sessionLink == nil
             && link.isLaunching != true && !isBusy
+    }
+
+    /// Why the board leaves the card out of its columns, checked in the
+    /// order `AppState.rebuildCards` filters: the session exclusion rules,
+    /// a worktree with no session, then the global view's excluded paths
+    /// (which a selected project replaces). Nil when the card shows.
+    public func boardHiddenReason(sessionExclusion: SessionExclusion, pathExclusion: PathExclusion) -> BoardHiddenReason? {
+        switch sessionExclusion.rule(link: link, session: session) {
+        case .scheduledTask: return .scheduledTask
+        case .titlePattern: return .titlePattern
+        case nil: break
+        }
+        if isHiddenWorktree { return .worktreeOnly }
+        if pathExclusion.matches(link.projectPath ?? session?.projectPath) { return .excludedPath }
+        return nil
     }
 
     public init(

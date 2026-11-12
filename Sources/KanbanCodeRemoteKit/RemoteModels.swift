@@ -258,6 +258,19 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
     public var sessionStatus: RemoteSessionStatus?
     /// The card's conversations that are not archived, most recent first.
     public var conversations: [RemoteConversation]
+    /// The project's color as the Mac card shows it, `#rrggbb`: configured
+    /// in Settings > Projects or automatic. Nil without a project path.
+    public var projectColor: String?
+    /// The model the live session runs (e.g. `opus`); nil when unknown.
+    public var model: String?
+    /// What the processes under the card's terminals take, in bytes; nil
+    /// when nothing runs or it was not measured.
+    public var memoryBytes: Int?
+    /// The Mac board leaves the card out of its columns; `hiddenReason`
+    /// says why. Hidden cards are still sent.
+    public var hidden: Bool
+    /// scheduledTask, titlePattern, excludedPath or worktreeOnly, when hidden.
+    public var hiddenReason: String?
 
     public init(
         id: String, title: String, column: RemoteColumn, projectPath: String? = nil, projectName: String? = nil,
@@ -266,7 +279,9 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
         prs: [RemotePR] = [], queuedPromptCount: Int = 0, queuedPrompts: [RemoteQueuedPrompt] = [],
         parentCardId: String? = nil, archived: Bool = false, pinned: Bool = false,
         lastActivity: Date? = nil, updatedAt: Date, machineId: String? = nil, machineName: String? = nil,
-        sessionStatus: RemoteSessionStatus? = nil, conversations: [RemoteConversation] = []
+        sessionStatus: RemoteSessionStatus? = nil, conversations: [RemoteConversation] = [],
+        projectColor: String? = nil, model: String? = nil, memoryBytes: Int? = nil,
+        hidden: Bool = false, hiddenReason: String? = nil
     ) {
         self.id = id
         self.title = title
@@ -293,6 +308,11 @@ public struct RemoteCard: Codable, Sendable, Equatable, Identifiable {
         self.machineName = machineName
         self.sessionStatus = sessionStatus
         self.conversations = conversations
+        self.projectColor = projectColor
+        self.model = model
+        self.memoryBytes = memoryBytes
+        self.hidden = hidden
+        self.hiddenReason = hiddenReason
     }
 }
 
@@ -323,7 +343,7 @@ public struct RemoteSessionStatus: Codable, Sendable, Equatable {
 }
 
 /// The JSON of a card leaves out what is false, zero or empty (`isLive`,
-/// `isBusy`, `archived`, `queuedPromptCount`, `queuedPrompts`, `terminals`, `prs`) and nil
+/// `isBusy`, `archived`, `hidden`, `queuedPromptCount`, `queuedPrompts`, `terminals`, `prs`) and nil
 /// optionals; decoding reads a missing key as that default. A board of
 /// thousands of cards stays small that way.
 extension RemoteCard {
@@ -331,6 +351,7 @@ extension RemoteCard {
         case id, title, column, projectPath, projectName, branch, worktreePath, assistant, runtime
         case isLive, isBusy, sessionId, terminals, prs, queuedPromptCount, queuedPrompts, parentCardId, archived, pinned
         case lastActivity, updatedAt, machineId, machineName, sessionStatus, conversations
+        case projectColor, model, memoryBytes, hidden, hiddenReason
     }
 
     public init(from decoder: Decoder) throws {
@@ -361,7 +382,12 @@ extension RemoteCard {
             machineName: try c.decodeIfPresent(String.self, forKey: .machineName),
             // A kind this client does not know yet reads as no status.
             sessionStatus: (try? c.decodeIfPresent(RemoteSessionStatus.self, forKey: .sessionStatus)) ?? nil,
-            conversations: (try? c.decodeIfPresent([RemoteConversation].self, forKey: .conversations)) ?? []
+            conversations: (try? c.decodeIfPresent([RemoteConversation].self, forKey: .conversations)) ?? [],
+            projectColor: try c.decodeIfPresent(String.self, forKey: .projectColor),
+            model: try c.decodeIfPresent(String.self, forKey: .model),
+            memoryBytes: try c.decodeIfPresent(Int.self, forKey: .memoryBytes),
+            hidden: try c.decodeIfPresent(Bool.self, forKey: .hidden) ?? false,
+            hiddenReason: try c.decodeIfPresent(String.self, forKey: .hiddenReason)
         )
     }
 
@@ -392,6 +418,11 @@ extension RemoteCard {
         try c.encodeIfPresent(machineName, forKey: .machineName)
         try c.encodeIfPresent(sessionStatus, forKey: .sessionStatus)
         if !conversations.isEmpty { try c.encode(conversations, forKey: .conversations) }
+        try c.encodeIfPresent(projectColor, forKey: .projectColor)
+        try c.encodeIfPresent(model, forKey: .model)
+        try c.encodeIfPresent(memoryBytes, forKey: .memoryBytes)
+        if hidden { try c.encode(true, forKey: .hidden) }
+        try c.encodeIfPresent(hiddenReason, forKey: .hiddenReason)
     }
 }
 
@@ -455,10 +486,13 @@ public struct RemoteProject: Codable, Sendable, Equatable, Identifiable {
     public var id: String { path }
     public var path: String
     public var name: String
+    /// The color the Mac tints the project's cards with, `#rrggbb`.
+    public var color: String?
 
-    public init(path: String, name: String) {
+    public init(path: String, name: String, color: String? = nil) {
         self.path = path
         self.name = name
+        self.color = color
     }
 }
 

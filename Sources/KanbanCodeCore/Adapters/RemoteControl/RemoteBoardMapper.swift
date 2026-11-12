@@ -4,6 +4,23 @@ import KanbanCodeRemoteKit
 /// Turns the app's cards into the wire cards of the remote control API.
 public enum RemoteBoardMapper {
 
+    /// What the Mac board needs besides the card to draw and filter it:
+    /// the configured projects (colors) and the global view's rules.
+    public struct Display: Sendable {
+        public var projects: [Project]
+        public var sessionExclusion: SessionExclusion
+        public var pathExclusion: PathExclusion
+
+        public init(projects: [Project] = [], sessionExclusion: SessionExclusion = SessionExclusion(),
+                    pathExclusion: PathExclusion = .none) {
+            self.projects = projects
+            self.sessionExclusion = sessionExclusion
+            self.pathExclusion = pathExclusion
+        }
+
+        public static let none = Display()
+    }
+
     public static func board(
         cards: [KanbanCodeCard],
         projects: [Project],
@@ -12,14 +29,19 @@ public enum RemoteBoardMapper {
         machine: MachineIdentity? = nil,
         machineNames: [String: String] = [:],
         conversations: [String: [RemoteConversation]] = [:],
+        sessionExclusion: SessionExclusion = SessionExclusion(),
+        pathExclusion: PathExclusion = .none,
         generatedAt: Date = Date()
     ) -> RemoteBoard {
-        RemoteBoard(
+        let display = Display(projects: projects, sessionExclusion: sessionExclusion, pathExclusion: pathExclusion)
+        return RemoteBoard(
             cards: cards.map {
                 card($0, liveSessions: liveSessions, rushQueues: rushQueues, machine: machine, machineNames: machineNames,
-                     conversations: conversations[$0.id] ?? [])
+                     conversations: conversations[$0.id] ?? [], display: display)
             }.sorted(by: order),
-            projects: projects.map { RemoteProject(path: $0.path, name: $0.name) },
+            projects: projects.map {
+                RemoteProject(path: $0.path, name: $0.name, color: ProjectColor.resolve(path: $0.path, in: projects).hex)
+            },
             generatedAt: generatedAt,
             machine: machine.map { RemoteMachine(id: $0.id, name: $0.name) }
         )
@@ -43,8 +65,12 @@ public enum RemoteBoardMapper {
                             rushQueues: [String: [String]] = [:],
                             machine: MachineIdentity? = nil,
                             machineNames: [String: String] = [:],
-                            conversations: [RemoteConversation] = []) -> RemoteCard {
+                            conversations: [RemoteConversation] = [],
+                            display: Display = .none) -> RemoteCard {
         let link = card.link
+        let projectPath = link.projectPath ?? card.session?.projectPath
+        let hiddenReason = card.boardHiddenReason(sessionExclusion: display.sessionExclusion,
+                                                  pathExclusion: display.pathExclusion)
         let hostQueue = link.tmuxLink.flatMap { rushQueues[$0.sessionName] } ?? []
         let queued = hostQueue.enumerated().map { RemoteQueuedPrompt(id: rushPromptId(index: $0.offset, text: $0.element), text: $0.element) }
             + (link.queuedPrompts ?? []).map {
@@ -55,7 +81,7 @@ public enum RemoteBoardMapper {
             id: link.id,
             title: card.displayTitle,
             column: RemoteColumn(rawValue: link.column.rawValue) ?? .backlog,
-            projectPath: link.projectPath ?? card.session?.projectPath,
+            projectPath: projectPath,
             projectName: card.projectName,
             branch: link.worktreeLink?.branch ?? link.discoveredBranches?.first,
             worktreePath: link.worktreeLink?.path,
@@ -76,7 +102,13 @@ public enum RemoteBoardMapper {
             machineId: owner,
             machineName: owner.flatMap { $0 == machine?.id ? machine?.name : machineNames[$0] },
             sessionStatus: card.sessionStatus.remote(for: link),
-            conversations: conversations.filter { !$0.archived }
+            conversations: conversations.filter { !$0.archived },
+            // As CardView tints the card.
+            projectColor: projectPath.map { ProjectColor.resolve(path: $0, in: display.projects).hex },
+            model: card.liveModel,
+            memoryBytes: card.memory?.totalBytes,
+            hidden: hiddenReason != nil,
+            hiddenReason: hiddenReason?.rawValue
         )
     }
 
@@ -195,6 +227,12 @@ extension AppState {
             }
         }
         return out
+    }
+
+    /// The projects and global view rules the wire cards are colored and
+    /// flagged hidden with.
+    public var remoteDisplay: RemoteBoardMapper.Display {
+        RemoteBoardMapper.Display(projects: configuredProjects, sessionExclusion: sessionExclusion, pathExclusion: pathExclusion)
     }
 
     /// Names of the peer masters seen so far, by machine id.

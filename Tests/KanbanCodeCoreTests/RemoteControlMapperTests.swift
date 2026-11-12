@@ -154,7 +154,7 @@ struct RemoteControlMapperTests {
             liveSessions: []
         )
         #expect(board.cards.map(\.id) == ["new", "old"])
-        #expect(board.projects == [RemoteProject(path: "/Users/me/acme", name: "acme")])
+        #expect(board.projects == [RemoteProject(path: "/Users/me/acme", name: "acme", color: ProjectColor.blue.hex)])
     }
 
     private static func turns() -> [ConversationTurn] {

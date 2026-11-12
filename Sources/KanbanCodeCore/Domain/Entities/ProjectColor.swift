@@ -7,6 +7,25 @@ public enum ProjectColor: String, CaseIterable, Codable, Sendable {
 
     public var displayName: String { rawValue.capitalized }
 
+    /// The color as `#rrggbb` (sRGB), for clients without the system palette
+    /// (the remote board API). The SwiftUI color of the same name in the dark
+    /// appearance, as macOS 26 draws it; the app test `ProjectColorHexTests`
+    /// keeps the two equal.
+    public var hex: String {
+        switch self {
+        case .blue: "#0091ff"
+        case .green: "#30d158"
+        case .orange: "#ff9230"
+        case .purple: "#db34f2"
+        case .teal: "#00d2e0"
+        case .yellow: "#ffd600"
+        case .indigo: "#6d7cff"
+        case .mint: "#00dac3"
+        case .cyan: "#3cd3fe"
+        case .brown: "#b78a66"
+        }
+    }
+
     /// The project's explicit color, else its automatic one.
     public static func resolve(path: String, in projects: [Project]) -> ProjectColor {
         projects.first(where: { $0.path == path })?.projectColor ?? automatic(path: path, in: projects)

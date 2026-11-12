@@ -181,7 +181,7 @@ enum RemoteOpenAPI {
       "Terminal": {"type": "object", "properties": {"sessionName": {"type": "string"}, "label": {"type": "string"}, "isPrimary": {"type": "boolean"}}},
       "Card": {
         "type": "object",
-        "description": "isLive, isBusy, archived and pinned are left out when false, queuedPromptCount when 0, queuedPrompts, terminals and prs when empty, null fields always; a missing key means that default.",
+        "description": "isLive, isBusy, archived, pinned and hidden are left out when false, queuedPromptCount when 0, queuedPrompts, terminals and prs when empty, null fields always; a missing key means that default.",
         "required": ["id", "title", "column", "assistant", "runtime", "updatedAt"],
         "properties": {
           "id": {"type": "string"},
@@ -206,12 +206,17 @@ enum RemoteOpenAPI {
           "lastActivity": {"type": ["string", "null"], "format": "date-time"},
           "updatedAt": {"type": "string", "format": "date-time"},
           "machineId": {"type": ["string", "null"], "description": "the master that owns the card; send its prompts, transcript and terminal calls there"},
-          "machineName": {"type": ["string", "null"]}
+          "machineName": {"type": ["string", "null"]},
+          "projectColor": {"type": ["string", "null"], "description": "#rrggbb, the project's color as the Mac card shows it (configured or automatic); null without a project path"},
+          "model": {"type": ["string", "null"], "description": "the model the live session runs, e.g. opus"},
+          "memoryBytes": {"type": ["integer", "null"], "description": "what the processes under the card's terminals take; null when nothing runs or it was not measured"},
+          "hidden": {"type": "boolean", "description": "the Mac board leaves the card out of its columns; hidden cards are still sent"},
+          "hiddenReason": {"type": ["string", "null"], "enum": ["scheduledTask", "titlePattern", "excludedPath", "worktreeOnly", null], "description": "why the card is hidden: a scheduled task or title pattern of Settings > Global View, an excluded path, or a worktree with no session"}
         }
       },
       "MachineList": {"type": "object", "properties": {"machines": {"type": "array", "items": {"type": "object", "required": ["name", "kind"], "properties": {"id": {"type": "string", "description": "machine id of a master"}, "name": {"type": "string", "description": "what TaskRequest.machine accepts"}, "kind": {"type": "string", "enum": ["this", "master", "ssh"]}, "online": {"type": "boolean"}, "alwaysOn": {"type": "boolean"}}}}}},
       "Machine": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
-      "Project": {"type": "object", "properties": {"path": {"type": "string"}, "name": {"type": "string"}}},
+      "Project": {"type": "object", "properties": {"path": {"type": "string"}, "name": {"type": "string"}, "color": {"type": ["string", "null"], "description": "#rrggbb, the color the Mac tints the project's cards with"}}},
       "CardSearchResult": {"type": "object", "required": ["cards"], "properties": {"cards": {"type": "array", "items": {"$ref": "#/components/schemas/Card"}}, "truncated": {"type": "boolean", "description": "more cards matched than limit; absent when false"}, "unreachable": {"type": "array", "items": {"type": "string"}, "description": "peer masters that did not answer in time; absent when empty"}}},
       "Board": {"type": "object", "properties": {"cards": {"type": "array", "items": {"$ref": "#/components/schemas/Card"}}, "projects": {"type": "array", "items": {"$ref": "#/components/schemas/Project"}}, "generatedAt": {"type": "string", "format": "date-time"}, "machine": {"$ref": "#/components/schemas/Machine", "description": "the master serving this board"}}},
       "Message": {"type": "object", "properties": {"id": {"type": "string"}, "role": {"type": "string", "enum": ["user", "assistant", "tool", "system"]}, "text": {"type": "string"}, "at": {"type": ["string", "null"], "format": "date-time"}}},

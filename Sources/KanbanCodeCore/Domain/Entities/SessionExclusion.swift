@@ -31,19 +31,29 @@ public struct SessionExclusion: Codable, Sendable, Equatable {
         !hideScheduledTasks && !titlePatterns.contains { !$0.trimmingCharacters(in: .whitespaces).isEmpty }
     }
 
+    /// Which rule hides a card.
+    public enum Rule: String, Sendable {
+        case scheduledTask, titlePattern
+    }
+
     /// True when the card is an unclaimed session these rules hide.
     public func excludes(link: Link, session: Session?) -> Bool {
-        guard !isEmpty, !link.isClaimed else { return false }
+        rule(link: link, session: session) != nil
+    }
+
+    /// The rule that hides the card, scheduled tasks first; nil when none does.
+    public func rule(link: Link, session: Session?) -> Rule? {
+        guard !isEmpty, !link.isClaimed else { return nil }
         let texts = [link.promptBody, session?.firstPrompt, link.displayTitle]
             .compactMap { $0?.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty }
-        if hideScheduledTasks, texts.contains(where: Self.isScheduledTask) { return true }
+        if hideScheduledTasks, texts.contains(where: Self.isScheduledTask) { return .scheduledTask }
         for pattern in titlePatterns {
             let pattern = pattern.trimmingCharacters(in: .whitespaces)
             guard !pattern.isEmpty else { continue }
-            if texts.contains(where: { Self.matches(pattern: pattern, text: $0) }) { return true }
+            if texts.contains(where: { Self.matches(pattern: pattern, text: $0) }) { return .titlePattern }
         }
-        return false
+        return nil
     }
 
     /// True when the prompt is one Claude Desktop sends for a scheduled task.

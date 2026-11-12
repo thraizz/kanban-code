@@ -52,7 +52,9 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
                 rushQueues: store.state.rushQueues,
                 machine: store.state.localMachineIdentity,
                 machineNames: store.state.peerMachineNames,
-                conversations: store.state.conversations
+                conversations: store.state.conversations,
+                sessionExclusion: store.state.sessionExclusion,
+                pathExclusion: store.state.pathExclusion
             )
         }
         await watchRushQueues()
@@ -66,13 +68,14 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         let snapshot = await MainActor.run {
             (cards: store.state.cards, live: store.state.tmuxSessions, queues: store.state.rushQueues,
              machine: store.state.localMachineIdentity, names: store.state.peerMachineNames,
+             display: store.state.remoteDisplay,
              peers: request.local ? [] : store.state.peerStatuses.values.compactMap { status in
                  status.machine.map { (machine: $0, online: status.online) }
              })
         }
         let local = Self.search(snapshot.cards, request, index: searchIndex) { card in
             RemoteBoardMapper.card(card, liveSessions: snapshot.live, rushQueues: snapshot.queues,
-                                   machine: snapshot.machine, machineNames: snapshot.names)
+                                   machine: snapshot.machine, machineNames: snapshot.names, display: snapshot.display)
         }
         guard !request.local, !snapshot.peers.isEmpty else { return local }
         var peers: [RemoteCardSearch.Peer] = []
@@ -130,7 +133,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     private func remoteCard(_ cardId: String) throws -> RemoteCard {
         RemoteBoardMapper.card(try card(cardId), liveSessions: store.state.tmuxSessions, rushQueues: store.state.rushQueues,
                                machine: store.state.localMachineIdentity, machineNames: store.state.peerMachineNames,
-                               conversations: store.state.conversations[cardId] ?? [])
+                               conversations: store.state.conversations[cardId] ?? [], display: store.state.remoteDisplay)
     }
 
     public func transcript(cardId: String, limit: Int, before: String?) async throws -> RemoteTranscript {
