@@ -747,4 +747,46 @@ extension AgentSyncEngineTests {
         let old = try JSONDecoder().decode(SyncEntry.self, from: Data(#"{"mode":"mirror","path":"~/x"}"#.utf8))
         #expect(old.keys.isEmpty && old.paths.isEmpty)
     }
+
+    @Test func claudeSettingsSyncOnlyPreferencesAndTheOldWholeFileMirrorMigrates() throws {
+        let entry = try #require(SyncConfig.defaults.entries.first { $0.path == "~/.claude/settings.json" })
+        #expect(entry.mode == .json)
+        #expect(!entry.keys.contains("hooks") && !entry.keys.contains("statusLine"))
+        #expect(!entry.keys.contains("skipDangerousModePermissionPrompt"))
+        #expect(entry.keys.contains("enabledPlugins") && entry.keys.contains("model"))
+
+        let saved = #"{"updatedAt":5,"entries":[{"mode":"mirror","path":"~/.claude/settings.json","excludes":["*.log"],"paths":{"box":"~/s.json"},"enabled":false},{"mode":"mirror","path":"~/.claude/CLAUDE.md"}]}"#
+        let config = try JSONDecoder().decode(SyncConfig.self, from: Data(saved.utf8))
+        #expect(config.updatedAt == 5)
+        #expect(config.entries[0].mode == .json)
+        #expect(config.entries[0].keys == SyncConfig.claudeSettingsKeys)
+        #expect(config.entries[0].paths == ["box": "~/s.json"] && !config.entries[0].enabled)
+        #expect(config.entries[1] == SyncEntry(mode: .mirror, path: "~/.claude/CLAUDE.md"))
+        #expect(try JSONDecoder().decode(SyncConfig.self, from: JSONEncoder().encode(config)) == config)
+    }
+
+    @Test func hooksStayOnTheirMachineWhilePreferencesTravel() async throws {
+        let mac = tempDir(), box = tempDir()
+        let macId = MachineIdentity(id: "machine_mac", name: "mac")
+        let boxId = MachineIdentity(id: "machine_box", name: "Box", alwaysOn: true)
+        let transport = LoopbackTransport()
+        let entries = [SyncConfig.claudeSettings]
+        let a = try engine(home: mac, identity: macId, peer: boxId, transport: transport, entries: entries)
+        let b = try engine(home: box, identity: boxId, peer: macId, transport: transport, entries: entries)
+        transport.engines = [macId.id: a, boxId.id: b]
+
+        // The box's Kanban Code writes slashes escaped, which no home rewrite matches.
+        let boxHook = #"{"hooks":{"Stop":"\/home\/aron\/.kanban-code\/hook.sh"},"model":"sonnet"}"#
+        write(box + "/.claude/settings.json", boxHook, mtime: 1000)
+        write(mac + "/.claude/settings.json", #"{"hooks":{"Stop":"/Users/me/.kanban-code/hook.sh"},"model":"opus"}"#, mtime: 2000)
+        await a.round()
+        await b.round()
+        await a.round()
+
+        let macSettings = try #require(read(mac + "/.claude/settings.json"))
+        let boxSettings = try #require(read(box + "/.claude/settings.json"))
+        #expect(macSettings.contains("/Users/me/.kanban-code/hook.sh") && !macSettings.contains("home"))
+        #expect(boxSettings.contains(#"\/home\/aron\/.kanban-code\/hook.sh"#) && !boxSettings.contains("Users"))
+        #expect(boxSettings.contains(#""model":"opus""#))
+    }
 }

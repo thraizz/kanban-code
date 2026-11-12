@@ -119,6 +119,16 @@ public struct SyncConfig: Codable, Sendable, Equatable {
         self.entries = entries
     }
 
+    enum CodingKeys: String, CodingKey { case updatedAt, entries }
+
+    /// Every saved or received config is migrated, so machines on either side
+    /// of a change to the defaults agree on the entries.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        updatedAt = try c.decode(Double.self, forKey: .updatedAt)
+        entries = Self.migrated(try c.decode([SyncEntry].self, forKey: .entries))
+    }
+
     /// Never synced by a mirror: backups, temp files, per-machine settings,
     /// logs, and the credentials the login sync already carries.
     public static let defaultExcludes = [
@@ -146,11 +156,36 @@ public struct SyncConfig: Codable, Sendable, Equatable {
         AssistantLoginKind.allCases.contains { "~/" + $0.remoteRelativePath == entryPath }
     }
 
+    /// The keys of `~/.claude/settings.json` that are the user's preferences.
+    /// The rest stays on its machine: Kanban Code installs `hooks` and
+    /// `statusLine` on each machine with that machine's paths, and a box sets
+    /// its own `skipDangerousModePermissionPrompt`.
+    public static let claudeSettingsKeys = [
+        "autoMode", "enabledPlugins", "env", "extraKnownMarketplaces", "model", "permissions", "theme", "tui",
+    ]
+
+    public static let claudeSettings = SyncEntry(
+        mode: .json, path: "~/.claude/settings.json", keys: claudeSettingsKeys)
+
+    /// `entries` with the whole-file mirror of `~/.claude/settings.json` (the
+    /// default before `json` entries existed) turned into the `json` entry,
+    /// keeping where it lives on each machine and whether it is on. Mirrored
+    /// whole, one machine's hook paths overwrote every other machine's.
+    public static func migrated(_ entries: [SyncEntry]) -> [SyncEntry] {
+        entries.map { entry in
+            guard entry.mode == .mirror, entry.path == claudeSettings.path else { return entry }
+            var json = claudeSettings
+            json.paths = entry.paths
+            json.enabled = entry.enabled
+            return json
+        }
+    }
+
     public static let defaults = SyncConfig(entries: [
         SyncEntry(mode: .git, path: "~/Projects/skills"),
         SyncEntry(mode: .git, path: "~/Projects/skills-private"),
         SyncEntry(mode: .mirror, path: "~/.claude/CLAUDE.md", excludes: defaultExcludes),
-        SyncEntry(mode: .mirror, path: "~/.claude/settings.json", excludes: defaultExcludes),
+        claudeSettings,
         SyncEntry(mode: .mirror, path: "~/.claude/commands", excludes: defaultExcludes),
         SyncEntry(mode: .mirror, path: "~/.claude/agents", excludes: defaultExcludes),
         // `synced/` is Claude's own per-account copy of claude.ai skills.
