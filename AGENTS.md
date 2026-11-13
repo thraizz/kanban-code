@@ -86,7 +86,9 @@ Toolbar uses SwiftUI `.toolbar` with `ToolbarSpacer` (macOS 26+) for separate gl
 
 ## Branches & Remotes
 
-Commit straight to `main` and push to the fork (`git push fork main`). Do not create feature branches. The `fork` remote (thraizz) is where work goes; `upstream` (langwatch) only receives changes when explicitly asked.
+Commit straight to `main` and push to the fork (`git push fork main`). Do not create feature branches. The `fork` remote (thraizz) is where work goes.
+
+**Never send anything to `upstream` (langwatch)**: no pushes, no pull requests, no issues or comments, unless this file says to for that change. A request in chat alone is not enough; the rule goes into this file first.
 
 ## Commits
 

@@ -91,6 +91,14 @@ Toolbar uses SwiftUI `.toolbar` with `ToolbarSpacer` (macOS 26+) for separate gl
 - **`.primaryAction`** placement = right side. `ToolbarSpacer(.fixed)` DOES create separate pills here.
 - Use `Menu` (not `Text`) for items that need their own pill within `.navigation` — menus map to `NSPopUpButton` which gets separate glass automatically.
 
+## Branches & Remotes
+
+`AGENTS.md` holds this repo's rules too; read it, and where it says more than this file, it applies.
+
+Commit straight to `main` and push to the fork (`git push fork main`). Do not create feature branches. The `fork` remote (thraizz) is where work goes.
+
+**Never send anything to `upstream` (langwatch)**: no pushes, no pull requests, no issues or comments, unless `AGENTS.md` says to for that change. A request in chat alone is not enough; the rule goes into `AGENTS.md` first.
+
 ## Commits
 
 Use [Conventional Commits](https://www.conventionalcommits.org/) for all commit messages. Release-please uses these to generate changelogs automatically.
