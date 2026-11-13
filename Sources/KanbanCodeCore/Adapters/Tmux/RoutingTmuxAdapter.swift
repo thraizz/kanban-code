@@ -203,6 +203,11 @@ public final class RoutingTmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         return try await adapter(for: sessionName).capturePane(sessionName: sessionName)
     }
 
+    public func paneCommand(sessionName: String) async throws -> String? {
+        if RushSessionName.isRush(sessionName) { return nil }
+        return try await adapter(for: sessionName).paneCommand(sessionName: sessionName)
+    }
+
     public func sendBracketedPaste(to sessionName: String) async throws {
         if RushSessionName.isRush(sessionName) { return }
         try await adapter(for: sessionName).sendBracketedPaste(to: sessionName)

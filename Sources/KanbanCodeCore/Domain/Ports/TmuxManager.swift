@@ -44,9 +44,17 @@ public protocol TmuxManagerPort: Sendable {
 
     /// Check if tmux is available on this system.
     func isAvailable() async -> Bool
+
+    /// The program in the foreground of the session's pane, or nil when it
+    /// can't be told.
+    func paneCommand(sessionName: String) async throws -> String?
 }
 
 extension TmuxManagerPort {
+    /// The program in the foreground of the session's pane (`zsh`, `claude`,
+    /// a version number for Claude Code), or nil when it can't be told.
+    public func paneCommand(sessionName: String) async throws -> String? { nil }
+
     public func createSession(name: String, path: String, command: String?, environment: [String: String]) async throws {
         try await createSession(name: name, path: path, command: command)
     }

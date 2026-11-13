@@ -276,7 +276,7 @@ struct ConversationReducerTests {
         var sent: String?
         var journalled: String?
         for effect in effects {
-            if case .sendPromptToTmux(_, let body, _, _) = effect { sent = body }
+            if case .sendPromptToTmux(_, let body, _, _, _) = effect { sent = body }
             if case .journalQueuedPrompt(_, let p, .sent) = effect { journalled = p.body }
         }
         #expect(sent == expected)

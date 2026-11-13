@@ -783,6 +783,16 @@ public enum Action: Sendable {
     }
 }
 
+/// The queued prompt a send came from, to put back when it can't go out.
+public struct PromptRequeue: Sendable, Equatable {
+    public var cardId: String
+    public var prompt: QueuedPrompt
+    public init(cardId: String, prompt: QueuedPrompt) {
+        self.cardId = cardId
+        self.prompt = prompt
+    }
+}
+
 public enum QueuedPromptPlacement: Sendable, Equatable {
     case front
     case back
@@ -854,8 +864,12 @@ public enum Effect: Sendable {
     case moveSessionFile(cardId: String, sessionId: String, oldPath: String, newProjectPath: String)
     /// `human` marks a prompt the human wrote himself, for a rush session
     /// that records it.
-    case sendPromptToTmux(sessionName: String, promptBody: String, assistant: CodingAssistant, human: Bool = false)
-    case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant, human: Bool = false)
+    /// `requeue` is the card's queued prompt, put back in front of its
+    /// queue when the pane runs a bare shell instead of the assistant.
+    case sendPromptToTmux(sessionName: String, promptBody: String, assistant: CodingAssistant, human: Bool = false,
+                          requeue: PromptRequeue? = nil)
+    case sendPromptWithImagesToTmux(sessionName: String, promptBody: String, imagePaths: [String], assistant: CodingAssistant,
+                                    human: Bool = false, requeue: PromptRequeue? = nil)
     /// Writes a prompt the human wrote himself to the card's record of them.
     case recordHumanMessage(cardId: String, text: String, at: Date, sessionId: String?)
     case journalQueuedPrompt(cardId: String, prompt: QueuedPrompt, reason: QueuedPromptJournalReason)
@@ -1706,9 +1720,11 @@ public enum Reducer {
             }
             let sendEffect: Effect
             if let imagePaths = prompt.imagePaths, !imagePaths.isEmpty {
-                sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths, assistant: link.effectiveAssistant, human: prompt.isHuman)
+                sendEffect = .sendPromptWithImagesToTmux(sessionName: sessionName, promptBody: prompt.body, imagePaths: imagePaths, assistant: link.effectiveAssistant, human: prompt.isHuman,
+                                                        requeue: PromptRequeue(cardId: cardId, prompt: queued))
             } else {
-                sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body, assistant: link.effectiveAssistant, human: prompt.isHuman)
+                sendEffect = .sendPromptToTmux(sessionName: sessionName, promptBody: prompt.body, assistant: link.effectiveAssistant, human: prompt.isHuman,
+                                               requeue: PromptRequeue(cardId: cardId, prompt: queued))
             }
             // Journalled before the send, because the send is what loses it:
             // the prompt is already gone from the card by the time tmux is

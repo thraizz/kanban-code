@@ -1228,6 +1228,34 @@ struct MasterRolesTests {
         #expect(await MasterEngine.mirroredPrefix(at: mirror, size: data.count, cardId: "card_seed", client: client) == nil)
     }
 
+    @Test("a resume whose worktree was removed continues in the repository, not in a bare shell")
+    func resumeAfterWorktreeRemoved() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("gone-wt-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let mac = try TestMaster(name: "mac", root: root)
+        let repo = "\(root)/repo"
+        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        mac.store.dispatch(.createManualTask(Link(
+            id: "card_gone", name: "Gone", projectPath: repo, column: .waiting,
+            sessionLink: SessionLink(sessionId: "0f1e2d3c-aaaa-bbbb-cccc-000000000005"),
+            worktreeLink: WorktreeLink(path: "\(repo)/.claude/worktrees/removed", branch: "removed")
+        )))
+
+        #expect(mac.engine.resume(cardId: "card_gone", runRemotely: false, commandOverride: "claude"))
+        for _ in 0..<100 where mac.tmux.created.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
+        let command = try #require(mac.tmux.created.first?.command)
+        #expect(command.hasPrefix("cd '\(repo)' && "))
+
+        // A card made for the worktree itself has it as its project folder.
+        mac.store.dispatch(.createManualTask(Link(
+            id: "card_gone2", name: "Gone too", projectPath: "\(repo)/.claude/worktrees/also-removed", column: .waiting,
+            sessionLink: SessionLink(sessionId: "0f1e2d3c-aaaa-bbbb-cccc-000000000006")
+        )))
+        #expect(mac.engine.resume(cardId: "card_gone2", runRemotely: false, commandOverride: "claude"))
+        for _ in 0..<100 where mac.tmux.created.count < 2 { try await Task.sleep(for: .milliseconds(50)) }
+        #expect(mac.tmux.created.last?.command?.hasPrefix("cd '\(repo)' && ") == true)
+    }
+
     @Test("a search on one master finds the cards only its peer knows, and still answers when the peer is gone")
     func searchAcrossMasters() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("search-\(UUID().uuidString)")

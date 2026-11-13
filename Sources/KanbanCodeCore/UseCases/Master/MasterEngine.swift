@@ -669,6 +669,26 @@ public final class MasterEngine {
         "printf '\\e[2mSyncing files...\\e[0m' && mutagen sync flush --label-selector kanban=true 2>/dev/null; printf '\\e[2mRemote: %s\\e[0m\\n' \"$(ssh -o ConnectTimeout=5 \(host) uname -snr 2>/dev/null || echo 'unavailable')\""
     }
 
+    /// Where a session whose folder is gone continues: the repository of a
+    /// `.claude/worktrees/<name>` worktree, else the card's project folder,
+    /// else the nearest folder above that still exists.
+    public nonisolated static func resumeFallbackDirectory(
+        for missing: String, projectPath: String?,
+        exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+    ) -> String? {
+        if let range = missing.range(of: "/.claude/worktrees/") {
+            let repo = String(missing[..<range.lowerBound])
+            if exists(repo) { return repo }
+        }
+        if let projectPath, projectPath != missing, exists(projectPath) { return projectPath }
+        var dir = (missing as NSString).deletingLastPathComponent
+        while dir.count > 1 {
+            if exists(dir) { return dir }
+            dir = (dir as NSString).deletingLastPathComponent
+        }
+        return nil
+    }
+
     // MARK: - Resume
 
     /// Starts a card's session again from its conversation, here or on a
@@ -723,12 +743,24 @@ public final class MasterEngine {
         let effectiveModelVariantOverride = modelVariantOverride ?? card.link.modelVariantOverride
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         // For worktree cards, cd into the worktree — that's where Claude stored the session data.
-        let projectPath: String
+        // A worktree Claude Code removed itself (`.claude/worktrees/…` ends with
+        // its session) is gone here: the resume would `cd` into nothing and
+        // leave a bare shell that takes the next prompt as shell input. It
+        // continues in the repository instead; the session file moves below.
+        // A card on a machine keeps its paths: the machine has them.
+        var resolvedPath: String
         if let worktreePath = card.link.worktreeLink?.path, !worktreePath.isEmpty {
-            projectPath = worktreePath
+            resolvedPath = worktreePath
         } else {
-            projectPath = card.link.projectPath ?? NSHomeDirectory()
+            resolvedPath = card.link.projectPath ?? NSHomeDirectory()
         }
+        let keepsPaths = card.link.remote != nil || (runRemotely && store.state.remoteMode.runsOnMachines)
+        if !keepsPaths, !FileManager.default.fileExists(atPath: resolvedPath),
+           let fallback = Self.resumeFallbackDirectory(for: resolvedPath, projectPath: card.link.projectPath) {
+            KanbanCodeLog.info("resume", "\(resolvedPath) is gone, resuming card=\(cardId.prefix(12)) in \(fallback)")
+            resolvedPath = fallback
+        }
+        let projectPath = resolvedPath
 
         // If the session file lives under a different project key (e.g. a cleaned-up worktree),
         // move it to the current projectPath so `claude --resume` can find it.

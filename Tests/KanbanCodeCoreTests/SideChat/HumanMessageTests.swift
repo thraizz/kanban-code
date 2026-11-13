@@ -277,7 +277,7 @@ struct HumanPromptReducerTests {
         var sentAsHuman: Bool?
         for effect in effects {
             if case .recordHumanMessage(let cardId, let text, let at, let sessionId) = effect { recorded = (cardId, text, at, sessionId) }
-            if case .sendPromptToTmux(_, _, _, let human) = effect { sentAsHuman = human }
+            if case .sendPromptToTmux(_, _, _, let human, _) = effect { sentAsHuman = human }
         }
         #expect(recorded?.0 == "card_1")
         #expect(recorded?.1 == "ship it")
@@ -294,7 +294,7 @@ struct HumanPromptReducerTests {
         var sentAsHuman: Bool?
         for effect in effects {
             if case .recordHumanMessage = effect { Issue.record("an agent's prompt was recorded as the human's") }
-            if case .sendPromptWithImagesToTmux(_, _, _, _, let human) = effect { sentAsHuman = human }
+            if case .sendPromptWithImagesToTmux(_, _, _, _, let human, _) = effect { sentAsHuman = human }
         }
         #expect(sentAsHuman == false)
         #expect(!prompt.isHuman)

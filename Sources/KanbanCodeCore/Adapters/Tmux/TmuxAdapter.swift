@@ -294,6 +294,13 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         return result.stdout
     }
 
+    public func paneCommand(sessionName: String) async throws -> String? {
+        let result = try await runTmux(["display-message", "-p", "-t", sessionName, "#{pane_current_command}"])
+        guard result.succeeded else { return nil }
+        let command = result.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        return command.isEmpty ? nil : command
+    }
+
     public func sendBracketedPaste(to sessionName: String) async throws {
         // Send empty bracketed paste: \e[200~ \e[201~
         // Claude Code detects the paste event and checks the system clipboard for images.

@@ -80,8 +80,10 @@ public actor EffectHandler {
         remoteMachines: (any RemoteMachineControl)? = nil,
         humanMessageLog: HumanMessageLog? = nil,
         titleGenerator: (@Sendable (String) async throws -> String)? = nil,
-        conversationStore: ConversationStore? = nil
+        conversationStore: ConversationStore? = nil,
+        assistantStartWait: Duration = .seconds(20)
     ) {
+        self.assistantStartWait = assistantStartWait
         self.titleGenerator = titleGenerator ?? { try await TaskTitleGenerator.generate(prompt: $0) }
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
@@ -91,6 +93,38 @@ public actor EffectHandler {
         self.humanMessageLog = humanMessageLog ?? HumanMessageLog()
         self.conversationStore = conversationStore ?? ConversationStore()
         self.remoteMachines = remoteMachines
+    }
+
+    /// Shells a pane runs when its assistant never started or has exited.
+    static let shellCommands: Set<String> = ["zsh", "bash", "sh", "fish", "dash", "ksh", "tcsh", "nu", "login"]
+
+    /// How long a send waits for an assistant that is still starting.
+    private let assistantStartWait: Duration
+
+    /// Whether the session's pane runs its assistant and not a bare shell,
+    /// where a prompt would be typed as shell input (a resume whose `cd`
+    /// failed leaves one). A shell gets a few seconds to start the assistant;
+    /// if it doesn't, the prompt goes back to the front of the card's queue.
+    private func assistantRuns(
+        in sessionName: String, requeue: PromptRequeue?,
+        dispatch: @MainActor @Sendable (Action) -> Void
+    ) async -> Bool {
+        guard let tmuxAdapter else { return true }
+        let start = ContinuousClock.now
+        while true {
+            guard let command = try? await tmuxAdapter.paneCommand(sessionName: sessionName),
+                  Self.shellCommands.contains((command as NSString).lastPathComponent.trimmingCharacters(in: CharacterSet(charactersIn: "-")))
+            else { return true }
+            if ContinuousClock.now - start >= assistantStartWait { break }
+            try? await Task.sleep(for: .milliseconds(500))
+        }
+        KanbanCodeLog.warn("effect", "\(sessionName) runs a bare shell, not its assistant; prompt not sent")
+        if let requeue {
+            var prompt = requeue.prompt
+            prompt.sendAutomatically = false
+            await dispatch(.addQueuedPrompt(cardId: requeue.cardId, prompt: prompt, placement: .front))
+        }
+        return false
     }
 
     public func execute(_ effect: Effect, dispatch: @MainActor @Sendable (Action) -> Void) async {
@@ -236,7 +270,7 @@ public actor EffectHandler {
         case .recordHumanMessage(let cardId, let text, let at, let sessionId):
             humanMessageLog.append(cardId: cardId, HumanMessageRecord(at: at, text: text, sessionId: sessionId))
 
-        case .sendPromptToTmux(let sessionName, let promptBody, let assistant, let human):
+        case .sendPromptToTmux(let sessionName, let promptBody, let assistant, let human, let requeue):
             await acquireSend(sessionName)
             defer { releaseSend(sessionName) }
             do {
@@ -252,6 +286,7 @@ public actor EffectHandler {
                     try await rush.send(id: rushId, text: promptBody, human: true)
                     return
                 }
+                guard await assistantRuns(in: sessionName, requeue: requeue, dispatch: dispatch) else { return }
                 if assistant.submitsPromptWithPaste {
                     try await tmuxAdapter?.pastePrompt(to: sessionName, text: promptBody)
                 } else {
@@ -261,7 +296,7 @@ public actor EffectHandler {
                 KanbanCodeLog.warn("effect", "sendPromptToTmux failed: \(error)")
             }
 
-        case .sendPromptWithImagesToTmux(let sessionName, let promptBody, let imagePaths, let assistant, let human):
+        case .sendPromptWithImagesToTmux(let sessionName, let promptBody, let imagePaths, let assistant, let human, let requeue):
             await acquireSend(sessionName)
             defer { releaseSend(sessionName) }
             do {
@@ -277,6 +312,7 @@ public actor EffectHandler {
                     try await rush.send(id: rushId, text: promptBody, imagePaths: imagePaths, human: human)
                     return
                 }
+                guard await assistantRuns(in: sessionName, requeue: requeue, dispatch: dispatch) else { return }
                 let images = assistant.supportsImageUpload
                     ? imagePaths.compactMap { ImageAttachment.fromPath($0) }
                     : []
