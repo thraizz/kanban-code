@@ -11,6 +11,13 @@ struct SystemTrayTests {
         #expect(pids == Set<pid_t>([123, 456]))
     }
 
+    @Test("Only helpers that are still alive block a relaunch")
+    func stillRunningFiltersExitedHelpers() {
+        let alive: Set<pid_t> = [456]
+        #expect(SystemTray.stillRunning([123, 456]) { alive.contains($0) } == [456])
+        #expect(SystemTray.stillRunning([123]) { alive.contains($0) }.isEmpty)
+    }
+
     @Test("Menu is not rebuilt when content is unchanged")
     func noRebuildWhenUnchanged() {
         let a = SystemTray.MenuContent.make(active: [("A", true)], waiting: ["W"])

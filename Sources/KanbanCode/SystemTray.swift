@@ -22,6 +22,12 @@ final class SystemTray: NSObject, @unchecked Sendable {
     private var activeSessionPID: pid_t?
     /// True while an `openApplication` request for the helper is in flight.
     private var activeSessionLaunching = false
+    /// Helpers we sent SIGTERM that may not have exited yet. LaunchServices still lists
+    /// a dying helper, so `openApplication` would message it instead of launching a new
+    /// one; it fails with procNotFound and macOS shows "…is not open anymore".
+    private var exitingHelperPIDs: Set<pid_t> = []
+    /// True while a re-check is queued for when the exiting helpers are gone.
+    private var helperRelaunchScheduled = false
     /// Orphan discovery from earlier app instances runs once at startup.
     private var orphanScanStarted = false
     private var orphanScanDone = false
@@ -242,6 +248,13 @@ final class SystemTray: NSObject, @unchecked Sendable {
         if let proc = activeSessionProcess, proc.isRunning { return }
         if activeSessionLaunching { return }
 
+        // Wait for helpers we just stopped to exit, then decide again.
+        exitingHelperPIDs = Self.stillRunning(exitingHelperPIDs) { kill($0, 0) == 0 }
+        if !exitingHelperPIDs.isEmpty {
+            scheduleHelperRelaunchCheck()
+            return
+        }
+
         // Try .app bundle first (Amphetamine can detect this)
         if let appURL = Self.findActiveSessionApp() {
             let config = NSWorkspace.OpenConfiguration()
@@ -301,6 +314,7 @@ final class SystemTray: NSObject, @unchecked Sendable {
 
         let pids = Self.uniqueActiveSessionPIDs(helperPIDs)
         guard !pids.isEmpty else { return }
+        exitingHelperPIDs.formUnion(pids)
         Self.terminate(pids)
         MemoryDiagnostics.shared.setRelatedProcessPIDs(label: "active-session", pids: [])
     }
@@ -339,9 +353,29 @@ final class SystemTray: NSObject, @unchecked Sendable {
         orphanScanDone = true
         let orphans = Self.uniqueActiveSessionPIDs(found.map { Optional($0) })
             .subtracting(Self.uniqueActiveSessionPIDs([activeSessionPID, activeSessionProcess?.processIdentifier]))
-        if !orphans.isEmpty { Self.terminate(orphans) }
+        if !orphans.isEmpty {
+            exitingHelperPIDs.formUnion(orphans)
+            Self.terminate(orphans)
+        }
         // Now that scanning is done, apply the current start/stop decision.
         updateVisibility()
+    }
+
+    /// Re-runs the start/stop decision shortly, once the exiting helpers have had time to go.
+    private func scheduleHelperRelaunchCheck() {
+        guard !helperRelaunchScheduled else { return }
+        helperRelaunchScheduled = true
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(for: .milliseconds(250))
+            guard let self else { return }
+            self.helperRelaunchScheduled = false
+            self.updateVisibility()
+        }
+    }
+
+    /// The pids among `pids` that `isAlive` still reports as running.
+    nonisolated static func stillRunning(_ pids: Set<pid_t>, isAlive: (pid_t) -> Bool) -> Set<pid_t> {
+        pids.filter(isAlive)
     }
 
     nonisolated static func uniqueActiveSessionPIDs(_ candidates: [pid_t?]) -> Set<pid_t> {
