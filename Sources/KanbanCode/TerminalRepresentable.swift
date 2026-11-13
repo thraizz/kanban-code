@@ -923,28 +923,9 @@ final class TerminalCache {
         return terminal
     }
 
-    /// Retries of terminals waiting for their card's owner, by session.
-    private var ownerWaits: [String: Int] = [:]
-
-    /// Start the tmux attach process if the terminal has a non-zero frame and hasn't started yet.
-    /// A terminal of a card whose owner is not known yet waits for it (up to 30 seconds).
-    func startProcessIfNeeded(for sessionName: String) {
-        guard let terminal = terminals[sessionName] else { return }
-        guard !startedSessions.contains(sessionName) else { return }
-        guard terminal.frame.width > 0, terminal.frame.height > 0 else { return }
-        if AppServices.terminalWaitsForOwner(sessionName), (ownerWaits[sessionName] ?? 0) < 60 {
-            ownerWaits[sessionName, default: 0] += 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
-                self?.startProcessIfNeeded(for: sessionName)
-            }
-            return
-        }
-        ownerWaits[sessionName] = nil
-        startedSessions.insert(sessionName)
-        // A new terminal attaches; a hold from an earlier one is over.
-        try? FileManager.default.removeItem(atPath: Self.detachMarkerPath(for: sessionName))
-
-        let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+    /// The shell script that attaches a terminal to `sessionName`: a peer's
+    /// card, a remote machine, rush, or the local tmux session.
+    func attachScript(for sessionName: String) -> String {
         let script: String
         if let peer = AppServices.peerCard(forSession: sessionName),
            let peerScript = AppServices.peerAttachScript(machineId: peer.machineId, cardId: peer.cardId, session: sessionName) {
@@ -977,6 +958,32 @@ final class TerminalCache {
         } else {
             script = Self.attachScript(tmux: Self.tmuxPath, session: sessionName)
         }
+        return script
+    }
+
+    /// Retries of terminals waiting for their card's owner, by session.
+    private var ownerWaits: [String: Int] = [:]
+
+    /// Start the tmux attach process if the terminal has a non-zero frame and hasn't started yet.
+    /// A terminal of a card whose owner is not known yet waits for it (up to 30 seconds).
+    func startProcessIfNeeded(for sessionName: String) {
+        guard let terminal = terminals[sessionName] else { return }
+        guard !startedSessions.contains(sessionName) else { return }
+        guard terminal.frame.width > 0, terminal.frame.height > 0 else { return }
+        if AppServices.terminalWaitsForOwner(sessionName), (ownerWaits[sessionName] ?? 0) < 60 {
+            ownerWaits[sessionName, default: 0] += 1
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+                self?.startProcessIfNeeded(for: sessionName)
+            }
+            return
+        }
+        ownerWaits[sessionName] = nil
+        startedSessions.insert(sessionName)
+        // A new terminal attaches; a hold from an earlier one is over.
+        try? FileManager.default.removeItem(atPath: Self.detachMarkerPath(for: sessionName))
+
+        let userShell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
+        let script = attachScript(for: sessionName)
         terminal.startProcess(
             executable: userShell,
             args: ["-l", "-c", script],
@@ -1349,6 +1356,9 @@ final class TerminalContainerNSView: NSView {
     /// GitHub base URL for resolving bare #123 references in terminals.
     var githubBaseURL: String? {
         didSet {
+            #if KANBAN_GHOSTTY
+            if GhosttyRuntime.isEnabled { return }
+            #endif
             for name in managedSessions {
                 TerminalCache.shared.terminal(for: name, frame: bounds).githubBaseURL = githubBaseURL
             }
@@ -1370,6 +1380,18 @@ final class TerminalContainerNSView: NSView {
     /// Ensure a terminal for `sessionName` is attached to this container.
     func ensureTerminal(for sessionName: String) {
         guard !managedSessions.contains(sessionName) else { return }
+        #if KANBAN_GHOSTTY
+        if GhosttyRuntime.isEnabled {
+            let view = GhosttySurfaceCache.view(for: sessionName, frame: bounds)
+            if view.superview !== self {
+                view.removeFromSuperview()
+                addSubview(view)
+            }
+            view.isHidden = true
+            managedSessions.append(sessionName)
+            return
+        }
+        #endif
         let terminal = TerminalCache.shared.terminal(for: sessionName, frame: bounds)
         terminal.githubBaseURL = githubBaseURL
         if terminal.superview !== self {
@@ -1386,6 +1408,18 @@ final class TerminalContainerNSView: NSView {
     /// Show only the terminal for `sessionName`, hide all others.
     func showTerminal(for sessionName: String, grabFocus: Bool = false) {
         activeSession = sessionName
+        #if KANBAN_GHOSTTY
+        if GhosttyRuntime.isEnabled {
+            for name in managedSessions {
+                guard let view = GhosttySurfaceCache.existing(name) else { continue }
+                view.isHidden = name != sessionName
+                if name == sessionName, grabFocus {
+                    DispatchQueue.main.async { [weak self] in self?.window?.makeFirstResponder(view) }
+                }
+            }
+            return
+        }
+        #endif
         for name in managedSessions {
             let terminal = TerminalCache.shared.terminal(for: name, frame: bounds)
             let isActive = (name == sessionName)
@@ -1423,6 +1457,9 @@ final class TerminalContainerNSView: NSView {
     func removeTerminalsNotIn(_ keep: Set<String>) {
         let toRemove = managedSessions.filter { !keep.contains($0) }
         for name in toRemove {
+            #if KANBAN_GHOSTTY
+            GhosttySurfaceCache.remove(name)
+            #endif
             TerminalCache.shared.remove(name)
             managedSessions.removeAll { $0 == name }
         }
@@ -1455,6 +1492,9 @@ final class TerminalContainerNSView: NSView {
             }
         }
 
+        #if KANBAN_GHOSTTY
+        if GhosttyRuntime.isEnabled { return }
+        #endif
         for name in managedSessions {
             TerminalCache.shared.startProcessIfNeeded(for: name)
         }
