@@ -12,6 +12,9 @@ public struct HookEvent: Sendable {
     /// SessionStart only: startup, resume, clear, or compact. Tells a real
     /// fresh start apart from a compaction of a live session.
     public let source: String?
+    /// SubagentStart and SubagentStop only: which subagent the event is
+    /// about, so a stop is matched to its own start.
+    public let agentId: String?
     public let timestamp: Date
 
     public init(
@@ -21,6 +24,7 @@ public struct HookEvent: Sendable {
         notificationType: String? = nil,
         message: String? = nil,
         source: String? = nil,
+        agentId: String? = nil,
         timestamp: Date = .now
     ) {
         self.sessionId = sessionId
@@ -29,6 +33,7 @@ public struct HookEvent: Sendable {
         self.notificationType = notificationType
         self.message = message
         self.source = source
+        self.agentId = agentId
         self.timestamp = timestamp
     }
 }

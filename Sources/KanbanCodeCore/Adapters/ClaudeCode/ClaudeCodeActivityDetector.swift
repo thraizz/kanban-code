@@ -23,7 +23,18 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     /// the main agent goes back to the prompt, Stop fires, and the work
     /// carries on. Nothing else reports it, because the transcript gets no
     /// lines while a subagent works.
-    private var runningSubagents: [String: [Date]] = [:]
+    ///
+    /// Each entry carries the subagent's id when the hook reported one, so a
+    /// stop removes its own start. Claude Code also sends stops that have no
+    /// start (one follows many a Stop), and counting those against the
+    /// running agents ended the work of background agents still busy, and
+    /// moved their card to Done.
+    private var runningSubagents: [String: [RunningSubagent]] = [:]
+
+    private struct RunningSubagent {
+        let agentId: String?
+        let started: Date
+    }
     /// How long a subagent counts as running without its stop event.
     ///
     /// A session killed while its subagents work never sends them, and the
@@ -58,12 +69,26 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
         // Subagent events say what runs under the session, not what the
         // session itself is doing, so they must not become its last event.
         if event.eventName == "SubagentStart" {
-            runningSubagents[event.sessionId, default: []].append(event.timestamp)
+            var running = runningSubagents[event.sessionId] ?? []
+            // A subagent continued after it stopped starts again under its
+            // own id; it is one agent, not two.
+            if let id = event.agentId { running.removeAll { $0.agentId == id } }
+            running.append(RunningSubagent(agentId: event.agentId, started: event.timestamp))
+            runningSubagents[event.sessionId] = running
             return
         }
         if event.eventName == "SubagentStop" {
             var running = runningSubagents[event.sessionId] ?? []
-            if !running.isEmpty { running.removeFirst() }
+            if let id = event.agentId {
+                // A stop for a subagent never seen starting is not about
+                // any of the running ones.
+                if let index = running.firstIndex(where: { $0.agentId == id }) {
+                    running.remove(at: index)
+                }
+            } else if let index = running.firstIndex(where: { $0.agentId == nil }) {
+                // Events from a hook script that did not report ids: count.
+                running.remove(at: index)
+            }
             runningSubagents[event.sessionId] = running.isEmpty ? nil : running
             return
         }
@@ -96,7 +121,7 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     private func hasRunningSubagents(_ sessionId: String) -> Bool {
         guard let started = runningSubagents[sessionId], !started.isEmpty else { return false }
         let cutoff = Date.now.addingTimeInterval(-subagentTimeout)
-        let live = started.filter { $0 > cutoff }
+        let live = started.filter { $0.started > cutoff }
         if live.count != started.count {
             runningSubagents[sessionId] = live.isEmpty ? nil : live
         }

@@ -294,6 +294,37 @@ struct HookManagerTests {
         #expect(!lines[1].contains(#""notificationType""#))
     }
 
+    @Test("deployed script records the subagent id, and the store reads it")
+    func scriptRecordsSubagentId() async throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+
+        let scriptPath = (dir as NSString).appendingPathComponent(".kanban-code/hook.sh")
+        let settingsPath = (dir as NSString).appendingPathComponent("settings.json")
+        try HookManager.install(claudeSettingsPath: settingsPath, hookScriptPath: scriptPath)
+
+        try runHookScript(
+            scriptPath, home: dir,
+            payload:
+                #"{"session_id":"s1","hook_event_name":"SubagentStart","transcript_path":"/tmp/a.jsonl","agent_id":"a1","agent_type":"general-purpose"}"#
+        )
+        try runHookScript(
+            scriptPath, home: dir,
+            payload:
+                #"{"session_id":"s1","hook_event_name":"SubagentStop","transcript_path":"/tmp/a.jsonl","agent_id":"a1","last_assistant_message":"done"}"#
+        )
+        try runHookScript(
+            scriptPath, home: dir,
+            payload:
+                #"{"session_id":"s1","hook_event_name":"Stop","transcript_path":"/tmp/a.jsonl","agent_id":"main"}"#
+        )
+
+        let events = try await HookEventStore(basePath: (dir as NSString).appendingPathComponent(".kanban-code"))
+            .readNewEvents()
+        #expect(events.map(\.eventName) == ["SubagentStart", "SubagentStop", "Stop"])
+        #expect(events.map(\.agentId) == ["a1", "a1", nil])
+    }
+
     @Test("refreshHookScript rewrites a stale script and skips a missing one")
     func refreshHookScriptRewritesStale() throws {
         let dir = try makeTempDir()

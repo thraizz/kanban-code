@@ -81,6 +81,7 @@ public actor HookEventStore {
             notificationType: notificationType,
             message: message,
             source: obj["source"] as? String,
+            agentId: obj["agentId"] as? String,
             timestamp: timestamp
         )
     }

@@ -195,6 +195,53 @@ struct SubagentActivityTests {
         #expect(link.column == .inProgress)
     }
 
+    /// Claude Code sends SubagentStops that have no start of their own, one
+    /// after many a Stop. They must not end a background agent still busy.
+    @Test("a stop for an unknown subagent leaves the running ones working")
+    func strayStopDoesNotEndRunningSubagent() async {
+        let detector = detector()
+
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStart", agentId: "a1"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStop", agentId: "other"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStop", agentId: "other2"))
+
+        #expect(await detector.activityState(for: "s1") == .activelyWorking)
+
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStop", agentId: "a1"))
+
+        #expect(await detector.activityState(for: "s1") == .needsAttention)
+    }
+
+    @Test("each subagent's stop ends only that subagent")
+    func stopsMatchTheirOwnStart() async {
+        let detector = detector()
+
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStart", agentId: "a1"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStart", agentId: "a2"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStop", agentId: "a2"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStop", agentId: "a2"))
+
+        #expect(await detector.activityState(for: "s1") == .activelyWorking)
+
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStop", agentId: "a1"))
+
+        #expect(await detector.activityState(for: "s1") == .needsAttention)
+    }
+
+    @Test("a subagent continued after it stopped counts once")
+    func restartedSubagentCountsOnce() async {
+        let detector = detector()
+
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStart", agentId: "a1"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStart", agentId: "a1"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop"))
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "SubagentStop", agentId: "a1"))
+
+        #expect(await detector.activityState(for: "s1") == .needsAttention)
+    }
+
     @Test("the hooks the app installs cover subagents")
     func requiredHooksCoverSubagents() {
         let hooks = HookManager.requiredHooks(for: .claude)

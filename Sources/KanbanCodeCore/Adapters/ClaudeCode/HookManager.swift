@@ -355,6 +355,17 @@ public enum HookManager {
         fi
     fi
 
+    # SubagentStart and SubagentStop name the subagent, so a stop can be
+    # matched to its own start: Claude Code also sends stops with no start
+    # (after a Stop hook runs, for instance), which must not end the count
+    # of a background agent that is still working.
+    if [ "$hook_event" = "SubagentStart" ] || [ "$hook_event" = "SubagentStop" ]; then
+        agent_id=$(echo "$input" | grep -o '"agent_id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+        if [ -n "$agent_id" ]; then
+            extra="$extra,\\"agentId\\":\\"$agent_id\\""
+        fi
+    fi
+
     # Append event line
     printf '{"sessionId":"%s","event":"%s","timestamp":"%s","transcriptPath":"%s"%s}\\n' \\
         "$session_id" "$hook_event" "$timestamp" "$transcript" "$extra" >> "$EVENTS_FILE"
