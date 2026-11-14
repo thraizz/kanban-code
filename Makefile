@@ -1,4 +1,4 @@
-.PHONY: build test run app app-debug run-app run-release clean cli install-cli ios-project ios ios-run ios-test ios-device ios-autoinstall ios-autoinstall-remove rush-plugins
+.PHONY: ghosttykit-check build test run app app-debug run-app run-release clean cli install-cli ios-project ios ios-run ios-test ios-device ios-autoinstall ios-autoinstall-remove rush-plugins
 
 BUNDLE_NAME = KanbanCode.app
 BUNDLE_DIR = build/$(BUNDLE_NAME)
@@ -18,13 +18,24 @@ ifeq ($(strip $(CODESIGN_IDENTITY)),)
 CODESIGN_IDENTITY := -
 endif
 
-build:
+# The terminal is libghostty. GhosttyKit is not checked in: it is built
+# from Ghostty's sources with zig (Scripts/build-ghosttykit.sh).
+GHOSTTYKIT = Frameworks/GhosttyKit.xcframework
+
+ghosttykit-check:
+	@if [ ! -d $(GHOSTTYKIT) ]; then \
+		echo "error: $(GHOSTTYKIT) is missing. The app's terminal needs it." >&2; \
+		echo "       Build it with Scripts/build-ghosttykit.sh (needs zig: brew install zig)." >&2; \
+		exit 1; \
+	fi
+
+build: ghosttykit-check
 	swift build -c $(CONFIG) --arch $(ARCH)
 
-test:
+test: ghosttykit-check
 	swift test
 
-run:
+run: ghosttykit-check
 	swift run KanbanCode
 
 app: build cli install-cli

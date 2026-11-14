@@ -8,6 +8,8 @@ swift test           # run all tests
 make run-app         # build + launch the app
 ```
 
+The terminal is libghostty. `Frameworks/GhosttyKit.xcframework` is not checked in; build it once with `Scripts/build-ghosttykit.sh` (needs zig: `brew install zig`). The macOS app does not build without it.
+
 After any change to app code, build, install and relaunch the app so the running copy matches the source:
 
 ```bash
@@ -121,6 +123,5 @@ For memory/hang investigations, the app self-instruments under `~/.kanban-code/l
 - `kanban-code.log` — grep `[memory]` for footprint samples (periodic + growth + kernel pressure + sleep/wake brackets), `[memory-context]` for app-state/cache sizes, `[reconcile]` for per-phase timings.
 - `main-thread-hangs.log` + `main-thread-samples/*.sample.txt` — watchdog fires `sample` on >500ms main-thread stalls. In sample output, check the THREAD header before blaming code: Swift async work shows under `com.apple.root.*-qos.cooperative` (off main), not `DispatchQueue_1`.
 - `memory-samples/` — `vmmap -summary` artifacts captured on growth/critical/pressure events.
-- `terminal-stats.log` — terminal feed throughput/backlog stats (no timestamps, relative intervals).
 
 Feature usage (names and counts only) is kept in `~/.kanban-code/usage/` (`<yyyy-MM-dd>.json` from the app, `cli.jsonl` from the CLI). `Scripts/usage-report.py [--days N]` lists what is used and what never is.

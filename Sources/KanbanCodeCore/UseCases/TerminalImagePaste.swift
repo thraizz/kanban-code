@@ -21,25 +21,6 @@ public enum TerminalImageRoute: Equatable, Sendable {
     }
 }
 
-/// What a paste into a card's terminal does.
-public enum TerminalPastePlan: Equatable, Sendable {
-    /// A bracketed paste of the clipboard's text (empty when it has none:
-    /// the assistant then looks for an image on the clipboard of its own
-    /// machine).
-    case text
-    /// The image goes to the machine of `route` as a file, and the paste
-    /// types the path of that file.
-    case upload(TerminalImageRoute)
-
-    /// Text on the clipboard wins over an image. An image alone is
-    /// uploaded when the assistant runs somewhere else, since the clipboard
-    /// it would read is not this Mac's.
-    public static func plan(hasText: Bool, hasImage: Bool, route: TerminalImageRoute) -> TerminalPastePlan {
-        guard !hasText, hasImage, route != .local else { return .text }
-        return .upload(route)
-    }
-}
-
 /// Images pasted into the terminal of a card from another master, kept as
 /// files on the master that owns the card so the paste can type their path.
 public enum PastedImages {

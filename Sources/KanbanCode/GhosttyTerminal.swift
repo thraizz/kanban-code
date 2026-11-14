@@ -1,25 +1,19 @@
-#if KANBAN_GHOSTTY
 import AppKit
 import GhosttyKit
 import KanbanCodeCore
 
-/// Experimental terminal backed by libghostty (GhosttyKit) instead of SwiftTerm.
+/// The app's terminal, backed by libghostty (GhosttyKit).
 ///
-/// Turned on with `defaults write com.kanban-code.app experimentalGhosttyTerminal -bool true`.
 /// Font, line height, padding and colors come from the user's Ghostty config
 /// (`~/.config/ghostty/config` or `~/Library/Application Support/com.mitchellh.ghostty/config`),
 /// then `~/.kanban-code/ghostty.config` (a dark theme by default).
 /// Needs `Frameworks/GhosttyKit.xcframework` (`Scripts/build-ghosttykit.sh`).
 ///
-/// This is a spike: keyboard input without IME, mouse, scroll and resize.
-/// No clipboard reads, no URL detection, no tmux scroll bridging.
+/// Keyboard input without IME, mouse, scroll, resize, paste and copy.
+/// Programs cannot read the clipboard, and there is no URL detection.
 @MainActor
 final class GhosttyRuntime {
     static let shared = GhosttyRuntime()
-
-    static var isEnabled: Bool {
-        UserDefaults.standard.bool(forKey: "experimentalGhosttyTerminal")
-    }
 
     private(set) var app: ghostty_app_t?
 
@@ -68,63 +62,55 @@ final class GhosttyRuntime {
     }
 }
 
-/// Ghostty surfaces by tmux session; they outlive the container like SwiftTerm's.
-@MainActor
-enum GhosttySurfaceCache {
-    private static var views: [String: GhosttySurfaceView] = [:]
-
-    static func existing(_ session: String) -> GhosttySurfaceView? { views[session] }
-
-    static func view(for session: String, frame: NSRect) -> GhosttySurfaceView {
-        if let view = views[session] { return view }
-        let shell = ProcessInfo.processInfo.environment["SHELL"] ?? "/bin/zsh"
-        let script = TerminalCache.shared.attachScript(for: session)
-        // Ghostty runs this through `/bin/sh -c "exec -l …"` itself. The `env`
-        // in front keeps its shell integration from recognizing the login shell
-        // and replacing the command with a bare interactive shell.
-        let command = "/usr/bin/env \(shellQuote(shell)) -l -c \(shellQuote(script))"
-        let view = GhosttySurfaceView(frame: frame, command: command)
-        views[session] = view
-        return view
-    }
-
-    static func remove(_ session: String) {
-        views.removeValue(forKey: session)?.removeFromSuperview()
-    }
-
-    private static func shellQuote(_ s: String) -> String {
-        "'" + s.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-}
-
 /// One Ghostty surface running a shell command (the tmux attach script).
+/// The view exists before its command runs: `start(command:)` creates the
+/// surface once the view has a size, so tmux does not attach at 0x0.
 final class GhosttySurfaceView: NSView {
     private(set) var surface: ghostty_surface_t?
-    private var markedText = NSMutableAttributedString()
     private var keyTextAccumulator: [String]?
 
-    init(frame: NSRect, command: String) {
+    override init(frame: NSRect) {
         super.init(frame: frame)
         wantsLayer = true
-        guard let app = GhosttyRuntime.shared.app else { return }
-
-        var cfg = ghostty_surface_config_new()
-        cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
-        cfg.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
-            nsview: Unmanaged.passUnretained(self).toOpaque()))
-        cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
-        cfg.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
-        cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
-        surface = command.withCString { cmd in
-            cfg.command = cmd
-            return ghostty_surface_new(app, &cfg)
-        }
     }
 
     required init?(coder: NSCoder) { fatalError("not supported") }
 
     isolated deinit {
         if let surface { ghostty_surface_free(surface) }
+    }
+
+    /// Creates the surface, which spawns `command`. Does nothing the second time.
+    func start(command: String) {
+        guard surface == nil, let app = GhosttyRuntime.shared.app else { return }
+        var cfg = ghostty_surface_config_new()
+        cfg.platform_tag = GHOSTTY_PLATFORM_MACOS
+        cfg.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(
+            nsview: Unmanaged.passUnretained(self).toOpaque()))
+        cfg.userdata = Unmanaged.passUnretained(self).toOpaque()
+        cfg.scale_factor = Double(window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2)
+        cfg.context = GHOSTTY_SURFACE_CONTEXT_WINDOW
+        surface = command.withCString { cmd in
+            cfg.command = cmd
+            return ghostty_surface_new(app, &cfg)
+        }
+        guard let surface else { return }
+        viewDidChangeBackingProperties()
+        ghostty_surface_set_focus(surface, window?.firstResponder === self)
+    }
+
+    /// The process in the foreground of the terminal's pty (the tmux client,
+    /// or the ssh or expect that carries it), 0 when there is none.
+    var foregroundPid: pid_t {
+        guard let surface else { return 0 }
+        return pid_t(truncatingIfNeeded: ghostty_surface_foreground_pid(surface))
+    }
+
+    /// Pastes `text` the way the terminal pastes the clipboard (bracketed
+    /// when the program asked for it).
+    func paste(text: String) {
+        guard let surface, !text.isEmpty else { return }
+        ghostty_surface_paste_text(surface, text, UInt(text.utf8.count))
     }
 
     override var acceptsFirstResponder: Bool { true }
@@ -139,9 +125,15 @@ final class GhosttySurfaceView: NSView {
 
     override func viewDidChangeBackingProperties() {
         super.viewDidChangeBackingProperties()
-        if let surface, let window {
+        if let window {
             let scale = window.backingScaleFactor
-            ghostty_surface_set_content_scale(surface, scale, scale)
+            // The layer draws at the window's scale, or a move to a screen
+            // of another scale shows the old bitmap stretched.
+            CATransaction.begin()
+            CATransaction.setDisableActions(true)
+            layer?.contentsScale = scale
+            CATransaction.commit()
+            if let surface { ghostty_surface_set_content_scale(surface, scale, scale) }
         }
         updateSurfaceSize()
     }
@@ -173,6 +165,7 @@ final class GhosttySurfaceView: NSView {
 
     override func keyDown(with event: NSEvent) {
         guard surface != nil else { return }
+        UsageLog.record("terminal", "input")
         // Let AppKit translate (dead keys, option-letters), collecting the text.
         keyTextAccumulator = []
         interpretKeyEvents([event])
@@ -247,8 +240,8 @@ final class GhosttySurfaceView: NSView {
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self, event.type == .keyDown else { return false }
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
-           let surface, let text = NSPasteboard.general.string(forType: .string) {
-            ghostty_surface_paste_text(surface, text, UInt(text.utf8.count))
+           surface != nil, let text = NSPasteboard.general.string(forType: .string) {
+            paste(text: text)
             return true
         }
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" {
@@ -301,4 +294,3 @@ final class GhosttySurfaceView: NSView {
         ghostty_surface_mouse_scroll(surface, x, y, precise ? 1 : 0)
     }
 }
-#endif

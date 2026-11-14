@@ -11,7 +11,7 @@ Feature: Technology Decisions
       | Liquid glass design  | SwiftUI has first-class support for materials  |
       | Native performance   | No bridge overhead, native Metal rendering     |
       | System tray          | NSStatusItem is native API                     |
-      | Terminal emulator    | SwiftTerm or similar native library            |
+      | Terminal emulator    | libghostty (GhosttyKit), native Metal views    |
       | Drag and drop        | NSPasteboard, SwiftUI .draggable/.droppable    |
       | File system access   | Foundation APIs, no sandbox restrictions        |
       | Process management   | Foundation.Process for shell commands           |

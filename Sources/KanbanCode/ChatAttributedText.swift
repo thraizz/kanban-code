@@ -159,7 +159,7 @@ enum ChatAttributedText {
     }()
 
     private static let issueRefRegex = try? NSRegularExpression(
-        pattern: TerminalURLDetector.markdownIssueRefPattern, options: [])
+        pattern: GitHubIssueRef.markdownPattern, options: [])
     private static let urlRegex = try? NSRegularExpression(
         pattern: #"https?://[^\s<>"'\])*]*[^\s<>"'\]).,:;!?]"#, options: [])
 

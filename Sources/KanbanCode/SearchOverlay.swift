@@ -48,10 +48,6 @@ struct SearchOverlay: View {
         .frame(maxWidth: 600, maxHeight: 500)
         .glassOverlay()
         .onAppear(perform: handleAppear)
-        // This is drawn over the board, so the terminal's scroll interception
-        // would otherwise eat the wheel here and scroll the pane behind it.
-        .onAppear { TerminalCache.shared.beginScrollPassthrough() }
-        .onDisappear { TerminalCache.shared.endScrollPassthrough() }
         .onExitCommand { isPresented = false }
         .onKeyPress(.downArrow) { moveSelection(by: 1); return .handled }
         .onKeyPress(.upArrow) { moveSelection(by: -1); return .handled }

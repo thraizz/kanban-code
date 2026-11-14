@@ -748,7 +748,7 @@ extension ChatMessageView {
     /// markdown links).
     private static let issueRefPattern: NSRegularExpression? = {
         try? NSRegularExpression(
-            pattern: TerminalURLDetector.markdownIssueRefPattern, options: [])
+            pattern: GitHubIssueRef.markdownPattern, options: [])
     }()
 
     /// Convert GitHub issue/PR references in text to markdown links.
@@ -765,7 +765,7 @@ extension ChatMessageView {
         for match in matches.reversed() {
             let ref = nsText.substring(with: match.range)
             guard
-                let url = TerminalURLDetector.resolveIssueRef(ref, githubBaseURL: githubBaseURL)
+                let url = GitHubIssueRef.resolve(ref, githubBaseURL: githubBaseURL)
             else { continue }
             let startIdx = text.index(text.startIndex, offsetBy: match.range.location)
             let endIdx = text.index(startIdx, offsetBy: match.range.length)

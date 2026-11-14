@@ -16,7 +16,14 @@ enum AppScale {
     }
 }
 
-// MARK: - Session detail font (used for terminal, history, and prompt panes)
+// MARK: - Session detail font (used for history, transcript and prompt panes)
+
+/// The monospace font size setting of the session detail panes. The
+/// terminal takes its font from the Ghostty config instead.
+enum SessionDetailFont {
+    static let defaultSize: CGFloat = 12
+    static let key = "sessionDetailFontSize"
+}
 
 extension Font {
     /// Monospaced font sized to the user's session detail font size setting.

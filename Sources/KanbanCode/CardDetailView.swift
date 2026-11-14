@@ -942,17 +942,11 @@ struct CardDetailView: View {
                         TerminalContainerView(
                             sessions: allLiveSessions,
                             activeSession: effectiveActiveSession ?? allLiveSessions.first ?? "",
-                            grabFocus: terminalGrabFocus,
-                            githubBaseURL: githubBaseURL
+                            grabFocus: terminalGrabFocus
                         )
                         .equatable()
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                         .opacity(allLiveSessions.isEmpty || showStatus || selectedBrowserTabId != nil ? 0 : 1)
-                        .onChange(of: githubBaseURL) {
-                            for session in allLiveSessions {
-                                TerminalCache.shared.terminal(for: session, frame: .zero).githubBaseURL = githubBaseURL
-                            }
-                        }
                         .onChange(of: terminalGrabFocus) {
                             if terminalGrabFocus {
                                 let session = effectiveActiveSession ?? allLiveSessions.first ?? ""

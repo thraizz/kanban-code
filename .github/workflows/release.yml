@@ -33,6 +33,12 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      # The app's terminal is libghostty, built from Ghostty's sources with zig.
+      - name: Build GhosttyKit
+        run: |
+          brew install zig
+          Scripts/build-ghosttykit.sh
+
       - name: Build release binary
         run: swift build -c release
 

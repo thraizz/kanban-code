@@ -21,11 +21,8 @@ Feature: Terminal rendering performance
     Then only those rows should be drawn
     And styled text for unchanged rows should be reused from a cache
 
-  Scenario: GPU rendering if CPU drawing misses the budget
-    Given CPU drawing still exceeds the frame budget after the caching changes
-    Then the terminal should switch to a GPU-backed renderer
-      (SwiftTerm Metal renderer or a libghostty-based view)
-    And the switch should keep selection, links and scrollback behavior unchanged
+  Scenario: GPU rendering
+    Then the terminal should draw with a GPU-backed renderer (libghostty)
 
   Scenario: Hidden terminals do not draw
     Given a terminal tab is not visible

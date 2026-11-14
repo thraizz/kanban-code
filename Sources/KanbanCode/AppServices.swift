@@ -91,12 +91,6 @@ enum AppServices {
         return nil
     }
 
-    /// Where the assistant of the terminal `sessionName` runs, for an image
-    /// pasted into it.
-    @MainActor
-    static func terminalImageRoute(forSession sessionName: String) -> TerminalImageRoute {
-        TerminalImageRoute.route(peerCard: peerCard(forSession: sessionName), machine: machine(forSession: sessionName))
-    }
 
     /// Whether the terminal `sessionName` must wait before it starts: its
     /// card names an owner, and this Mac does not know yet whether that is
@@ -225,25 +219,14 @@ enum AppServices {
     /// because a person asked for it from the resume bar of a card. Returns
     /// once the bridge is connected: true when it is, false when the machine
     /// did not come back or another resume of it is still running. A
-    /// connected machine returns true at once. The terminals of the machine
-    /// say what is happening while it comes back.
+    /// connected machine returns true at once.
     static func resumeMachine(_ machineName: String) async -> Bool {
         let state = remoteRegistry?.state(of: machineName)
         if state?.isConnected == true { return true }
         guard state != .connecting, let supervisor = boxdSupervisor else { return false }
         guard markResuming(machineName) else { return false }
         defer { clearResuming(machineName) }
-        let sessions = remoteRegistry?.sessionNames(on: machineName) ?? []
-        await MainActor.run {
-            TerminalCache.shared.showNotice("Resuming machine \(machineName)…", sessions: sessions)
-        }
-        let resumed = await supervisor.resume(machineName: machineName)
-        if !resumed {
-            await MainActor.run {
-                TerminalCache.shared.showNotice("Machine \(machineName) did not come back.", sessions: sessions)
-            }
-        }
-        return resumed
+        return await supervisor.resume(machineName: machineName)
     }
 
     /// True when this call is the one that starts the resume.

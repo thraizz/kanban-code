@@ -16,17 +16,6 @@ struct TerminalImagePasteTests {
             == .peer(machineId: "machine_box", cardId: "card_1"))
     }
 
-    @Test("an image alone is uploaded when the assistant runs elsewhere; text wins; a local card pastes as before")
-    func plan() {
-        let peer = TerminalImageRoute.peer(machineId: "machine_box", cardId: "card_1")
-        #expect(TerminalPastePlan.plan(hasText: false, hasImage: true, route: peer) == .upload(peer))
-        #expect(TerminalPastePlan.plan(hasText: false, hasImage: true, route: .machine("gpu-1")) == .upload(.machine("gpu-1")))
-        #expect(TerminalPastePlan.plan(hasText: false, hasImage: true, route: .local) == .text)
-        #expect(TerminalPastePlan.plan(hasText: true, hasImage: true, route: peer) == .text)
-        #expect(TerminalPastePlan.plan(hasText: true, hasImage: false, route: peer) == .text)
-        #expect(TerminalPastePlan.plan(hasText: false, hasImage: false, route: peer) == .text)
-    }
-
     @Test("a stored image keeps its bytes, takes its extension from them, and old ones go")
     func store() throws {
         let home = (NSTemporaryDirectory() as NSString).appendingPathComponent("pasted-store-\(UUID().uuidString)")

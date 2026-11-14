@@ -807,8 +807,8 @@ struct ContentView: View {
             for url in urls {
                 do {
                     let path = try await engine.attachPromptFile(cardId: card.id, fileURL: url)
-                    TerminalCache.shared.terminal(for: sessionName, frame: .zero)
-                        .sendBracketedPaste(text: Self.shellQuotedPath(path) + " ")
+                    TerminalCache.shared.existing(sessionName)?
+                        .paste(text: Self.shellQuotedPath(path) + " ")
                 } catch {
                     let message = "Could not attach \(url.lastPathComponent): \(error.localizedDescription)"
                     KanbanCodeLog.warn("terminal", message)
@@ -2471,15 +2471,14 @@ struct ContentView: View {
     // MARK: - Keyboard Navigation
 
     /// Installs an NSEvent local monitor for arrow keys + Enter.
-    /// Skips handling when a terminal view (LocalProcessTerminalView) is the first responder,
+    /// Skips handling when a terminal view (GhosttySurfaceView) is the first responder,
     /// so typing in the Claude Code terminal works normally.
     private func installKeyMonitor() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             // Don't intercept if a terminal, text field, text view, or table has focus
             if let responder = event.window?.firstResponder {
-                let responderType = String(describing: type(of: responder))
-                if responderType.contains("Terminal")
+                if Self.isTerminal(responder)
                     || responder is NSTextView
                     || responder is NSTextField
                     || responder is NSTableView {
@@ -2593,7 +2592,12 @@ struct ContentView: View {
 
     private var isTerminalFocused: Bool {
         guard let responder = NSApp.keyWindow?.firstResponder else { return false }
-        return String(describing: type(of: responder)).contains("Terminal")
+        return Self.isTerminal(responder)
+    }
+
+    /// A terminal holds the keyboard.
+    static func isTerminal(_ responder: NSResponder) -> Bool {
+        responder is GhosttySurfaceView
     }
 
     private func openPalette(initialQuery: String = "") {
@@ -2660,8 +2664,7 @@ struct ContentView: View {
         guard let window = NSApp.keyWindow,
               let contentView = window.contentView else { return }
         func findTerminal(in view: NSView) -> NSView? {
-            let typeName = String(describing: type(of: view))
-            if typeName.contains("TerminalView"), view.acceptsFirstResponder, !view.isHidden {
+            if view is GhosttySurfaceView, !view.isHidden {
                 return view
             }
             for sub in view.subviews where !sub.isHidden {

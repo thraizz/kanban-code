@@ -1,6 +1,5 @@
 // swift-tools-version: 6.2
 import PackageDescription
-import Foundation
 
 // macOS builds the app, its helpers and the iOS wire types. Linux builds only
 // the headless side: Core, the remote API wire types, the demo server and
@@ -71,16 +70,28 @@ if linuxOnly {
         .executable(name: "kanban-code-active-session", targets: ["KanbanCodeActiveSession"]),
     ], at: 0)
     dependencies.append(contentsOf: [
-        .package(path: "LocalPackages/SwiftTerm"),
         // Vendored fork: see LocalPackages/swift-markdown-ui/FORK.md
         .package(path: "LocalPackages/swift-markdown-ui"),
     ])
     targets.append(contentsOf: [
+        // The terminal is libghostty: GhosttyKit is built locally with
+        // `Scripts/build-ghosttykit.sh` (needs zig) into Frameworks/.
+        .binaryTarget(name: "GhosttyKit", path: "Frameworks/GhosttyKit.xcframework"),
         .executableTarget(
             name: "KanbanCode",
-            dependencies: ["KanbanCodeCore", "SwiftTerm", .product(name: "MarkdownUI", package: "swift-markdown-ui")],
+            dependencies: ["KanbanCodeCore", "GhosttyKit", .product(name: "MarkdownUI", package: "swift-markdown-ui")],
             path: "Sources/KanbanCode",
-            resources: [.copy("Resources")]
+            resources: [.copy("Resources")],
+            linkerSettings: [
+                .linkedLibrary("c++"),
+                .linkedFramework("Carbon"),
+                .linkedFramework("CoreText"),
+                .linkedFramework("IOSurface"),
+                .linkedFramework("Metal"),
+                .linkedFramework("MetalKit"),
+                .linkedFramework("QuartzCore"),
+                .linkedFramework("UniformTypeIdentifiers"),
+            ]
         ),
         .executableTarget(
             name: "KanbanCodeActiveSession",
@@ -92,28 +103,6 @@ if linuxOnly {
             path: "Tests/KanbanCodeTests"
         ),
     ])
-}
-
-// Experimental libghostty terminal: only when a locally built GhosttyKit
-// (`Scripts/build-ghosttykit.sh`) sits in Frameworks/. Without it the app
-// builds exactly as before.
-let ghosttyKitPath = "Frameworks/GhosttyKit.xcframework"
-if !linuxOnly,
-   FileManager.default.fileExists(atPath: Context.packageDirectory + "/" + ghosttyKitPath),
-   let app = targets.first(where: { $0.name == "KanbanCode" }) {
-    targets.append(.binaryTarget(name: "GhosttyKit", path: ghosttyKitPath))
-    app.dependencies.append("GhosttyKit")
-    app.swiftSettings = (app.swiftSettings ?? []) + [.define("KANBAN_GHOSTTY")]
-    app.linkerSettings = (app.linkerSettings ?? []) + [
-        .linkedLibrary("c++"),
-        .linkedFramework("Carbon"),
-        .linkedFramework("CoreText"),
-        .linkedFramework("IOSurface"),
-        .linkedFramework("Metal"),
-        .linkedFramework("MetalKit"),
-        .linkedFramework("QuartzCore"),
-        .linkedFramework("UniformTypeIdentifiers"),
-    ]
 }
 
 // Wire types of the remote control API and the vault's owner-key crypto,

@@ -75,7 +75,7 @@ struct KanbanCodeApp: App {
                 Button("Actual Size") {
                     UsageLog.record("menu", "actual-size")
                     UserDefaults.standard.set(1, forKey: "uiTextSize")
-                    UserDefaults.standard.set(Double(TerminalCache.defaultFontSize), forKey: TerminalCache.fontSizeKey)
+                    UserDefaults.standard.set(Double(SessionDetailFont.defaultSize), forKey: SessionDetailFont.key)
                 }
                 .keyboardShortcut("0", modifiers: .command)
             }
@@ -92,9 +92,9 @@ struct KanbanCodeApp: App {
             ? UserDefaults.standard.integer(forKey: "uiTextSize") : 1
         UserDefaults.standard.set(min(max(currentUI + delta, 0), 4), forKey: "uiTextSize")
 
-        let termSize = UserDefaults.standard.double(forKey: TerminalCache.fontSizeKey)
-        let currentTerm = termSize > 0 ? termSize : Double(TerminalCache.defaultFontSize)
-        UserDefaults.standard.set(min(max(currentTerm + Double(delta), 8), 24), forKey: TerminalCache.fontSizeKey)
+        let termSize = UserDefaults.standard.double(forKey: SessionDetailFont.key)
+        let currentTerm = termSize > 0 ? termSize : Double(SessionDetailFont.defaultSize)
+        UserDefaults.standard.set(min(max(currentTerm + Double(delta), 8), 24), forKey: SessionDetailFont.key)
     }
 
     /// Keep Cmd+Z scoped to the focused text editor.

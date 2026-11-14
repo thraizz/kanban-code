@@ -1,6 +1,7 @@
 #!/bin/sh
-# Builds GhosttyKit.xcframework (libghostty) for the experimental Ghostty
-# terminal and puts it in Frameworks/. Needs zig (brew install zig).
+# Builds GhosttyKit.xcframework (libghostty), the app's terminal, and puts
+# it in Frameworks/. The macOS app does not build without it. Needs zig
+# (brew install zig).
 #   Scripts/build-ghosttykit.sh [ghostty-tag]   (default v1.4.0)
 set -eu
 TAG="${1:-v1.4.0}"
@@ -14,4 +15,4 @@ zig build -Demit-macos-app=false -Demit-xcframework=true -Dxcframework-target=na
 mkdir -p "$ROOT/Frameworks"
 rm -rf "$ROOT/Frameworks/GhosttyKit.xcframework"
 cp -R macos/GhosttyKit.xcframework "$ROOT/Frameworks/"
-echo "GhosttyKit installed. Enable with: defaults write com.kanban-code.app experimentalGhosttyTerminal -bool true"
+echo "GhosttyKit installed in Frameworks/. Build the app with: make app"

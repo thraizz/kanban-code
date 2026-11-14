@@ -76,8 +76,8 @@ public enum RemotePromptImages {
     }
 }
 
-/// Scrolling a tmux terminal's history for a remote viewer, the way the
-/// Mac's card terminal does with the wheel: copy-mode, moved by lines.
+/// Scrolling a tmux terminal's history for a remote viewer: copy-mode,
+/// moved by lines.
 public enum RemoteTerminalScroll {
     /// tmux commands for one scroll of `lines` (up when positive). Copy-mode
     /// starts with `-e`, so scrolling back to the bottom leaves it; `-X`

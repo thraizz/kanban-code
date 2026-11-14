@@ -162,7 +162,7 @@ enum TerminalTranscript {
         for match in regex.matches(in: text, range: NSRange(location: 0, length: nsText.length)) {
             let ref = nsText.substring(with: match.range)
             guard refs[ref] == nil,
-                  let resolved = TerminalURLDetector.resolveIssueRef(ref, githubBaseURL: githubBaseURL),
+                  let resolved = GitHubIssueRef.resolve(ref, githubBaseURL: githubBaseURL),
                   let url = URL(string: resolved) else { continue }
             refs[ref] = url
         }
@@ -170,7 +170,7 @@ enum TerminalTranscript {
     }
 
     private static let issueRefRegex = try? NSRegularExpression(
-        pattern: TerminalURLDetector.markdownIssueRefPattern, options: [])
+        pattern: GitHubIssueRef.markdownPattern, options: [])
 }
 
 // MARK: - View
@@ -227,8 +227,8 @@ private struct TranscriptTerminalRowView: View {
     /// The size the terminal itself uses, so the transcript reads as the
     /// same screen.
     private static var fontSize: CGFloat {
-        let stored = UserDefaults.standard.double(forKey: TerminalCache.fontSizeKey)
-        return stored > 0 ? CGFloat(stored) : TerminalCache.defaultFontSize
+        let stored = UserDefaults.standard.double(forKey: SessionDetailFont.key)
+        return stored > 0 ? CGFloat(stored) : SessionDetailFont.defaultSize
     }
 
     private static var font: NSFont { .monospacedSystemFont(ofSize: fontSize, weight: .regular) }

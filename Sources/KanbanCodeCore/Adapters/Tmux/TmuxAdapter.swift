@@ -27,8 +27,8 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
         try await transport.run(arguments, timeout: timeout)
     }
 
-    /// Runs one tmux command on the server this adapter talks to. For the
-    /// commands the terminal sends on its own, such as copy-mode navigation.
+    /// Runs one tmux command on the server this adapter talks to, for
+    /// commands outside the adapter's own API.
     public func run(_ arguments: [String], timeout: TimeInterval = 20) async throws -> ShellCommand.Result {
         try await runTmux(arguments, timeout: timeout)
     }
@@ -70,7 +70,7 @@ public final class TmuxAdapter: TmuxManagerPort, @unchecked Sendable {
 
     public func createSession(name: String, path: String, command: String?, environment: [String: String]) async throws {
         // If a session with this name already exists, reuse it.
-        // This prevents killing an active extra terminal whose SwiftTerm view
+        // This prevents killing an active extra terminal whose terminal view
         // has already attached via the retry loop — killing it would clear the
         // terminal contents (the user sees a blank shell).
         let check = try await runTmux(["has-session", "-t", name])
