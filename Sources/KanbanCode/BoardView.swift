@@ -178,7 +178,7 @@ struct BoardView: View {
                     }
                 }
                 .padding(.horizontal, 16)
-                .padding(.top, 52)
+                .padding(.top, 4)
                 .padding(.bottom, 16)
             }
             .onChange(of: store.state.selectedCardId) {

@@ -84,6 +84,9 @@ struct ContentView: View {
     @State var terminalHadFocusBeforeSearch = false
     @State var deepSearchTrigger = false
     @AppStorage("showBoardInExpanded") var showBoardInExpanded = false
+    /// Cmd is held on its own: the project tabs show their Cmd+number.
+    @State private var isCommandHeld = false
+    @State private var commandKeyMonitor: Any?
     @State var showNewTask = false
     /// Preset the next New Task dialog opens with, from the prompt library.
     @State var newTaskPreset: PromptPreset?
@@ -1529,14 +1532,17 @@ struct ContentView: View {
         // of the window with the toolbar inside it, and it is an NSSplitView
         // (see PaneResizeHandle). Here the toolbar runs across the window and
         // the sidebar is a panel under it.
-        SidePaneSplit(
-            edge: .leading, isPaneOpen: showBoardInExpanded,
-            rule: .sidebar, storageKey: "sidebarWidth", handleStyle: .gap
-        ) {
-            boardWithHandlers
-                .environment(\.configuredProjects, store.state.configuredProjects)
-        } pane: {
-            sidebarPanel
+        VStack(spacing: 0) {
+            projectTabBar
+            SidePaneSplit(
+                edge: .leading, isPaneOpen: showBoardInExpanded,
+                rule: .sidebar, storageKey: "sidebarWidth", handleStyle: .gap
+            ) {
+                boardWithHandlers
+                    .environment(\.configuredProjects, store.state.configuredProjects)
+            } pane: {
+                sidebarPanel
+            }
         }
             .toolbar {
                 // Use tested ToolbarVisibility model to drive all conditions
@@ -1577,10 +1583,6 @@ struct ContentView: View {
                     if isExpandedDetail {
                         navigationHistoryControls
                     }
-                }
-
-                ToolbarItem(placement: .navigation) {
-                    projectSelectorMenu
                 }
 
                 if tbVis.showViewModePicker {
@@ -1926,56 +1928,73 @@ struct ContentView: View {
         }
     }
 
-    // MARK: - Project Selector
+    // MARK: - Project Tabs
 
-    private var projectSelectorMenu: some View {
+    /// One tab per visible project above the board, "All" first. The last
+    /// tab is a menu for adding projects and the project tools that used to
+    /// sit in the toolbar's project menu.
+    private var projectTabBar: some View {
         let projectCounts = projectCardCounts
-        let totalCount = store.state.links.count
         let selectedProjectPath = store.state.selectedProjectPath
+        let configuredProjects = store.state.configuredProjects
+        let visibleProjects = configuredProjects.filter(\.visible)
 
-        return Menu {
-            Button {
-                setSelectedProject(nil)
-            } label: {
-                HStack {
-                    Text("All Projects")
-                    Spacer()
-                    Text("\(totalCount)")
-                        .foregroundStyle(.secondary)
-                        .font(.app(.caption))
-                    if selectedProjectPath == nil {
-                        Image(systemName: "checkmark")
-                    }
+        return ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 4) {
+                ProjectTab(
+                    title: "All",
+                    count: store.state.links.count,
+                    isSelected: selectedProjectPath == nil,
+                    shortcutNumber: isCommandHeld ? 1 : nil,
+                    help: "All projects (\(AppShortcut.project1.displayString))"
+                ) {
+                    setSelectedProject(nil)
                 }
-            }
 
-            let visibleProjects = store.state.configuredProjects.filter(\.visible)
-            if !visibleProjects.isEmpty {
-                Divider()
-                ForEach(visibleProjects) { project in
-                    Button {
+                ForEach(Array(visibleProjects.enumerated()), id: \.element.id) { index, project in
+                    ProjectTab(
+                        title: project.name,
+                        count: projectCounts[project.path] ?? 0,
+                        isSelected: selectedProjectPath == project.path,
+                        shortcutNumber: isCommandHeld && index + 2 <= 9 ? index + 2 : nil,
+                        tint: ProjectColor.resolve(path: project.path, in: configuredProjects).color,
+                        help: project.path
+                    ) {
                         setSelectedProject(project.path)
-                    } label: {
-                        HStack {
-                            Text(project.name)
-                            Spacer()
-                            let count = projectCounts[project.path] ?? 0
-                            if count > 0 {
-                                Text("\(count)")
-                                    .foregroundStyle(.secondary)
-                                    .font(.app(.caption))
-                            }
-                            if selectedProjectPath == project.path {
-                                Image(systemName: "checkmark")
-                            }
-                        }
                     }
                 }
-            }
 
+                projectTabsMenu
+            }
+            .padding(.horizontal, 16)
+            .padding(.vertical, 6)
+        }
+        .scrollClipDisabled()
+        .onAppear {
+            guard commandKeyMonitor == nil else { return }
+            commandKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { event in
+                // Cmd alone: Cmd+Shift and the like are other shortcuts.
+                let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+                let held = flags == .command
+                if held != isCommandHeld { isCommandHeld = held }
+                return event
+            }
+        }
+        .onDisappear {
+            if let commandKeyMonitor { NSEvent.removeMonitor(commandKeyMonitor) }
+            commandKeyMonitor = nil
+            isCommandHeld = false
+        }
+        // A Cmd-Tab away never delivers the key-up here.
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+            isCommandHeld = false
+        }
+    }
+
+    private var projectTabsMenu: some View {
+        Menu {
             let discovered = store.state.discoveredProjectPaths
             if !discovered.isEmpty {
-                Divider()
                 Section("Discovered") {
                     ForEach(discovered.prefix(8), id: \.self) { path in
                         Button {
@@ -1988,9 +2007,8 @@ struct ContentView: View {
                         }
                     }
                 }
+                Divider()
             }
-
-            Divider()
 
             Button("Add from folder...") {
                 addProjectViaFolderPicker()
@@ -2001,6 +2019,8 @@ struct ContentView: View {
                 showAddFromPath = true
             }
 
+            Divider()
+
             Button("Process Manager...") {
                 showProcessManager = true
             }
@@ -2009,9 +2029,17 @@ struct ContentView: View {
                 Text("Settings...")
             }
         } label: {
-            Text(currentProjectName)
-                .font(.app(.headline))
+            Image(systemName: "plus")
+                .font(.app(.callout).weight(.medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 28, height: 28)
+                .contentShape(Rectangle())
         }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Add a project")
     }
 
     // MARK: - Keyboard Shortcuts
@@ -2177,17 +2205,25 @@ struct ContentView: View {
             .keyboardShortcut(AppShortcut.deleteCardForward.key, modifiers: AppShortcut.deleteCardForward.modifiers)
             .hidden()
 
-        // Cmd+1-9: terminal tab switching (when detail open) or project switching
+        // Cmd+1-9: the project tabs above the board, in their order ("All"
+        // first). Holding Cmd shows each tab's number.
         ForEach(Array(AppShortcut.allCases.filter { $0.projectIndex != nil }), id: \.projectIndex) { shortcut in
-            Button("") { UsageLog.record("shortcut", "number");
+            Button("") { UsageLog.record("shortcut", "number")
+                selectProject(at: shortcut.projectIndex!)
+            }
+            .keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
+            .hidden()
+        }
+
+        // Cmd+Option+1-9: the open card's terminal tabs.
+        ForEach(Array(AppShortcut.allCases.filter { $0.projectIndex != nil }), id: \.projectIndex) { shortcut in
+            Button("") { UsageLog.record("shortcut", "terminalTabNumber")
                 let ctx = shortcutContext
                 if ctx.detailOpen && !ctx.paletteOpen {
                     selectTerminalTab(at: shortcut.projectIndex!)
-                } else {
-                    selectProject(at: shortcut.projectIndex!)
                 }
             }
-            .keyboardShortcut(shortcut.key, modifiers: shortcut.modifiers)
+            .keyboardShortcut(shortcut.key, modifiers: [.command, .option])
             .hidden()
         }
     }
@@ -2262,12 +2298,6 @@ struct ContentView: View {
             ) { [self] in createExtraTerminal(cardId: card.id) })
         }
         return cmds
-    }
-
-    var currentProjectName: String {
-        guard let path = store.state.selectedProjectPath else { return "All Projects" }
-        return store.state.configuredProjects.first(where: { $0.path == path })?.name
-            ?? (path as NSString).lastPathComponent
     }
 
     var projectList: [(name: String, path: String)] {

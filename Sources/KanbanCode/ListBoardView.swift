@@ -100,7 +100,7 @@ struct ListBoardView: View {
                     sectionView(for: section)
                 }
             }
-            .padding(.top, inSidebar ? 0 : 52)
+            .padding(.top, inSidebar ? 0 : 4)
         }
     }
 
