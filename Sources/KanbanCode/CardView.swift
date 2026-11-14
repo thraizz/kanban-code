@@ -117,15 +117,29 @@ struct CardView: View {
             }
             .padding(6)
         }
-        .background(
-            isSelected ? Color.accentColor.opacity(0.12) : (projectTint?.opacity(0.07) ?? Color.primary.opacity(0.04)),
-            in: RoundedRectangle(cornerRadius: 8)
-        )
+        // Selection sits on top of the project tint instead of replacing it,
+        // so a selected card stays visible whatever its project color.
+        .background {
+            ZStack {
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(projectTint?.opacity(0.07) ?? Color.primary.opacity(0.04))
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 8)
+                        .fill(Color.accentColor.opacity(0.14))
+                }
+            }
+        }
         .overlay(alignment: .leading) {
             if let projectTint {
                 UnevenRoundedRectangle(topLeadingRadius: 8, bottomLeadingRadius: 8)
                     .fill(projectTint.opacity(0.75))
                     .frame(width: 3)
+            }
+        }
+        .overlay {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 8)
+                    .strokeBorder(Color.accentColor.opacity(0.8), lineWidth: 1)
             }
         }
         .background {
