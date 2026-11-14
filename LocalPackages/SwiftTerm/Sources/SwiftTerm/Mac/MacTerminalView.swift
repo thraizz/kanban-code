@@ -347,6 +347,33 @@ open class TerminalView: NSView, NSTextInputClient, NSUserInterfaceValidations, 
         super.viewDidUnhide()
         redrawIfBecameVisible()
     }
+
+    /// The window moved to a screen with another scale (a display was attached
+    /// or detached). The layer's bitmap was drawn at the old scale, and if the
+    /// change arrived while the view could not draw, that stale bitmap stays and
+    /// shows at the wrong size. Match the layers to the new scale and repaint
+    /// everything, now or as soon as the view is visible again.
+    open override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        rescaleAndRedraw()
+    }
+
+    func rescaleAndRedraw() {
+        guard let window else { return }
+        let scale = window.backingScaleFactor
+        layer?.contentsScale = scale
+        caretView?.layer?.contentsScale = scale
+        caretView?.needsDisplay = true
+        rowRenderCache.invalidateAll()
+        if cellDimension != nil {
+            _ = processSizeChange(newSize: frame.size)
+        }
+        terminal.updateFullScreen()
+        needsRedrawWhenVisible = true
+        needsDisplay = true
+        redrawIfBecameVisible()
+        updateCursorPosition()
+    }
     
     deinit {
         if let becomeMainObserver {
