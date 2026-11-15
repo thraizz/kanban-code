@@ -540,6 +540,11 @@ final class TerminalContainerNSView: NSView {
         }
         terminal.isHidden = true
         managedSessions.append(sessionName)
+        // The process starts in `layout()`. Selecting another card reuses
+        // this container at the same size, so nothing else would ask for a
+        // layout and the new card's terminal stayed blank until the
+        // container was made again (switching to History and back).
+        needsLayout = true
     }
 
     /// Show only the terminal for `sessionName`, hide all others.
