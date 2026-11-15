@@ -10,7 +10,7 @@ import KanbanCodeCore
 /// Needs `Frameworks/GhosttyKit.xcframework` (`Scripts/build-ghosttykit.sh`).
 ///
 /// Keyboard input without IME, mouse, scroll, resize, paste and copy.
-/// Programs cannot read the clipboard, and there is no URL detection.
+/// Programs cannot read the clipboard. Cmd+click opens links (see `TerminalLink`).
 @MainActor
 final class GhosttyRuntime {
     static let shared = GhosttyRuntime()
@@ -42,7 +42,7 @@ final class GhosttyRuntime {
                 if let app = GhosttyRuntime.shared.app { ghostty_app_tick(app) }
             }
         }
-        runtime.action_cb = { _, _, _ in false }
+        runtime.action_cb = { _, target, action in GhosttyRuntime.handle(action, target: target) }
         runtime.read_clipboard_cb = { _, _, _, _, _, _ in GHOSTTY_CLIPBOARD_READ_UNSUPPORTED }
         runtime.confirm_read_clipboard_cb = { _, _, _, _ in }
         runtime.write_clipboard_cb = { _, _, content, count, _ in
@@ -60,6 +60,59 @@ final class GhosttyRuntime {
         app = ghostty_app_new(&runtime, config)
         if app == nil { KanbanCodeLog.info("ghostty", "ghostty_app_new failed") }
     }
+
+    /// Ghostty's apprt actions. Returning false leaves an action to Ghostty,
+    /// which on macOS drops clicked links: the host must open them.
+    private nonisolated static func handle(_ action: ghostty_action_s, target: ghostty_target_s) -> Bool {
+        switch action.tag {
+        case GHOSTTY_ACTION_OPEN_URL:
+            let v = action.action.open_url
+            guard let ptr = v.url, v.len > 0 else { return false }
+            let url = String(decoding: UnsafeRawBufferPointer(start: ptr, count: Int(v.len)), as: UTF8.self)
+            DispatchQueue.main.async { MainActor.assumeIsolated { TerminalLinkOpener.open(url) } }
+            return true
+        case GHOSTTY_ACTION_MOUSE_SHAPE:
+            // Sent from mouse callbacks, which run on the main thread.
+            guard Thread.isMainThread, target.tag == GHOSTTY_TARGET_SURFACE,
+                  let surface = target.target.surface,
+                  let userdata = ghostty_surface_userdata(surface) else { return false }
+            let shape = action.action.mouse_shape
+            MainActor.assumeIsolated {
+                Unmanaged<GhosttySurfaceView>.fromOpaque(userdata).takeUnretainedValue().setMouseShape(shape)
+            }
+            return true
+        default:
+            return false
+        }
+    }
+}
+
+/// Opens a link clicked in a terminal, after `TerminalLink` vets it.
+@MainActor
+enum TerminalLinkOpener {
+    static func open(_ value: String) {
+        let decision = TerminalLink.classify(value)
+        KanbanCodeLog.info("ghostty", "terminal link \(value.prefix(200)): \(decision)")
+        switch decision {
+        case .open(let url):
+            UsageLog.record("terminal", "open-link")
+            NSWorkspace.shared.open(url)
+        case .confirm(let url):
+            let alert = NSAlert()
+            alert.messageText = "Open this link?"
+            let handler = NSWorkspace.shared.urlForApplication(toOpen: url)
+                .map { FileManager.default.displayName(atPath: $0.path) }
+            alert.informativeText = url.absoluteString + (handler.map { "\n\nIt opens in \($0)." } ?? "")
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            if alert.runModal() == .alertFirstButtonReturn {
+                UsageLog.record("terminal", "open-link")
+                NSWorkspace.shared.open(url)
+            }
+        case .deny:
+            NSSound.beep()
+        }
+    }
 }
 
 /// One Ghostty surface running a shell command (the tmux attach script).
@@ -68,6 +121,8 @@ final class GhosttyRuntime {
 final class GhosttySurfaceView: NSView {
     private(set) var surface: ghostty_surface_t?
     private var keyTextAccumulator: [String]?
+    private var cursor: NSCursor = .iBeam
+    private var commandWasHeld = false
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -186,6 +241,14 @@ final class GhosttySurfaceView: NSView {
 
     override func flagsChanged(with event: NSEvent) {
         sendKey(event, action: GHOSTTY_ACTION_PRESS, text: nil)
+        // Pressing or releasing Cmd over a still mouse: re-check the link under it.
+        guard let window, (event.modifierFlags.contains(.command) || commandWasHeld) else {
+            commandWasHeld = false
+            return
+        }
+        commandWasHeld = event.modifierFlags.contains(.command)
+        let p = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        if bounds.contains(p) { refreshLink(at: p, flags: event.modifierFlags) }
     }
 
     override func insertText(_ insertString: Any) {
@@ -254,10 +317,52 @@ final class GhosttySurfaceView: NSView {
 
     // MARK: Mouse
 
+    /// Mods for a mouse event. While a program (tmux) has the mouse, Ghostty
+    /// only finds links with Shift held, so Cmd adds Shift: Cmd+click opens
+    /// a link (and Cmd+drag selects) inside tmux as it does in a plain shell.
+    private func mouseMods(_ flags: NSEvent.ModifierFlags) -> ghostty_input_mods_e {
+        var flags = flags
+        if flags.contains(.command), let surface, ghostty_surface_mouse_captured(surface) {
+            flags.insert(.shift)
+        }
+        return Self.mods(flags)
+    }
+
     private func mousePos(_ event: NSEvent) {
+        mousePos(at: convert(event.locationInWindow, from: nil), flags: event.modifierFlags)
+    }
+
+    private func mousePos(at p: NSPoint, flags: NSEvent.ModifierFlags) {
         guard let surface else { return }
-        let p = convert(event.locationInWindow, from: nil)
-        ghostty_surface_mouse_pos(surface, p.x, p.y, Self.mods(event.modifierFlags))
+        ghostty_surface_mouse_pos(surface, p.x, p.y, mouseMods(flags))
+    }
+
+    /// Makes Ghostty look for a link at `p` with `flags`. Ghostty finds links
+    /// only when the mouse moves, and drops a position less than a pixel from
+    /// the last, so Cmd pressed over a still mouse never found the link and a
+    /// Cmd+click did nothing. Step a point aside and back.
+    private func refreshLink(at p: NSPoint, flags: NSEvent.ModifierFlags) {
+        let aside = p.x >= 1 ? p.x - 1 : p.x + 1
+        mousePos(at: NSPoint(x: aside, y: p.y), flags: flags)
+        mousePos(at: p, flags: flags)
+    }
+
+    fileprivate func setMouseShape(_ shape: ghostty_action_mouse_shape_e) {
+        let next: NSCursor = switch shape {
+        case GHOSTTY_MOUSE_SHAPE_POINTER: .pointingHand
+        case GHOSTTY_MOUSE_SHAPE_TEXT, GHOSTTY_MOUSE_SHAPE_VERTICAL_TEXT: .iBeam
+        default: .arrow
+        }
+        guard next != cursor else { return }
+        cursor = next
+        window?.invalidateCursorRects(for: self)
+        if let window, bounds.contains(convert(window.mouseLocationOutsideOfEventStream, from: nil)) {
+            next.set()
+        }
+    }
+
+    override func resetCursorRects() {
+        addCursorRect(bounds, cursor: cursor)
     }
 
     override func updateTrackingAreas() {
@@ -274,15 +379,19 @@ final class GhosttySurfaceView: NSView {
 
     override func mouseDown(with event: NSEvent) {
         window?.makeFirstResponder(self)
-        mousePos(event)
+        if event.modifierFlags.contains(.command) {
+            refreshLink(at: convert(event.locationInWindow, from: nil), flags: event.modifierFlags)
+        } else {
+            mousePos(event)
+        }
         guard let surface else { return }
-        _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, Self.mods(event.modifierFlags))
+        _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, mouseMods(event.modifierFlags))
     }
 
     override func mouseUp(with event: NSEvent) {
         mousePos(event)
         guard let surface else { return }
-        _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, Self.mods(event.modifierFlags))
+        _ = ghostty_surface_mouse_button(surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, mouseMods(event.modifierFlags))
     }
 
     override func scrollWheel(with event: NSEvent) {
