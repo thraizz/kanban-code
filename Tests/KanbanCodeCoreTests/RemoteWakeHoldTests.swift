@@ -93,7 +93,7 @@ struct RemoteWakeHoldTests {
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dir) }
         let devices = RemoteDeviceStore(path: dir + "/devices.json")
-        let phone = try devices.add(name: "iPhone", scope: .full).token
+        let phone = try devices.add(name: "Phone", scope: .full).token
         let agent = try devices.add(name: "agent", scope: .agent).token
         let master = try devices.add(name: "box", scope: .peer).token
         let seen = Mutex<[String]>([])

@@ -2,7 +2,7 @@ import Foundation
 
 /// Everything the human may want to see before approving a vault request.
 /// The notification carries only the headline and the agent's reason; the
-/// detail sheet on the Mac and the phone shows the rest.
+/// detail sheet on the Mac shows the rest.
 public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
     public enum Action: String, Codable, Sendable {
         /// Secrets for a command (`kv run`, `kv env`, `kv get`, a hook).

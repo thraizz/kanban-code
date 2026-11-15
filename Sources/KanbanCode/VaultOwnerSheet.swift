@@ -40,7 +40,7 @@ struct VaultOwnerSheet: View {
                 Spacer()
                 Button("Done") { dismiss() }.keyboardShortcut(.cancelAction)
             }
-            Text("Secrets of the tiers Always ask and Never are encrypted to these keys. A device key stays in that device's Secure Enclave and works only with Touch ID or Face ID. The machines keep ciphertext: a release is unlocked on the Mac or the phone at the moment you approve it.")
+            Text("Secrets of the tiers Always ask and Never are encrypted to these keys. A device key stays in that device's Secure Enclave and works only with Touch ID or Face ID. The machines keep ciphertext: a release is unlocked on the Mac at the moment you approve it.")
                 .font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
 
             GroupBox {
@@ -129,7 +129,7 @@ struct VaultOwnerSheet: View {
         GroupBox("Set up") {
             VStack(alignment: .leading, spacing: 10) {
                 if let recovery {
-                    Text("Recovery key. It is shown this once and kept nowhere on this Mac or the box. Store it in your password manager (e.g. 1Password) now: it is the only way back if the Mac and the phone are both lost.")
+                    Text("Recovery key. It is shown this once and kept nowhere on this Mac or the box. Store it in your password manager (e.g. 1Password) now: it is the only way back if the Mac is lost.")
                         .fixedSize(horizontal: false, vertical: true)
                     HStack {
                         Text(recovery.text)
@@ -154,7 +154,7 @@ struct VaultOwnerSheet: View {
                     Text("Sealing keeps the current vault file as backup-before-owner-seal/vault.age next to it on each machine. Nothing is deleted.")
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 } else {
-                    Text("Makes this Mac's key in its Secure Enclave and a recovery key, then encrypts every Always ask and Never secret to both. After that those secrets open only with your Touch ID here, an enrolled phone, or the recovery key.")
+                    Text("Makes this Mac's key in its Secure Enclave and a recovery key, then encrypts every Always ask and Never secret to both. After that those secrets open only with your Touch ID here, another enrolled device key, or the recovery key.")
                         .fixedSize(horizontal: false, vertical: true)
                     Button("Create Keys") { createKeys() }.disabled(busy || !SecureEnclaveOwnerKey.isAvailable)
                     if !SecureEnclaveOwnerKey.isAvailable {

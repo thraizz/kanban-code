@@ -5,7 +5,7 @@ Feature: Side chat (/btw and /catchup)
 
   Background:
     Given a card with a Claude Code session, on rush or on tmux
-    And its chat is open on the Mac or on the phone
+    And its chat is open on the Mac
 
   # ── /btw ────────────────────────────────────────────────────────────
 
@@ -34,20 +34,6 @@ Feature: Side chat (/btw and /catchup)
     Then the session gets my reply first, then the side chat's questions and answers as context
     And the message counts as typed by me
     And the panel closes
-
-  Scenario: Sending to the main chat on the phone does not wait for the machine
-    Given the side chat on the phone shows a catch-up
-    And the machine takes seconds to accept a prompt
-    When I type a reply and choose "Send to main chat"
-    Then the panel closes at once, with no animation
-    And my reply shows at once as a pending bubble
-    And the composer takes a new message while the first is on its way
-
-  Scenario: A reply the machine does not accept is not lost
-    Given the side chat on the phone shows a catch-up
-    When I choose "Send to main chat" and the send fails
-    Then the pending bubble leaves and the error shows
-    And the text is in the composer, with what was typed there stashed
 
   Scenario: A compaction shows as a note
     Given a session that was compacted
@@ -116,7 +102,6 @@ Feature: Side chat (/btw and /catchup)
     Given the cited message is older than what the chat has loaded
     When I use its link
     Then the Mac reads the transcript around the message
-    And the phone loads older pages until it has the message
     And the chat scrolls to it
 
   # ── Reopening ───────────────────────────────────────────────────────
@@ -135,9 +120,9 @@ Feature: Side chat (/btw and /catchup)
     Then the follow-up and its answer show under it
     And a new follow-up carries them as history
 
-  Scenario: It survives a restart and reaches the other device
+  Scenario: It survives a restart and reaches other devices
     Given I ran /catchup on the Mac
-    When the app restarts, or I open the card on the phone
+    When the app restarts, or another device asks for the card's catch-up
     And the session has nothing new
     Then /catchup shows the same catch-up at once
 
@@ -161,7 +146,7 @@ Feature: Side chat (/btw and /catchup)
 
   Scenario: A card on another master
     Given the card runs on the box
-    When I run /catchup from the Mac or the phone
+    When I run /catchup from the Mac
     Then the box runs the side chat and the answer streams back
 
   Scenario: Sessions without a side chat
@@ -172,7 +157,7 @@ Feature: Side chat (/btw and /catchup)
 
   Scenario: The machine does not answer
     Given the Mac that owns the card is asleep
-    When I run /catchup on the phone and the request gets no answer
+    When I run /catchup from another device and the request gets no answer
     Then the panel says "<machine name> is offline. It may be asleep."
     And it does not say "The request timed out."
     And it offers Retry
@@ -189,16 +174,16 @@ Feature: Side chat (/btw and /catchup)
     Then the panel shows that error
     And it offers Retry
 
-  Scenario: The phone keeps the Mac awake
+  Scenario: A paired device keeps the Mac awake
     Given a Mac on power with its lid closed that is awake for a moment
-    When I run /catchup on the phone for a card on that Mac
+    When I run /catchup from a paired device for a card on that Mac
     Then the Mac stays awake for 10 minutes after my last request to the card
     And the run is not cut off by sleep
 
   # ── The record of what I typed ──────────────────────────────────────
 
   Scenario: What the Kanban chat sends is recorded as mine
-    When I send a prompt from the chat on the Mac or the phone
+    When I send a prompt from the chat on the Mac
     Then it is written to the card's record with the time I wrote it
     And a rush that lists `--human` gets the flag
 

@@ -8,7 +8,7 @@ public enum VaultTier: String, Codable, Sendable, CaseIterable, Comparable {
     /// Jev reads the command and the reason against the secret's rules:
     /// allow, ask the human, or deny.
     case judged
-    /// The human approves on the Mac or the phone.
+    /// The human approves on the Mac.
     case ask
     /// Never released.
     case never

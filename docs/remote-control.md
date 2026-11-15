@@ -1,11 +1,11 @@
 # Remote control
 
-The Mac app serves an HTTP API that lets other devices drive it: the iOS app on a phone, and other agents through `kanban remote`. The Mac stays the only place sessions run. Wire types live in `Sources/KanbanCodeRemoteKit/RemoteModels.swift`.
+The Mac app serves an HTTP API that lets other devices and agents drive it, e.g. through `kanban remote`. The Mac stays the only place sessions run. Wire types live in `Sources/KanbanCodeRemoteKit/RemoteModels.swift`.
 
 ```
-iPhone (KanbanCodeMobile) ─┐                      ┌─ rush hosts
-                           ├─ HTTP + WebSocket ──▶ Mac app ─┼─ tmux sessions
-agent: kanban remote ... ──┘   :7780, LAN / VPN   └─ ~/.claude transcripts
+other device / master ────┐                      ┌─ rush hosts
+                          ├─ HTTP + WebSocket ──▶ Mac app ─┼─ tmux sessions
+agent: kanban remote ... ─┘   :7780, LAN / VPN   └─ ~/.claude transcripts
 ```
 
 ## Network and auth
@@ -19,13 +19,13 @@ agent: kanban remote ... ──┘   :7780, LAN / VPN   └─ ~/.claude transcr
 - The pair link uses the first bind address (`kanban-code-server pair ... --public-url <url>` overrides it), else `127.0.0.1`.
 - Every request except `GET /v1/health` needs `Authorization: Bearer <token>`. WebSocket clients that cannot set headers may pass `?token=`.
 - A token belongs to one device and has a scope:
-  - `full`: everything, including terminals. For a phone.
+  - `full`: everything, including terminals. For a device the human uses.
   - `agent`: read the board and transcripts, create tasks, send prompts, interrupt. No terminal, no raw keys. For another agent such as OpenClaw.
   - `peer`: what a paired master calls (see "Peer scope" below). No terminal, no vault secrets. For the other master.
   - `terminal`: the terminal socket, plus reading the board to find the card. For showing a peer's card terminals.
 - Tokens are `kc_` followed by 40 base62 characters. `~/.kanban-code/remote/devices.json` keeps only their SHA-256 with the device id, name, scope, `createdAt` and `lastSeenAt`. The server re-reads the file when it changes, so a revoked device is refused on its next request and its open sockets close.
 - Pairing:
-  - In the app, Settings > Remote Control > Add device shows the token once, plus a QR code of `kanbancode://pair?url=<base url>&token=<token>&name=<host name>`.
+  - In the app, Settings > Remote Control > Add device shows the token once, plus the pair link `kanbancode://pair?url=<base url>&token=<token>&name=<host name>`.
   - On the Mac, `kanban remote pair --name <device> [--scope agent]` writes the same file and prints the token and the link.
 - Refusals: 401 with no token or an unknown one, 403 when the scope does not allow the call. Bodies are `{"error": "..."}`.
 
@@ -139,18 +139,18 @@ The Mac shows the terminals of the box's cards, so it holds a second token of th
 
 Pairing: `kanban-code-server pair <name> --scope peer` on a box, Add Device > Peer master on the Mac. A peer entry whose token is still `full` keeps working; change its `scope` in `~/.kanban-code/remote/devices.json` on the machine that issued it (the server re-reads the file).
 
-## Staying awake for the phone
+## Staying awake for remote use
 
-A Mac with its lid closed wakes on its own for a moment now and then (a dark wake) and goes back to sleep within a minute or two. A phone request that arrives in that moment is answered, and anything longer, such as a catch-up, is cut off.
+A Mac with its lid closed wakes on its own for a moment now and then (a dark wake) and goes back to sleep within a minute or two. A remote request that arrives in that moment is answered, and anything longer, such as a catch-up, is cut off.
 
 So a request the human makes to a card this Mac owns holds the Mac awake for 10 minutes after the last one (`RemoteWakeHold`):
 
-- What counts: any `/v1/cards/{id}...` route called with a full-scope token (the phone), or by a paired master passing on such a request. A master sets `X-Kanban-For-Owner: 1` on what it forwards while it serves a full-scope device; its own calls (board and links sync, transcript mirror, agent sync, vault replica) carry no header and never count. Agent and terminal tokens never count, nor does `/v1/board`, `/v1/events` or any other route without a card.
+- What counts: any `/v1/cards/{id}...` route called with a full-scope token, or by a paired master passing on such a request. A master sets `X-Kanban-For-Owner: 1` on what it forwards while it serves a full-scope device; its own calls (board and links sync, transcript mirror, agent sync, vault replica) carry no header and never count. Agent and terminal tokens never count, nor does `/v1/board`, `/v1/events` or any other route without a card.
 - The hold is a `PreventSystemSleep` power assertion with its own timeout, so it ends by itself. macOS honours it on power, also with the lid closed; on battery with the lid closed it does not. The marker app that Amphetamine triggers on runs for the same time.
 - A side chat run ends within 10 minutes, so the request that starts it covers the whole run; every poll of its answer extends the hold.
-- Settings > Amphetamine > "Stay awake while a card on this Mac is used from the phone" turns it off. `[wake]` lines in `~/.kanban-code/logs/kanban-code.log` say when a hold starts; `pmset -g assertions` lists it.
+- Settings > Amphetamine > "Stay awake while a card on this Mac is used from another device" turns it off. `[wake]` lines in `~/.kanban-code/logs/kanban-code.log` say when a hold starts; `pmset -g assertions` lists it.
 
-A Mac that is fully asleep gets no request and is not woken. The phone then shows the machine as offline.
+A Mac that is fully asleep gets no request and is not woken. Remote clients then see the machine as offline.
 
 ## Agent sync
 
@@ -177,7 +177,6 @@ The command runs in a pseudo-terminal on the Mac.
 
 ## Clients
 
-- iOS app: `Apps/iOS`. See its README for building and installing on a phone.
 - CLI: `kanban remote login <url> --token <token>` saves the server in `~/.kanban-code/remote-client.json`. `KANBAN_REMOTE_URL` and `KANBAN_REMOTE_TOKEN` override the file. Then:
   - `kanban remote cards [--all] [--search <text>]`
   - `kanban remote show <card>`

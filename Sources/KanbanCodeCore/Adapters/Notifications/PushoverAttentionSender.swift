@@ -5,7 +5,7 @@ import FoundationNetworking
 #endif
 
 /// Sends attention requests to the phone through Pushover, as one alert at
-/// high priority, which iOS shows as time sensitive. Pushover cannot delete
+/// high priority, which the Pushover app shows as time sensitive. Pushover cannot delete
 /// or replace a delivered message, so it takes no silent copy first (that
 /// would list every request twice) and a resolved request stays there.
 public struct PushoverAttentionSender: PhonePushSender {

@@ -274,7 +274,7 @@ final class RemoteServerFixture: Sendable {
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         self.host = host
         devices = RemoteDeviceStore(path: dir + "/devices.json")
-        let full = try devices.add(name: "iPhone", scope: .full)
+        let full = try devices.add(name: "Phone", scope: .full)
         let agent = try devices.add(name: "openclaw", scope: .agent)
         fullToken = full.token
         fullDevice = full.0

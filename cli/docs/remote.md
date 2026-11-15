@@ -50,7 +50,7 @@ Only the `kanban remote` commands are meant for that machine. The other `kanban`
 
 ## Scopes
 
-- `full`: everything, including terminals. For a phone.
+- `full`: everything, including terminals. For a device the human uses.
 - `agent`: board, transcripts, tasks, prompts, interrupt, resume. No terminals. For another agent.
 
 ## Commands

@@ -115,7 +115,7 @@ public enum RemoteBoardMapper {
     /// The id of a message queued in a rush host: its place and a hash of
     /// its text, so it can be found again after the queue moved. The ids
     /// start with "agtop-", the name rush had before it was renamed, since
-    /// masters and phones on older builds look for that prefix; "rush-" is
+    /// masters and clients on older builds look for that prefix; "rush-" is
     /// read as well.
     public static func rushPromptId(index: Int, text: String) -> String {
         "agtop-\(index)-\(String(fnv1a(text), radix: 16))"

@@ -345,16 +345,16 @@ struct VaultOwnerTests {
     @Test func aSecondDeviceIsEnrolledByADeviceThatHoldsAKey() async throws {
         let w = try await makeWorld()
         let phone = SoftwareOwnerKey()
-        let asked = await w.broker.enrol(phone.owner("iPhone", .phone), caller: VaultCaller(remoteDevice: "iPhone"))
+        let asked = await w.broker.enrol(phone.owner("Phone", .phone), caller: VaultCaller(remoteDevice: "Phone"))
         #expect(asked.status == .pending)
         let request = try #require(w.approvals.last)
         #expect(request.unseal?.reseal.count == 2)
-        #expect(request.unseal?.resealTo.map(\.name) == ["Mac", "Recovery key", "iPhone"])
-        #expect(request.vault?.changeLines.contains { $0.contains(phone.owner("iPhone", .phone).fingerprint) } == true)
+        #expect(request.unseal?.resealTo.map(\.name) == ["Mac", "Recovery key", "Phone"])
+        #expect(request.vault?.changeLines.contains { $0.contains(phone.owner("Phone", .phone).fingerprint) } == true)
         // The phone cannot let itself in.
         await #expect(throws: (any Error).self) { try await w.approve(asked, key: phone) }
 
-        let again = await w.broker.enrol(phone.owner("iPhone", .phone), caller: VaultCaller(remoteDevice: "iPhone"))
+        let again = await w.broker.enrol(phone.owner("Phone", .phone), caller: VaultCaller(remoteDevice: "Phone"))
         #expect(try await w.approve(again).status == .granted)
         let s = try #require(try await w.store.secret("ASK"))
         #expect(try VaultOwnerSeal.open(try #require(s.sealed), with: phone).value == "ask-value")

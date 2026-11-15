@@ -33,7 +33,7 @@ public enum CardStartReport: Sendable, Equatable {
 }
 
 /// Where the assistant session of a card stands. The card detail, Cmd+Enter
-/// and the remote API (the phone, the other masters) all read this one value,
+/// and the remote API (remote clients, the other masters) all read this one value,
 /// so a start, a move and a failure look the same wherever the card runs.
 public enum CardSessionStatus: Sendable, Equatable {
     /// No conversation yet, and nothing starting.

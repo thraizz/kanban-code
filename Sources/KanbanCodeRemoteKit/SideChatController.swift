@@ -3,7 +3,7 @@ import Observation
 
 /// Drives one card's side chat for a chat view: asks, follows the run while
 /// its answer streams, and forgets it when dismissed. The Mac reaches the
-/// runs through its engine, the phone through the remote API; both give
+/// runs through its engine, a remote client through the remote API; both give
 /// their calls as a `Transport`.
 @MainActor
 @Observable

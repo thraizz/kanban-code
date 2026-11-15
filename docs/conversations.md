@@ -5,7 +5,7 @@ A card runs one session. Conversations split the chat with that session by topic
 ## Ids and titles
 
 - An id is two lowercase words joined by a dash, such as `swift-otter`, unique within the card.
-- A conversation starts without a title. The prompt of an untitled conversation asks the agent to set one with `--title` on its reply. The human renames it from the conversation's right-click menu or header on the Mac, or by pressing and holding it on the phone. A title the human gives wins: the agent's later titles are not applied (`kanban reply --title` says the title was kept, `kanban conversation title` fails) until the human clears it.
+- A conversation starts without a title. The prompt of an untitled conversation asks the agent to set one with `--title` on its reply. The human renames it from the conversation's right-click menu or header on the Mac. A title the human gives wins: the agent's later titles are not applied (`kanban reply --title` says the title was kept, `kanban conversation title` fails) until the human clears it.
 
 ## What the session receives
 
@@ -40,7 +40,7 @@ Tool calls and the agent's plain text stay in Main.
 - **Unread**: the agent wrote after the human last opened it. Opening it on any device clears it everywhere.
 - **Waiting**: the last message is the agent's. The API and `kanban conversation list` report it; the apps do not mark it.
 
-The sidebar on the Mac and the card list on the phone show the conversations under their card, most recent first, with an unread one in bold. On the Mac, "New Conversation" sits next to "Queue Prompt" in the card toolbar; a conversation opens from its sidebar row, and a click on the card row goes back to Main.
+The sidebar on the Mac shows the conversations under their card, most recent first, with an unread one in bold. On the Mac, "New Conversation" sits next to "Queue Prompt" in the card toolbar; a conversation opens from its sidebar row, and a click on the card row goes back to Main.
 
 ## CLI
 

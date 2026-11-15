@@ -156,7 +156,7 @@ function io(url: string, notes: string[]): VaultIO {
 test("a pending release waits for the approval and says so", async () => {
   let polls = 0;
   const m = await fakeMaster((method, path) => {
-    if (path === "/v1/vault/release") return { status: 202, body: { status: "pending", id: "vault_1", message: "Waiting for Rogerio's approval on his phone or Mac (card X)" } };
+    if (path === "/v1/vault/release") return { status: 202, body: { status: "pending", id: "vault_1", message: "Waiting for Rogerio's approval on his Mac (card X)" } };
     polls++;
     return polls < 3
       ? { status: 202, body: { status: "pending", id: "vault_1", message: "still waiting" } }

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Vault approvals as attention requests on the board store: the Mac and
-/// the phone show them, and whoever answers first resolves them.
+/// remote clients show them, and whoever answers first resolves them.
 public struct StoreVaultApprovals: VaultApprovals {
     private let store: BoardStore
 

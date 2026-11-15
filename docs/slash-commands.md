@@ -1,6 +1,6 @@
 # Slash commands in the chat composer
 
-When the text of a card's chat composer starts with `/` and holds no whitespace, a list of matching commands shows above the composer, on the Mac and on the phone. Each row has the name, one line of description and where the command comes from.
+When the text of a card's chat composer starts with `/` and holds no whitespace, a list of matching commands shows above the composer. Each row has the name, one line of description and where the command comes from.
 
 ## Keys
 
@@ -10,8 +10,6 @@ Mac:
 - Tab completes the composer to `/name `.
 - Return completes too. On a name already written in full it sends, as without the list.
 - Esc closes the list. It stays closed until the text stops being a command name.
-
-Phone: a tap on a row completes to `/name `.
 
 The list is closed for a text with a second `/` (a path), for a message recalled with the up arrow, and while a secret offer is open. It never changes what Send does with a plain message.
 
@@ -77,7 +75,7 @@ Skills live on the disk of the master that owns the card, so that master builds 
 - A master asked for a card another master owns forwards the call to the owner. While the owner does not answer, it returns the last list the owner gave, else the commands that need no disk.
 - A master keeps a card's list for 30 seconds.
 
-The Mac chat calls `MasterEngine.refreshSlashCommands(cardId:)` each time a command name starts. It dispatches `.slashCommandsLoaded`, and the composer reads `AppState.slashCommands[cardId]`. Before the first answer the composer shows the commands that need no disk. The phone keeps the lists in `BoardModel.slashCommands` and reads them the same way, when the master's health lists `slashCommands`; against an older master it offers `/catchup` and `/btw` only.
+The Mac chat calls `MasterEngine.refreshSlashCommands(cardId:)` each time a command name starts. It dispatches `.slashCommandsLoaded`, and the composer reads `AppState.slashCommands[cardId]`. Before the first answer the composer shows the commands that need no disk.
 
 ## Looking at the list without the app
 

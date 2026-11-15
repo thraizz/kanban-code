@@ -36,7 +36,7 @@ Two sets of secrets:
 
 An owner key is one of:
 
-- A device key: P-256, made inside the Secure Enclave of the Mac (Kanban Code) or the iPhone (Kanban Code Mobile), not exportable, usable only after biometry with the fingers or face enrolled when it was made (`.biometryCurrentSet`, no password or passcode fallback). Adding a finger or resetting Face ID ends that key; enrol the device again from another one.
+- A device key: P-256, made inside the Secure Enclave of the Mac (Kanban Code), not exportable, usable only after biometry with the fingers or face enrolled when it was made (`.biometryCurrentSet`, no password or passcode fallback). Adding a finger or resetting Face ID ends that key; enrol the device again from another one.
 - The recovery key: an age X25519 identity, shown once in Settings > Vault > Owner Keys and kept only in the owner's password manager (e.g. 1Password).
 
 Each owner-only secret is its own age file, encrypted to every owner key (`piv-p256` stanzas for the devices, an `X25519` stanza for recovery), holding `{"name", "value"}`. It is the `sealed` field of the secret; `value` is empty. The store keeps that invariant on every write: with owner keys in place, a secret of tier ask or never is sealed, also one a replica merge brought in plain.
@@ -45,7 +45,7 @@ Sealing starts when the owner keys hold the recovery key and at least one device
 
 ### An approval is the decryption
 
-A request that needs a sealed value carries the ciphertext on its attention request (`unseal`). Approving it on the Mac sheet or the phone runs the Secure Enclave key agreement (the Touch ID or Face ID prompt), opens the value on the device, and sends it with the answer (`POST /v1/attention/{id}/resolve`, `unsealed`). The master uses it for that request and forgets it.
+A request that needs a sealed value carries the ciphertext on its attention request (`unseal`). Approving it on the Mac sheet runs the Secure Enclave key agreement (the Touch ID or Face ID prompt), opens the value on the device, and sends it with the answer (`POST /v1/attention/{id}/resolve`, `unsealed`). The master uses it for that request and forgets it.
 
 - "Approve once": the value is used for that one release.
 - "Approve for this card (<lease time>)": the master keeps the value in memory until the lease ends, so the card's next uses need no prompt. A restart of the master forgets it: the lease is still there, the next use asks again with "it opens only with your Touch ID or Face ID".
@@ -65,7 +65,7 @@ The device checks what it opens: the name inside the sealed value must be the se
 
 `Settings > Vault > Owner Keys` on the Mac sets it up: "Create Keys" makes the Mac's key and the recovery key, shows the recovery key once, and "Seal N Secrets" (enabled by "I stored the recovery key in my password manager") encrypts every ask and never secret. The recovery key is then gone from the Mac: it was only in the sheet, and the clipboard is cleared when it still holds it. "Check the recovery key" takes a pasted key and tries it on a sealed secret.
 
-A second device (the iPhone: Machines > Vault key > Enrol this phone) sends its public key to a master (`POST /v1/vault/owner/enrol`). That raises an approval, "wants to change the keys that unlock the owner-only secrets", listing every key after the change with its fingerprint. Approve it on a device that already holds a key, after comparing the fingerprint with the one the new device shows: that device opens each sealed secret and encrypts it again to the new set, and only ciphertext goes back. Removing a key works the same way from the Owner Keys sheet.
+A second device sends its public key to a master (`POST /v1/vault/owner/enrol`). That raises an approval, "wants to change the keys that unlock the owner-only secrets", listing every key after the change with its fingerprint. Approve it on a device that already holds a key, after comparing the fingerprint with the one the new device shows: that device opens each sealed secret and encrypts it again to the new set, and only ciphertext goes back. Removing a key works the same way from the Owner Keys sheet.
 
 `kv owner` lists the keys (kind, fingerprint, name) and how many secrets are sealed.
 
@@ -103,7 +103,7 @@ Listings also carry a `fingerprint`: an HMAC of the value under the vault key, c
 |------|---------|
 | open | Any card session and any process on the machine, logged |
 | judged | Jev reads the command, the reason, the card title, the card's recent prompts (or, outside a card, the caller's process chain) and the secret's rules: allow, ask or deny |
-| ask | Rogerio approves on the Mac or the phone; the approval unlocks the value with Touch ID or Face ID |
+| ask | Rogerio approves on the Mac; the approval unlocks the value with Touch ID or Face ID |
 | never | Refused. Used for the long-lived AWS keys, which only a device opens to mint credentials |
 
 Order, first match wins:
@@ -154,7 +154,7 @@ Claude subagents started with the Agent tool run inside the card's Claude proces
 
 OpenClaw agents on a Linux master count like card sessions under the principal `openclaw:<agent>`: the master finds, in the caller's ancestry, a process whose cgroup is the gateway's systemd unit (`openclaw-gateway.service`, set by systemd, not by the process), then the topmost process below the gateway whose working directory is an agent workspace from `~/.openclaw/openclaw.json` (the agent runtime the gateway started; a child that changes directory does not change it). The gateway itself, resolving SecretRefs, is `openclaw:gateway`. Each principal holds its own leases. Commands an agent starts outside the unit (`systemd-run`, cron) are processes outside a card.
 
-Human approvals are attention requests of kind `vaultApproval` with the options "Approve for this card (<lease time>)", "Approve once", "Deny". The lease option names the secret's lease time: "Approve for this card (1 hour)", "(2 days)" for a secret without one of its own. A secret with "every use asks" never offers the lease. No answer in 12 hours denies (`VaultPolicy.approvalTimeout`); kv says so when it starts waiting, and waits as long with no timeout of its own. Nothing else ends the request earlier: the attention request, the Mac notification and the phone row stay until it is answered or the 12 hours pass, and the Pushover message has no expiry.
+Human approvals are attention requests of kind `vaultApproval` with the options "Approve for this card (<lease time>)", "Approve once", "Deny". The lease option names the secret's lease time: "Approve for this card (1 hour)", "(2 days)" for a secret without one of its own. A secret with "every use asks" never offers the lease. No answer in 12 hours denies (`VaultPolicy.approvalTimeout`); kv says so when it starts waiting, and waits as long with no timeout of its own. Nothing else ends the request earlier: the attention request and the Mac notification stay until it is answered or the 12 hours pass, and the Pushover message has no expiry.
 
 ### One question per thing asked
 
@@ -166,7 +166,7 @@ A request that asks the human what an open request already asks joins it: no sec
 
 The open request does not depend on its caller. When the caller gives up (a tool call that timed out, a `credential_process` that was killed), the request stays open for the 12 hours, and the same call made again waits on it. A job that runs once a day and gave up finds the answer only through a lease: a card that got "Approve for this card" uses the lease on its next run, while a process outside a card has no lease and its next run asks again. An approval that was not fetched stays for 10 minutes: the same call made again takes it at once, then it is used up. A fetched result stays 30 seconds for the other callers waiting on the same id.
 
-"Approve for this card" grants the lease and then settles every other open request of that card whose secrets its leases now cover: their callers get the secrets (audit decider `lease`), their attention requests close on every master, and the Mac notifications and the phone rows go. A Pushover message cannot be taken back; with one question per thing asked there is one message.
+"Approve for this card" grants the lease and then settles every other open request of that card whose secrets its leases now cover: their callers get the secrets (audit decider `lease`), their attention requests close on every master, and the Mac notifications go. A Pushover message cannot be taken back; with one question per thing asked there is one message.
 
 ### Answering
 
@@ -174,7 +174,7 @@ The open request does not depend on its caller. When the caller gives up (a tool
 
 A master lists its own requests and mirrors its peers' every 4 seconds. A device that follows several masters (`AttentionFleet` in KanbanCodeRemoteKit) shows each request once, from the master that raised it. While that master's event stream is live its list decides: a mirror's copy of a request it no longer lists is not shown. Without the owner the mirror's copy shows, and the answer is forwarded.
 
-On the phone a tapped answer shows "Sending..." on that option at once and the row takes no other tap (`AttentionAnswerState`). The row leaves when the master took the answer, or when it says the request was already settled (a short note at the top of the list says so). When the call fails the row stays with "Not sent: ..." and working buttons. The Mac sheet does the same.
+On the Mac sheet a clicked answer shows "Sending..." on that option at once and takes no other click (`AttentionAnswerState`). The sheet closes when the master took the answer, or when it says the request was already settled. When the call fails it stays with "Not sent: ..." and working buttons.
 
 ### What Jev reads
 
@@ -191,7 +191,7 @@ Text the harness writes (task notifications, messages between Claude sessions, c
 | `You are running as subagent card` | the goal a parent agent gives its subagent |
 | `[Message from #c @x]:`, `From NAME (Slack):`, the public share link warning | removed features (chat channels, the Slack bridge, channel share links); still recognized so older messages in a resumed session are not taken for Rogerio's |
 
-Assistant commands (text starting with `/`) are never marked. Prompts Rogerio sends from the app (chat box, queued prompts, the phone with a full-scope token) and `kanban send` from a shell outside any card stay unmarked. When the transcript is not on the master, Jev judges without prompts.
+Assistant commands (text starting with `/`) are never marked. Prompts Rogerio sends from the app (chat box, queued prompts, a device with a full-scope token) and `kanban send` from a shell outside any card stay unmarked. When the transcript is not on the master, Jev judges without prompts.
 
 ### Restarts
 
@@ -201,14 +201,14 @@ kv waits out a master that does not answer: on a refused connection, or HTTP 502
 
 ### What the human sees
 
-The notification (Mac, Pushover, the phone app) has two lines:
+The notification (Mac, Pushover) has two lines:
 
 - Title: who wants what, e.g. "Kanban Chat Claude wants AWS lw-dev access", "... wants to use the Slack user token", "... wants to change the AWS lw-dev rules", "... wants to use the Slack user token for 2 days" (a lease). Outside a card it reads "A process outside any card wants ...".
 - Body: the agent's `--reason` and nothing else. A missing reason, or one that reads like a command or has under four words, shows "No reason given. Asked by: <command>" (the command on one line, cut to 140 characters), or "No reason given." when there is no command.
 
 Secrets are named by their label: the `label` field when set (`kv label NAME "..."`, `kv add --label`), else one derived from the name (`aws:lw-dev` is "AWS lw-dev", `aws:lw-prod:read` is "AWS lw-prod read-only", `SLACK_USER_TOKEN` is "Slack user token").
 
-Clicking the Mac notification opens the card and a sheet with every detail; on the phone the request's Details page shows the same. The details are the `vault` field of the attention request (`VaultApprovalDetails` in KanbanCodeRemoteKit): card, secrets with tier, the action, the proposed values of an edit, why the vault asks (tier, rate limit, Jev's verdict), the command, the working directory, the reason, the lease the card approval grants, and the process ancestry. `AttentionCopy` builds the title and body; questions and plan approvals use the same title style ("<card> is asking you a question", "<card> wants you to approve a plan", "<card> needs your permission").
+Clicking the Mac notification opens the card and a sheet with every detail. The details are the `vault` field of the attention request (`VaultApprovalDetails` in KanbanCodeRemoteKit): card, secrets with tier, the action, the proposed values of an edit, why the vault asks (tier, rate limit, Jev's verdict), the command, the working directory, the reason, the lease the card approval grants, and the process ancestry. `AttentionCopy` builds the title and body; questions and plan approvals use the same title style ("<card> is asking you a question", "<card> wants you to approve a plan", "<card> needs your permission").
 
 When it reaches you: the Mac notification posts at once and the Dock icon shows the number of open requests. The phone (Pushover) gets one high priority message when the request is still open after the alert delay (Settings > Notifications, 3 min by default), or at once when the Mac is away. A macOS banner set to Temporary closes after 5 seconds, so Settings > Notifications warns when Kanban Code's alert style is not Persistent. When the request's card is open on screen (Kanban in front, its terminal or chat showing), a vault approval opens its detail sheet in the app instead of a notification; questions, plans and permission prompts show in the chat or terminal and get no notification. A sheet still open after the alert delay goes to the phone too, and the Mac notification posts once Kanban leaves the front. Sheets show one at a time: the next waits in line, the open one says how many wait after it, and a request answered elsewhere, withdrawn or timed out closes its sheet and the next one opens. The Dock count includes requests shown only in the app. Every raise, delivery decision and send result is in `~/.kanban-code/logs/kanban-code.log` under `[attention]`.
 
@@ -229,16 +229,16 @@ Each secret has its own lease time (`leasePolicy.leaseSeconds`), from 1 minute t
 
 ### Refusing needs no Touch ID
 
-"Deny" is sent as it is, on the Mac sheet, the Mac banner and the phone: no Touch ID, no Face ID, no password, no device key, also for a sealed secret or an AWS profile minted on the device. Only an approval unlocks with the device key or asks for a confirmation (`AttentionAnswerGate` in KanbanCodeRemoteKit). Closing the sheet answers nothing and asks nothing. A refusal goes over the same authenticated route as an approval (`POST /v1/attention/{id}/resolve`) and is written to the audit log as `denied`, decider `human`, "by mac" or "by phone", with the command and the reason of the request.
+"Deny" is sent as it is, on the Mac sheet and the Mac banner: no Touch ID, no Face ID, no password, no device key, also for a sealed secret or an AWS profile minted on the device. Only an approval unlocks with the device key or asks for a confirmation (`AttentionAnswerGate` in KanbanCodeRemoteKit). Closing the sheet answers nothing and asks nothing. A refusal goes over the same authenticated route as an approval (`POST /v1/attention/{id}/resolve`) and is written to the audit log as `denied`, decider `human`, "by mac" or "by phone", with the command and the reason of the request.
 
 ### A refusal can carry a note for the agent
 
-After "Deny" on the Mac sheet or the phone, the device shows a field "Tell the agent why (optional)" with Send and Skip. The request is refused at that click: it closes on every device and can no longer be approved.
+After "Deny" on the Mac sheet, it shows a field "Tell the agent why (optional)" with Send and Skip. The request is refused at that click: it closes on every device and can no longer be approved.
 
 - The device sends the refusal with `noteFollows`. The master that holds the request then keeps the refusal from `kv` for up to 20 seconds (`DenialNote.window`), so the caller gets one message with the note in it.
 - While the owner types, the device sends `POST /v1/attention/{id}/note` with `typing` (at most every 8 seconds); each one moves the wait to 45 seconds from then, 120 seconds from the refusal at most.
 - Send posts `{"note": "..."}` to the same route, Skip or closing the field posts no note. Either releases the refusal at once. With no post the refusal goes out when the wait ends. A note that arrives later gets HTTP 409 "The refusal already reached the agent without a note."
-- A refusal sent without `noteFollows` (the Mac banner action, a phone or a peer master on an older build) is not held. `POST /v1/attention/{id}/resolve` also takes `note` directly.
+- A refusal sent without `noteFollows` (the Mac banner action, or a peer master on an older build) is not held. `POST /v1/attention/{id}/resolve` also takes `note` directly.
 - The note is one line of at most 500 characters: trimmed, line breaks turned into spaces, control and format characters removed (`DenialNote.clean`). It is cleaned on the device, on the master and again by the broker.
 - Another master forwards both routes to the master that raised the request, as it does for the answer. The peer scope allows `POST attention/*/note`.
 - The note asks for no Touch ID, Face ID or password.
@@ -349,7 +349,7 @@ Every line of `audit.jsonl` carries `prev`, the SHA-256 of the line before it as
 
 A chain alone does not show a log cut at its end, so each master also sends its lines to its peers as it writes them (`VaultAuditSync`): it asks the peer where its mirror stands (`GET /v1/vault/audit/mirror?machine=`), and posts the lines after that (`POST /v1/vault/audit/mirror`), again every minute for what a peer missed while it was off. The peer adds them to `audit-mirror/<machine>.jsonl`. The route only adds: there is none that rewrites or deletes a mirror, and a line that does not follow the mirror's last one is kept and shows as a break. So the Mac holds a copy of the box's log that the box cannot change.
 
-Approvals are also recorded where they were given: `device-approvals.jsonl` on the Mac, and on the phone under Machines > Vault key (kept in the app, shown there), each chained the same way, with the request, the answer, and what the device unlocked or minted.
+Approvals are also recorded where they were given: `device-approvals.jsonl` on the Mac, chained the same way, with the request, the answer, and what the device unlocked or minted.
 
 `kv audit check` (`GET /v1/vault/audit/check`) reports, and exits 1 on any of them:
 
@@ -403,7 +403,7 @@ Plaintext that stays, and why:
 
 ## Pasted secrets
 
-The card chat composer, the queued prompt editor and the iPhone composer check a prompt before sending it (`SecretDetector` in KanbanCodeRemoteKit, a port of LangWatch's redaction rules). When it holds a credential they offer to save it: one editable name per secret, taken from `NAME=value` / `NAME: value` / `"NAME": "value"` or the vendor (`OPENAI_API_KEY`, `GITHUB_TOKEN`...), with `_2`, `_3` when the vault already has that name. Yes adds each as a judged secret and sends the prompt with `{{vault:NAME}}` in its place plus a line telling the agent to use `kv run NAME -- <cmd>`; No sends it unchanged. On the Mac, Return or y is Yes, Esc or n is No. Placeholders (`sk-xxxx...`, `<your-key>`, AWS's `...EXAMPLE`) never ask.
+The card chat composer and the queued prompt editor check a prompt before sending it (`SecretDetector` in KanbanCodeRemoteKit, a port of LangWatch's redaction rules). When it holds a credential they offer to save it: one editable name per secret, taken from `NAME=value` / `NAME: value` / `"NAME": "value"` or the vendor (`OPENAI_API_KEY`, `GITHUB_TOKEN`...), with `_2`, `_3` when the vault already has that name. Yes adds each as a judged secret and sends the prompt with `{{vault:NAME}}` in its place plus a line telling the agent to use `kv run NAME -- <cmd>`; No sends it unchanged. On the Mac, Return or y is Yes, Esc or n is No. Placeholders (`sk-xxxx...`, `<your-key>`, AWS's `...EXAMPLE`) never ask.
 
 The name offered is always free, so saving it as offered asks no further question. A name you type is looked up first (`POST /v1/vault/compare`, which answers `absent`, `same` or `different` and writes no secret; a sealed value always reads as `different`):
 
@@ -411,7 +411,7 @@ The name offered is always free, so saving it as offered asks no further questio
 - It holds the pasted value already: the name is used as it is, with no question and no save.
 - It holds another value: the composer asks "NAME is already in the vault. Replace its value?". Replace sends only the new value, so the secret keeps its tier, rules, label and tags. The other answer puts the free name back for another edit. On the Mac, r replaces and Esc or n goes back.
 
-Replacing from the Mac app's composer is done at once, like an edit in Settings > Vault. From the iPhone and from rush it is a `POST /v1/vault/secrets` for a stored name, which asks the owner: the composer shows "Waiting for your approval to replace NAME" and sends the prompt once it is approved. A denial leaves the stored value and the prompt unsent, with the reason shown.
+Replacing from the Mac app's composer is done at once, like an edit in Settings > Vault. From rush it is a `POST /v1/vault/secrets` for a stored name, which asks the owner: the composer shows "Waiting for your approval to replace NAME" and sends the prompt once it is approved. A denial leaves the stored value and the prompt unsent, with the reason shown.
 
 rush's own message boxes (a Session's box and the Prompt) get the same check from the `kanban-vault` rush plugin in `plugins/rush/kanban-vault`, a Go port of the same rules. It answers rush's `ui.intercept` with an ask, saves with `kv add NAME --tier judged` through the manifest's `exec`, and rewrites the message in place so paste chips stay chips. A typed name the vault holds is looked up with `kv same NAME` and replaced with `kv set NAME` (the value alone). rush stops a program a plugin runs after a minute, so when the approval takes longer the plugin asks "Waiting for your approval to replace NAME" with "check again" and "back to the box"; the request stays open in the vault and the next `kv set` takes its answer. `make rush-plugins` (`Scripts/rush-plugins-install.sh`) builds it into rush's plugin folder and runs `rush plugin approve` at a terminal. rush runs installed plugins only on macOS, where it sandboxes them, so the script installs nothing on a Linux machine.
 
@@ -459,7 +459,7 @@ Images, archives, databases and files that start with a zero byte are skipped. A
 
 The patterns mode (`kv scrub --patterns`, sent to the peers with the other settings) decides which of those keys are taken:
 
-- `typed` (the default): only a key found in a record of what you typed: a line of Kanban's record of your messages (`~/.kanban-code/human-messages`, written by the card chat composers on the Mac and the iPhone) or of rush's `human.jsonl` ([side-chat.md](side-chat.md)). Such a key is saved and then replaced in every file that holds it, assistant and tool lines included, also in files an earlier run left clean. A transcript does not count on its own, since a prompt an agent wrote reads there the same as one you typed: a key pasted straight into a terminal session, or one that only agents or tools wrote (the ones a local dev stack mints), is left in place and not saved.
+- `typed` (the default): only a key found in a record of what you typed: a line of Kanban's record of your messages (`~/.kanban-code/human-messages`, written by the card chat composers on the Mac) or of rush's `human.jsonl` ([side-chat.md](side-chat.md)). Such a key is saved and then replaced in every file that holds it, assistant and tool lines included, also in files an earlier run left clean. A transcript does not count on its own, since a prompt an agent wrote reads there the same as one you typed: a key pasted straight into a terminal session, or one that only agents or tools wrote (the ones a local dev stack mints), is left in place and not saved.
 - `on`: every key that passes the check above, wherever it is.
 - `off`: none. Only values the vault holds are replaced.
 

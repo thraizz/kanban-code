@@ -201,7 +201,7 @@ public enum SecretDetector {
 
     /// What a composer shows while the vault waits for the owner's approval.
     public static func waitingForApproval(_ name: String) -> String {
-        "Waiting for your approval to replace \(name). Approve it on your phone or Mac."
+        "Waiting for your approval to replace \(name). Approve it on your Mac."
     }
 
     /// Saves each offer through `add` (which returns an error message or

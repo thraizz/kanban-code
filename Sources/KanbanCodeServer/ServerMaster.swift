@@ -165,7 +165,7 @@ final class ServerMaster {
     /// agent sync and the vault. Fast (the cached links load in well under a
     /// second), so the remote API can listen right after it; the first
     /// reconcile and the loops that read its results come from `run()`.
-    /// The attention center is up from here, so answers from the phone land.
+    /// The attention center is up from here, so answers from remote devices land.
     func start() async {
         installHooks()
         store.dispatch(.localMachineLoaded(identity))

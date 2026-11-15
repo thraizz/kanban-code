@@ -54,7 +54,7 @@ public struct RemoteSlashCommand: Codable, Sendable, Equatable, Identifiable {
 }
 
 /// The list over the composer: when it shows, what it holds and what the
-/// keys do. Pure, shared by the Mac chat and the phone.
+/// keys do. Pure, shared by the Mac chat and remote clients.
 public enum SlashCommandMenu {
     /// The command name being typed, lowercased, or nil when the text is
     /// not one: the text has to start with `/` and hold no whitespace. A

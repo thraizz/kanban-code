@@ -2,7 +2,7 @@ import Foundation
 import KanbanCodeRemoteKit
 
 /// Which remote requests count as the human using a card from another
-/// device (docs/remote-control.md, "Staying awake for the phone").
+/// device (docs/remote-control.md, "Staying awake for remote use").
 public enum RemoteActivityPolicy {
     /// A device of the human, or a paired master passing on what he does
     /// there. The masters' own sync carries no header, and agents never count.

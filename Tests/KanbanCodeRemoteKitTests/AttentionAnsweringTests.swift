@@ -124,7 +124,7 @@ struct AttentionAnswerStateTests {
     @Test func noAnswerTextNamesARequestId() {
         for text in [AttentionAnswerCopy.gone, AttentionAnswerCopy.ownerUnreachable, AttentionAnswerCopy.sessionGone,
                      AttentionAnswerCopy.alreadyAnswered(by: nil, resolution: nil),
-                     AttentionAnswerCopy.alreadyAnswered(by: "iPhone", resolution: "Deny")] {
+                     AttentionAnswerCopy.alreadyAnswered(by: "Phone", resolution: "Deny")] {
             #expect(!text.contains("vault_") && !text.contains("att_"))
         }
         #expect(AttentionAnswerCopy.alreadyAnswered(by: "peer", resolution: nil) == "This was already answered.")

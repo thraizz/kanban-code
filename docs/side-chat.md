@@ -1,6 +1,6 @@
 # Side chat: /btw and /catchup
 
-A side chat asks about a card's session without writing into it. It shows in a panel over the chat, on the Mac and on the phone, for Claude Code cards on both runtimes (rush and tmux).
+A side chat asks about a card's session without writing into it. It shows in a panel over the chat, for Claude Code cards on both runtimes (rush and tmux).
 
 ## Commands
 
@@ -12,7 +12,7 @@ Type them in the chat composer:
 The panel has a follow-up field with two actions:
 
 - **Ask here** (Return on the Mac) continues in the side chat. Earlier questions and answers go along.
-- **Send to main chat** (Command-Return on the Mac) sends your reply to the session, followed by the side chat as context for the agent. The panel closes at once, with no animation. On the phone the message shows right away as a pending bubble and the composer stays free while the machine takes it. A send that fails removes the bubble and puts the text in the composer, with what was typed there stashed.
+- **Send to main chat** (Command-Return on the Mac) sends your reply to the session, followed by the side chat as context for the agent. The panel closes at once, with no animation.
 
 Closing the panel (the x button, or Esc on the Mac) forgets the side chat and stops a run that is still answering. The fold button keeps it and shows the chat under it.
 
@@ -20,7 +20,7 @@ Closing the panel (the x button, or Esc on the Mac) forgets the side chat and st
 
 The answer has up to six sections, each left out when empty: what you asked, where it stands, key facts, waiting on you, blocked or failed, what else happened. A "Full report" button links to the agent's long final report when there is one.
 
-Every item ends with a link that shows the time of the message it comes from. A link scrolls the chat to that message and tints it for a few seconds. The panel folds so the message shows. A message that is not loaded is read first: around its place in the file on the Mac, by loading older pages on the phone.
+Every item ends with a link that shows the time of the message it comes from. A link scrolls the chat to that message and tints it for a few seconds. The panel folds so the message shows. A message that is not loaded is read first, around its place in the file.
 
 The first line, "Since you sent", quotes your last message and links to it.
 
@@ -28,7 +28,7 @@ The first line, "Since you sent", quotes your last message and links to it.
 
 The master that owns the card keeps the card's last finished catch-up in `~/.kanban-code/side-chat/<cardId>.json`: the answer, the messages it cites, the session id, the transcript offset of the last message it covers, and the follow-ups asked in its side chat.
 
-`/catchup` on a card whose session has no message after that one returns the kept catch-up at once, with no model run. It shows "From 14:02, nothing new since" and its follow-ups. This holds after the panel was closed, after an app restart, and from the other device: a catch-up made on the Mac reopens on the phone.
+`/catchup` on a card whose session has no message after that one returns the kept catch-up at once, with no model run. It shows "From 14:02, nothing new since" and its follow-ups. This holds after the panel was closed, after an app restart, and from another device over the remote API.
 
 A new message in the session (from the agent, from you, or delivered by another agent), or a card that moved to another session, makes the next `/catchup` a new run, which replaces the kept one.
 
@@ -56,13 +56,13 @@ Not supported: Codex and Gemini cards, and sessions that run on an ssh or boxd m
 
 ## When the machine is offline
 
-On the phone, a side chat request that gets no answer (a timeout, a lost connection), or any failure while the app shows the card's machine as offline, reads "<machine name> is offline. It may be asleep." with a Retry button. Retry asks the same question again in its place. An error the machine itself answered with shows as it is, also with Retry.
+A side chat request to a card's machine that gets no answer (a timeout, a lost connection), or any failure while that machine shows as offline, reads "<machine name> is offline. It may be asleep." with a Retry button. Retry asks the same question again in its place. An error the machine itself answered with shows as it is, also with Retry.
 
-A request the phone makes to a card keeps a Mac awake for 10 minutes, so a run that started is not cut off by sleep. See "Staying awake for the phone" in [`remote-control.md`](remote-control.md).
+A request a paired device makes to a card keeps a Mac awake for 10 minutes, so a run that started is not cut off by sleep. See "Staying awake for remote use" in [`remote-control.md`](remote-control.md).
 
 ## Your last message
 
-A message is yours when you typed and sent it yourself: in the Kanban chat (Mac or phone), in the rush composer, or straight into the terminal of a tmux card. Messages from `kanban send`, parent/subagent DMs, remote agents, prompts an agent queued, self-compact follow-ups and task notifications are not, even though the session stores them as user messages.
+A message is yours when you typed and sent it yourself: in the Kanban chat, in the rush composer, or straight into the terminal of a tmux card. Messages from `kanban send`, parent/subagent DMs, remote agents, prompts an agent queued, self-compact follow-ups and task notifications are not, even though the session stores them as user messages.
 
 Kanban records what its chat sends in `~/.kanban-code/human-messages/<cardId>.jsonl`, one `{"at", "sessionId", "text"}` per line, at the time you wrote it. A prompt you queued is recorded when it joined the queue, so a catch-up also covers what happened while it waited. A card's first prompt is recorded when you start the card from the app.
 

@@ -380,7 +380,7 @@ public actor VaultStore {
         s.name = stored
         if s.isSealed, !s.isOwnerOnly {
             guard let unsealedValue else {
-                throw VaultError.locked("\(stored) is owner-only: lowering its tier needs an approval on the Mac or the phone")
+                throw VaultError.locked("\(stored) is owner-only: lowering its tier needs an approval on the Mac")
             }
             s.value = unsealedValue
             s.sealed = nil

@@ -1,7 +1,7 @@
 import Foundation
 
 /// Wire types of the Kanban Code remote control API (docs/remote-control.md).
-/// The Mac app serves them, the iOS app and the kanban CLI read them.
+/// The Mac app serves them, the kanban CLI and other remote clients read them.
 public enum RemoteAPI {
     public static let version = 1
     public static let defaultPort = 7780
@@ -43,7 +43,7 @@ public enum RemoteAPI {
     public static let features = [Feature.images, Feature.queue, Feature.terminalScroll, Feature.machines, Feature.cardActions, Feature.worktrees, Feature.sideChat, Feature.slashCommands, Feature.cardSearch, Feature.fork, Feature.conversations, Feature.files]
 }
 
-/// What a device may do. `full` is a phone: everything, terminals included.
+/// What a device may do. `full` is a device the human uses: everything, terminals included.
 /// `agent` is another agent (OpenClaw): read the board, start tasks, send
 /// prompts, never a terminal or raw keys.
 public enum RemoteScope: String, Codable, Sendable, CaseIterable {
@@ -120,7 +120,7 @@ public enum RemoteColumn: String, Codable, Sendable, CaseIterable {
 }
 
 /// Where a card's main session runs. A rush host goes on the wire as
-/// "agtop", the name rush had before it was renamed, since phones and
+/// "agtop", the name rush had before it was renamed, since clients and
 /// masters on older builds decode only that; "rush" is read as well.
 public enum RemoteRuntime: String, Codable, Sendable {
     case tmux

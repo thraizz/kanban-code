@@ -7,7 +7,7 @@ import Foundation
 import KanbanCodeRemoteKit
 
 /// Where the vault takes a decision to the human: an attention request on
-/// the master, which the Mac and the phone show until one resolves it.
+/// the master, which the Mac shows until it is resolved.
 public protocol VaultApprovals: Sendable {
     func raise(_ request: AttentionRequest) async
     /// The resolution once the request was resolved, nil while open.
@@ -891,7 +891,7 @@ public actor VaultBroker {
                 note = "minted on the device"
             } else if await sealedSource(of: s) != nil {
                 guard let kept = heldAws(s, now: now) else {
-                    return .denied("\(s.name): its credentials are minted on Rogerio's Mac or phone, and none are held; ask again")
+                    return .denied("\(s.name): its credentials are minted on Rogerio's Mac, and none are held; ask again")
                 }
                 credentials = kept.credentials
                 note = "credentials a device minted \(Int(now.timeIntervalSince(kept.issuedAt) / 60)) min ago"
@@ -920,7 +920,7 @@ public actor VaultBroker {
         }
         let missing = allowed.map(\.0).filter { $0.isSealed && unlocked[$0.name] == nil }
         guard missing.isEmpty else {
-            return .denied("\(missing.map(\.name).joined(separator: ", ")): approved, but not unlocked on a device. Ask again; Rogerio answers in Kanban Code on his Mac or phone")
+            return .denied("\(missing.map(\.name).joined(separator: ", ")): approved, but not unlocked on a device. Ask again; Rogerio answers in Kanban Code on his Mac")
         }
         for (s, by, why) in allowed {
             await store.recordRelease(s.name, caller: Self.principalKey(caller), now: now)
@@ -1401,8 +1401,8 @@ public actor VaultBroker {
 
     private func waitingMessage(caller: VaultCaller, title: String?, reason: String?) -> String {
         var waitingOn = caller.insideCard
-            ? "Waiting for Rogerio's approval on his phone or Mac (\(caller.openClawAgent == nil ? "card " : "")\(title ?? caller.cardId ?? "?"))"
-            : "Waiting for Rogerio's approval on his phone or Mac (this process is not in a Kanban card session)"
+            ? "Waiting for Rogerio's approval on his Mac (\(caller.openClawAgent == nil ? "card " : "")\(title ?? caller.cardId ?? "?"))"
+            : "Waiting for Rogerio's approval on his Mac (this process is not in a Kanban card session)"
         waitingOn += ", up to \(VaultPolicy.span(approvalTimeout))"
         if AttentionCopy.usableReason(reason) == nil {
             waitingOn += ". He sees no reason from you; next time: \(AttentionCopy.reasonGuidance)"

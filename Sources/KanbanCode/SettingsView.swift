@@ -142,7 +142,7 @@ struct SettingsView: View {
             .trackUsage("settings", "Remote")
 
             RemoteControlSettingsView()
-                .tabItem { Label("Remote Control", systemImage: "iphone.radiowaves.left.and.right") }
+                .tabItem { Label("Remote Control", systemImage: "dot.radiowaves.left.and.right") }
             .trackUsage("settings", "Remote Control")
 
             SyncSettingsView()
@@ -1157,10 +1157,10 @@ struct AmphetamineSettingsView: View {
                 }
             }
 
-            Section("Phone") {
+            Section("Remote use") {
                 VStack(alignment: .leading, spacing: 4) {
-                    Toggle("Stay awake while a card on this Mac is used from the phone", isOn: $remoteWakeHold)
-                    Text("Keeps the Mac awake for 10 minutes after the last request the phone made to one of its cards, so a catch-up or a prompt is not cut off by sleep. Works on power, also with the lid closed. A Mac that is already asleep is not woken.")
+                    Toggle("Stay awake while a card on this Mac is used from another device", isOn: $remoteWakeHold)
+                    Text("Keeps the Mac awake for 10 minutes after the last request a paired device made to one of its cards, so a catch-up or a prompt is not cut off by sleep. Works on power, also with the lid closed. A Mac that is already asleep is not woken.")
                         .font(.caption)
                         .foregroundStyle(.tertiary)
                 }

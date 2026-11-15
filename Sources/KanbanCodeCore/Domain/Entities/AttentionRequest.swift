@@ -6,7 +6,7 @@
 @_exported import enum KanbanCodeRemoteKit.AttentionCopy
 import Foundation
 
-/// The entity is defined in KanbanCodeRemoteKit so the iOS app decodes the
+/// The entity is defined in KanbanCodeRemoteKit so remote clients decode the
 /// same type; Core re-exports it.
 extension AttentionRequest {
     /// Options of a vault release request whose lease lasts the maximum.

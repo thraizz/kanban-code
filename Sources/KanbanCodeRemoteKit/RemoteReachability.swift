@@ -2,11 +2,11 @@ import Foundation
 
 /// When a master that was answering counts as offline: only after every
 /// attempt to reach it has failed for `grace`. A loaded host answers late,
-/// a phone waking up needs a moment before its tunnel carries traffic, and
+/// a device waking up needs a moment before its tunnel carries traffic, and
 /// one dropped socket or timed out pull says nothing about the master
 /// itself, so a single failure never flips it offline.
 public struct RemoteReachability: Sendable, Equatable {
-    /// Long enough for a deploy restart, a stalled loaded host and a phone
+    /// Long enough for a deploy restart, a stalled loaded host and a device
     /// tunnel coming back, short enough that a master that is really gone
     /// shows it within a minute.
     public static let defaultGrace: TimeInterval = 45

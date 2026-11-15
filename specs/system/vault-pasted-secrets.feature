@@ -3,8 +3,8 @@ Feature: Saving a secret pasted into a prompt
   I want the composer to save it to the vault under the name I choose
   So that a rotated key replaces the old one instead of piling up as NAME_2
 
-  # The Mac chat composer, the iPhone chat composer and the kanban-vault
-  # rush plugin all follow these rules. See docs/vault.md, "Pasted secrets".
+  # The Mac chat composer and the kanban-vault rush plugin
+  # both follow these rules. See docs/vault.md, "Pasted secrets".
 
   Background:
     Given the vault holds "METABASE_API_KEY" with tier ask, rules, a label and tags
@@ -42,7 +42,7 @@ Feature: Saving a secret pasted into a prompt
     And the prompt goes out with "{{vault:METABASE_KEY_COPY}}" in place of the key
 
   Scenario: A replace that needs the owner's approval shows it is waiting
-    Given replacing a stored value from the iPhone or from rush asks the owner
+    Given replacing a stored value from rush asks the owner
     When I choose to replace
     Then the composer says it waits for my approval to replace "METABASE_API_KEY"
     And the prompt is not sent until the approval is given

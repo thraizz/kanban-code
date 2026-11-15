@@ -730,7 +730,7 @@ export function parseTimeout(raw: string): number {
 export function registerRemoteCommands(program: Command, io: RemoteIO = defaultRemoteIO()): Command {
   const remote = program
     .command("remote")
-    .description("Drive Kanban Code on a Mac over its remote API (from a phone's tailnet, another machine or an agent)");
+    .description("Drive Kanban Code on a Mac over its remote API (from another device on the tailnet, another machine or an agent)");
 
   const println = (text: string) => io.out(text.endsWith("\n") ? text : text + "\n");
   const printJson = (data: unknown) => io.out(JSON.stringify(data, null, 2) + "\n");
@@ -1146,8 +1146,8 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
   remote
     .command("pair")
     .description("On the Mac: add a device and print its token and pairing link")
-    .requiredOption("--name <name>", "device name, e.g. iPhone or openclaw")
-    .addOption(new Option("--scope <scope>", "full (phone) or agent").choices([...REMOTE_SCOPES]).default("full"))
+    .requiredOption("--name <name>", "device name, e.g. laptop or openclaw")
+    .addOption(new Option("--scope <scope>", "full (a device you use) or agent").choices([...REMOTE_SCOPES]).default("full"))
     .option("--url <url>", `server URL in the link (default: the Mac's Tailscale name, port ${REMOTE_DEFAULT_PORT})`)
     .option("--json", "output as JSON")
     .action(

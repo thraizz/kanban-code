@@ -118,7 +118,7 @@ async function handle(req: IncomingMessage, res: ServerResponse): Promise<void> 
   const scope = token === FULL_TOKEN ? "full" : "agent";
 
   if (req.method === "GET" && path === "/v1/me") {
-    return send(res, 200, { id: `dev_${scope}`, name: scope === "full" ? "iPhone" : "openclaw", scope, createdAt: "2026-09-26T09:00:00.000Z", lastSeenAt: null });
+    return send(res, 200, { id: `dev_${scope}`, name: scope === "full" ? "laptop" : "openclaw", scope, createdAt: "2026-09-26T09:00:00.000Z", lastSeenAt: null });
   }
   if (req.method === "GET" && path === "/v1/board") {
     // Like the server: the working set unless ?all=1.
@@ -302,7 +302,7 @@ describe("kanban remote login / whoami / logout", () => {
   test("login checks health and me, then saves the config with mode 600", async () => {
     const r = await run(["login", baseUrl + "/", "--token", FULL_TOKEN]);
     assert.equal(r.code, 0, r.err);
-    assert.match(r.out, /Logged in to mock-mac .* as 'iPhone', scope full/);
+    assert.match(r.out, /Logged in to mock-mac .* as 'laptop', scope full/);
     const path = join(home, "remote-client.json");
     assert.equal(remoteClientConfigPath(), path);
     const saved = JSON.parse(readFileSync(path, "utf8"));
@@ -331,7 +331,7 @@ describe("kanban remote login / whoami / logout", () => {
     await loggedIn();
     let r = await run(["whoami"]);
     assert.equal(r.code, 0, r.err);
-    assert.match(r.out, /iPhone \(dev_full\), scope full/);
+    assert.match(r.out, /laptop \(dev_full\), scope full/);
     r = await run(["whoami", "--json"], { env: { KANBAN_REMOTE_TOKEN: AGENT_TOKEN } });
     const parsed = JSON.parse(r.out);
     assert.equal(parsed.device.scope, "agent");
@@ -694,7 +694,7 @@ describe("devices.json", () => {
     mkdirSync(join(home, "remote"), { recursive: true });
     const existing = {
       devices: [
-        { id: "dev_phone", name: "iPhone", scope: "full", tokenHash: "f".repeat(64), createdAt: "2026-09-01T00:00:00.000Z", lastSeenAt: "2026-09-25T00:00:00.000Z", extra: 1 },
+        { id: "dev_laptop", name: "laptop", scope: "full", tokenHash: "f".repeat(64), createdAt: "2026-09-01T00:00:00.000Z", lastSeenAt: "2026-09-25T00:00:00.000Z", extra: 1 },
       ],
       version: 7,
     };

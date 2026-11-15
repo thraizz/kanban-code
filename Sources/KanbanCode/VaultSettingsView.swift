@@ -59,7 +59,7 @@ struct VaultSettingsView: View {
                                             Text("AWS").font(.caption2).foregroundStyle(.secondary)
                                         }
                                         if s.sealed == true {
-                                            Image(systemName: "touchid").foregroundStyle(.secondary).help("Opens only on your Mac or phone")
+                                            Image(systemName: "touchid").foregroundStyle(.secondary).help("Opens only on your Mac")
                                         }
                                     }
                                     .tag(s.name)

@@ -223,7 +223,7 @@ final class SystemTray: NSObject, @unchecked Sendable {
             statusItem?.isVisible = false
         }
 
-        // A card in use from the phone counts like a working session.
+        // A card in use from a paired device counts like a working session.
         if hasLocalActive || RemoteWakeHold.shared.isHolding() {
             lastLocalActiveTime = Date()
             startActiveSessionIfNeeded()

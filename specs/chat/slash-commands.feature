@@ -4,7 +4,7 @@ Feature: Slash command list in the chat composer
   So that I do not have to remember their names
 
   Background:
-    Given a card whose chat is open on the Mac or on the phone
+    Given a card whose chat is open on the Mac
 
   # ── When the list shows ─────────────────────────────────────────────
 
@@ -70,13 +70,6 @@ Feature: Slash command list in the chat composer
     Given I recalled an earlier message that starts with "/" with the up arrow
     Then no list shows and the arrows keep recalling messages
 
-  # ── On the phone ────────────────────────────────────────────────────
-
-  Scenario: A tap completes
-    Given I typed "/catchu" in the phone's composer
-    When I tap "/catchup" in the list
-    Then the composer holds "/catchup " with the caret at the end
-
   # ── What the list holds ─────────────────────────────────────────────
 
   Scenario: The chat's own commands
@@ -123,7 +116,7 @@ Feature: Slash command list in the chat composer
 
   Scenario: The list comes from the machine that owns the card
     Given a card that another master owns
-    When I type "/" in its chat on the Mac or on the phone
+    When I type "/" in its chat on the Mac
     Then the list holds the skills on that master's disk
 
   Scenario: The owner is away
@@ -136,6 +129,6 @@ Feature: Slash command list in the chat composer
     When I type "/" again half a minute later
     Then the new skill is in the list
 
-  Scenario: The phone and a paired master may read the list
+  Scenario: Remote devices and a paired master may read the list
     Then a device with the full, agent or peer scope may call the route
     And a terminal-scope device is refused

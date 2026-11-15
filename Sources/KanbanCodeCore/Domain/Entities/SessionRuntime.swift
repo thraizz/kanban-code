@@ -4,7 +4,7 @@ import Foundation
 ///
 /// Stored as "tmux" or "agtop". The rush case keeps the value it had
 /// before rush was renamed from agtop: settings and remote boards are read
-/// by older builds of the app, the box server and the iOS app, which know
+/// by older builds of the app and the box server, which know
 /// only "agtop". Reading takes "rush" too, so a later build may write it
 /// once every reader understands it.
 public enum SessionRuntime: String, Codable, Sendable, CaseIterable {

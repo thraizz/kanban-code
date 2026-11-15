@@ -384,7 +384,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         guard let rushId = RushSessionName.rushId(fromName: session) else {
             throw RemoteHostError.notFound("card \(cardId) has no queued prompt \(promptId)")
         }
-        // The queue as the phone saw it may be older than rush's.
+        // The queue as the client saw it may be older than rush's.
         var current = queue
         if RemoteBoardMapper.rushQueueIndex(of: promptId, in: current) == nil,
            let info = try? await rushFor(session).info(id: rushId) {
@@ -432,7 +432,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
     }
 
     /// While a rush host has messages queued, reads its queue every two
-    /// seconds, so they leave the phone when rush sends them. The session
+    /// seconds, so they leave the client when rush sends them. The session
     /// scan also reads them, but only as often as the board reconciles.
     private func watchRushQueues() async {
         let queued = await MainActor.run { !store.state.rushQueues.isEmpty }
@@ -581,7 +581,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
             return current
         }
         await MainActor.run { engine.resumeRemoteCard(cardId) }
-        // The caller may be another master or a phone that shows nothing of
+        // The caller may be another master or a client that shows nothing of
         // this board: a start that fails is its answer, not a line in a log
         // here. A start still running after the wait answers with the card.
         let deadline = Date().addingTimeInterval(resumeOutcomeWait)

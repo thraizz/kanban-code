@@ -1,7 +1,7 @@
 import Foundation
 import KanbanCodeRemoteKit
 
-/// Settings > Remote Control: the HTTP server phones and other agents use to
+/// Settings > Remote Control: the HTTP server other devices and agents use to
 /// drive this Mac (docs/remote-control.md). Off until turned on.
 public struct RemoteControlSettings: Codable, Sendable, Equatable {
     public var enabled: Bool

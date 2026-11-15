@@ -1,10 +1,9 @@
 import AppKit
-import CoreImage.CIFilterBuiltins
 import KanbanCodeCore
 import KanbanCodeRemoteKit
 import SwiftUI
 
-/// Settings > Remote Control: the server phones and other agents use to
+/// Settings > Remote Control: the server other devices and agents use to
 /// drive this Mac over the LAN or a VPN (docs/remote-control.md).
 struct RemoteControlSettingsView: View {
     @State private var controller = RemoteControlController.shared
@@ -67,7 +66,7 @@ struct RemoteControlSettingsView: View {
                 }
                 ForEach(controller.devices) { device in
                     HStack {
-                        Image(systemName: device.scope == .full ? "iphone" : (device.scope == .agent ? "cpu" : "server.rack"))
+                        Image(systemName: device.scope == .full ? "person.crop.circle" : (device.scope == .agent ? "cpu" : "server.rack"))
                             .foregroundStyle(.secondary)
                             .frame(width: 18)
                         VStack(alignment: .leading, spacing: 2) {
@@ -185,8 +184,8 @@ struct RemoteControlSettingsView: View {
     }
 }
 
-/// Pairs a device: asks for a name and scope, then shows the token once
-/// with a QR code of the pairing link.
+/// Pairs a device: asks for a name and scope, then shows the token and the
+/// pairing link once.
 struct AddRemoteDeviceSheet: View {
     let controller: RemoteControlController
     @Binding var isPresented: Bool
@@ -210,7 +209,7 @@ struct AddRemoteDeviceSheet: View {
     @ViewBuilder
     private var form: some View {
         Text("Add Device").font(.headline)
-        TextField("Name, e.g. iPhone", text: $name)
+        TextField("Name, e.g. laptop", text: $name)
             .textFieldStyle(.roundedBorder)
         Picker("Access", selection: $scope) {
             Text("Full: board, prompts and terminals").tag(RemoteScope.full)
@@ -235,19 +234,9 @@ struct AddRemoteDeviceSheet: View {
     private func paired(token: String) -> some View {
         let link = controller.pairLink(token: token)
         Text("\(name) is paired").font(.headline)
-        Text("Scan the code with the Kanban Code app on the phone, or copy the token. It is shown only this once.")
+        Text("Copy the token or the pairing link. It is shown only this once.")
             .font(.caption)
             .foregroundStyle(.secondary)
-        HStack {
-            Spacer()
-            if let image = Self.qrCode(link) {
-                Image(nsImage: image)
-                    .interpolation(.none)
-                    .resizable()
-                    .frame(width: 220, height: 220)
-            }
-            Spacer()
-        }
         Text(token)
             .font(.system(.caption, design: .monospaced))
             .textSelection(.enabled)
@@ -277,14 +266,5 @@ struct AddRemoteDeviceSheet: View {
     private func copy(_ text: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(text, forType: .string)
-    }
-
-    static func qrCode(_ text: String) -> NSImage? {
-        let filter = CIFilter.qrCodeGenerator()
-        filter.message = Data(text.utf8)
-        filter.correctionLevel = "M"
-        guard let output = filter.outputImage?.transformed(by: CGAffineTransform(scaleX: 10, y: 10)),
-              let cgImage = CIContext().createCGImage(output, from: output.extent) else { return nil }
-        return NSImage(cgImage: cgImage, size: NSSize(width: output.extent.width, height: output.extent.height))
     }
 }

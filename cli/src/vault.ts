@@ -5,7 +5,7 @@
  * it over loopback for the ones a command needs. The master looks up the
  * calling process to find the card session it runs in, then decides: open
  * secrets come back at once, judged ones go past Jev, the rest wait for
- * Rogerio's approval on his phone or Mac. Values only ever reach the child
+ * Rogerio's approval on his Mac. Values only ever reach the child
  * process environment (or stdout for `kv get`).
  */
 
@@ -60,7 +60,7 @@ export interface VaultSecretInfo {
   aliases?: string[] | null;
   displayLabel?: string | null;
   fingerprint?: string | null;
-  /** The value opens only on the owner's Mac or phone. */
+  /** The value opens only on the owner's Mac. */
   sealed?: boolean | null;
 }
 
@@ -837,7 +837,7 @@ export const USAGE = `kv: secrets from the Kanban Code vault
   kv get NAME [--reason "..."]                              print one secret (never one that asks)
   kv request NAME[:scope] [NAME..] --reason "..."           ask once for the card's task (the secret's lease time)
   kv aws <profile> [--reason "..."]                         AWS credential_process JSON (short-lived STS credentials,
-                                                            minted on Rogerio's Mac or phone when he approves)
+                                                            minted on Rogerio's Mac when he approves)
   kv set KEY [--project P|.] [--env E] [--tier open|judged|ask|never] [--rules "..."] [--label "..."] [--tag t]
          [--reason "..."] [--lease 1h|--every-use-asks]     value from stdin; with --project the secret is the
                                                             project's own (. is this folder's), else shared.

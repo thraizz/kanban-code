@@ -43,11 +43,11 @@ Feature: Conversations inside one card
   Scenario: The agent replies to a conversation
     When the agent runs `kanban reply swift-otter --title "Vault hardening" "Yes, starting with the lease tiers."`
     Then the reply shows as the agent's message in "swift-otter"
-    And the conversation's title becomes "Vault hardening" in the sidebar, the chat header and on the phone
+    And the conversation's title becomes "Vault hardening" in the sidebar and the chat header
     And the reply does not show in another conversation
 
   Scenario: The user renames a conversation and the name stays
-    When I choose "Rename Conversation" in the conversation's right-click menu on the Mac, or press and hold it on the phone, and name it "My plan"
+    When I choose "Rename Conversation" in the conversation's right-click menu on the Mac and name it "My plan"
     Then it is called "My plan" on every device
     When the agent later runs `kanban reply swift-otter --title "Other plan" "Done."`
     Then the reply is logged but the title stays "My plan"
@@ -81,7 +81,7 @@ Feature: Conversations inside one card
 
   Scenario: Unread replies
     Given the agent's reply is the last message of "swift-otter"
-    Then "swift-otter" shows in bold in the sidebar and on the phone, with no other marker
+    Then "swift-otter" shows in bold in the sidebar, with no other marker
     And kanban conversation list reports it as waiting on the human
     When I open it
     Then it is no longer bold, on every device
@@ -94,12 +94,8 @@ Feature: Conversations inside one card
     Then a new conversation opens that starts with that message quoted
     And my first message in it gives the agent the start of the quoted message as context
 
-  Scenario: Continue an agent message in a new conversation on the phone
-    When I press and hold an agent message and choose "Continue in new conversation"
-    Then a new conversation opens that starts with that message quoted
-
   Scenario: Continue my own message in a new conversation
-    When I right-click one of my messages, use its hover button, or press and hold it on the phone, and choose "Continue in new conversation"
+    When I right-click one of my messages, or use its hover button, and choose "Continue in new conversation"
     Then a new conversation opens with my message quoted as "Continued from your message", and the agent's reply below it if there is one
     And my first message in it tells the agent it continues the user's message, and its reply when there is one
 
@@ -110,7 +106,7 @@ Feature: Conversations inside one card
     When I start a conversation for it on the Mac and send a message
     Then the box appends it to its log and sends the prompt to the session
     And the Mac keeps a copy of the box's log under ~/.kanban-code/peers/<machine>/conversations/
-    And the phone lists the same conversations with the same unread and waiting state
+    And the box's board lists the same conversations with the same unread and waiting state
 
   Scenario: The CLI lists and shows conversations
     When I run `kanban conversation list` in the card's session

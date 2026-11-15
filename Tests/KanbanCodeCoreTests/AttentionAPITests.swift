@@ -34,7 +34,7 @@ struct AttentionAPITests {
         #expect(status == 204)
         let resolutions = f.host.state.withLock { $0.resolutions }
         #expect(resolutions.map(\.resolution) == ["SQLite"])
-        #expect(resolutions.map(\.by) == ["iPhone"])
+        #expect(resolutions.map(\.by) == ["Phone"])
     }
 
     @Test("an agent token cannot answer a request")

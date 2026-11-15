@@ -1,7 +1,7 @@
 import Foundation
 
 /// A message the human typed and sent himself from a Kanban chat composer
-/// (Mac or iOS), recorded when he wrote it.
+/// (Mac or a remote client), recorded when he wrote it.
 public struct HumanMessageRecord: Codable, Sendable, Equatable {
     /// When he wrote it: for a queued prompt, when it joined the queue.
     public var at: Date

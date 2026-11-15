@@ -1,7 +1,7 @@
 // swift-tools-version: 6.2
 import PackageDescription
 
-// macOS builds the app, its helpers and the iOS wire types. Linux builds only
+// macOS builds the app and its helpers. Linux builds only
 // the headless side: Core, the remote API wire types, the demo server and
 // kanban-code-server, with swift-crypto standing in for CryptoKit and the
 // system zlib for the Compression framework.
@@ -105,8 +105,7 @@ if linuxOnly {
     ])
 }
 
-// Wire types of the remote control API and the vault's owner-key crypto,
-// shared with the iOS app.
+// Wire types of the remote control API and the vault's owner-key crypto.
 targets.append(
     .target(
         name: "KanbanCodeRemoteKit",
@@ -127,7 +126,6 @@ let package = Package(
     name: "KanbanCode",
     platforms: [
         .macOS(.v26),
-        .iOS(.v26),
     ],
     products: products,
     dependencies: dependencies,

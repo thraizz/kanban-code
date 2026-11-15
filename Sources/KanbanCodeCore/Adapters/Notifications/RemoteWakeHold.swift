@@ -6,7 +6,7 @@ import IOKit.pwr_mgt
 /// Keeps the Mac awake for a while after the human used one of its cards
 /// from another device. A Mac with its lid closed that woke for a moment
 /// (a dark wake) goes back to sleep within a minute or two unless something
-/// holds it; the phone would lose the card in the middle of an answer.
+/// holds it; the remote device would lose the card in the middle of an answer.
 ///
 /// The hold is a `PreventSystemSleep` power assertion, which macOS honours
 /// on AC power, also with the lid closed. It carries its own timeout, so

@@ -281,7 +281,7 @@ func (a *app) waiting(q asked) interceptResult {
 	q.replacing, q.waiting = false, true
 	return interceptResult{Action: "ask", ID: a.remember(q),
 		Question: "Waiting for your approval to replace " + q.name,
-		Detail:   "approve it on your phone or Mac, then check again · the message isn't sent until then",
+		Detail:   "approve it on your Mac, then check again · the message isn't sent until then",
 		Choices:  []askChoice{{Key: "y", Label: "check again", Enter: true}, {Key: "n", Label: "back to the box", Esc: true}}}
 }
 
@@ -294,7 +294,7 @@ func (a *app) replace(ctx context.Context, in intercept, q asked) interceptResul
 		return a.kept(in, q, "")
 	}
 	notice := time.AfterFunc(noticeAfter, func() {
-		a.notify("waiting for your approval to replace " + q.name + ": approve it on your phone or Mac")
+		a.notify("waiting for your approval to replace " + q.name + ": approve it on your Mac")
 	})
 	err := a.vault.Replace(ctx, q.name, q.value)
 	notice.Stop()

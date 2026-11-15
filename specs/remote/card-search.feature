@@ -1,10 +1,10 @@
-Feature: Searching every card from the phone
+Feature: Searching every card over the remote API
   As the owner of a board with thousands of cards on two masters
-  I want the phone's search to find any card, archived and old ones too
-  So that I can open an old card and bring it back without going to the Mac
+  I want a remote search to find any card, archived and old ones too
+  So that I can find an old card and bring it back without going to the Mac
 
   Background:
-    Given the phone holds only the working set: no archived cards, no All Sessions cards, the 30 most recent Done cards
+    Given a remote client holds only the working set: no archived cards, no All Sessions cards, the 30 most recent Done cards
     And the masters know every card, about 2,500 on the Mac
 
   Scenario: The server finds an archived card by its name
@@ -37,7 +37,7 @@ Feature: Searching every card from the phone
     When a client searches
     Then the board card is listed first
 
-  Scenario: Only cards the phone does not hold
+  Scenario: Only cards the client does not hold
     When a client searches with "scope=older"
     Then no card of the working set is in the answer
 
@@ -57,31 +57,9 @@ Feature: Searching every card from the phone
     And a terminal token is refused with 403
     And a search does not hold the Mac awake
 
-  Scenario: Search on the phone's board
-    Given the phone shows the board
-    When I type the name of an archived card in the search field
-    Then cards of the board that match show at once
-    And a section "Archived and older" fills from the server a moment later
-    And a progress row shows while it loads
-    And "Could not search older cards" shows when no master answers
-
-  Scenario: Opening an archived card from the search
-    When I tap a card under "Archived and older"
-    Then its conversation shows without unarchiving it
-    And a "Bring back to board" button shows above it
-    When I tap "Bring back to board"
-    Then the card is in the Backlog of the board without a manual refresh
-
-  Scenario: Search in the archived cards screen
-    Given the phone shows "Archived cards", the 200 most recent ones
-    When I type in its search field
-    Then the list shows the archived, All Sessions and older Done cards that match, from the server
-    When I touch and hold a card and choose "Bring back to board"
-    Then the card leaves the list and is on the board
-
   Scenario: A card brought back stays on the board
     Given an archived card whose session ended more than a day ago
-    When it is unarchived, or pinned, from the Mac, the phone or the API
+    When it is unarchived, or pinned, from the Mac or the API
     Then it is in the Backlog as a manual placement
     And it is still there after the board reconciles
     And resuming it lets activity move it again

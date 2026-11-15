@@ -98,7 +98,7 @@ extension MasterEngine {
     }
 
     /// Sends the prompt and queue actions on cards another master owns to
-    /// that master, the way the phone does: the owner runs them.
+    /// that master, the way a remote client does: the owner runs them.
     public func installForeignCardHandler() {
         store.foreignCardHandler = { [weak self] action in
             self?.handleForeignAction(action) ?? false

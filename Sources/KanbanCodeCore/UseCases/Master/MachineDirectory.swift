@@ -1,6 +1,6 @@
 import Foundation
 
-/// One machine as the launch dialogs, the phone and the API offer it. An
+/// One machine as the launch dialogs and the API offer it. An
 /// ssh machine that also runs kanban-code-server, paired as a peer master,
 /// is one machine: cards that run there are owned by its master, so they
 /// keep going while this one is offline. The plain ssh path is left for

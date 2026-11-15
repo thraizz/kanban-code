@@ -52,7 +52,7 @@ enum MacVaultDevice {
             guard case .send(let opened) = passed else { return .cancelled }
             unsealed = opened
         } catch is NoKey {
-            return .failed("This Mac has no vault key yet. Set it up in Settings > Vault, or answer on the phone.")
+            return .failed("This Mac has no vault key yet. Set it up in Settings > Vault.")
         } catch {
             let text = describe(error)
             approvals.record(request, resolution: option, error: text)

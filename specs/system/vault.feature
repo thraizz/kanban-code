@@ -146,7 +146,7 @@ Feature: Vault projects, environments and card identity
   Scenario: An unanswered request waits 12 hours
     Given a request that asks the human
     When no answer comes
-    Then it stays open on the Mac and the phone for 12 hours
+    Then it stays open on the Mac for 12 hours
     And kv waits as long, and says so when it starts waiting
     And after 12 hours it is denied by timeout
 
@@ -305,12 +305,10 @@ Feature: Vault projects, environments and card identity
       | a sealed secret                        | the Mac sheet    |
       | an AWS profile minted on the device    | the Mac sheet    |
       | a sealed secret                        | the Mac banner   |
-      | a sealed secret                        | the phone        |
-      | a change to a secret                   | the phone        |
 
   Scenario: A refusal with a note for the agent
     Given an open request for a secret of tier ask
-    When the human picks "Deny" on the Mac sheet or the phone
+    When the human picks "Deny" on the Mac sheet
     Then the request is refused at once and closes on every device
     And the device shows "Tell the agent why (optional)" with Send and Skip
     When the human writes "you are testing lw-dev, use the dev key" and sends it
@@ -336,7 +334,6 @@ Feature: Vault projects, environments and card identity
       | how                                        |
       | "Deny" followed by Skip                    |
       | "Deny" on the Mac banner                   |
-      | "Deny" from a phone on an older build      |
       | a peer master on an older build            |
       | the 12 hour timeout                        |
       | Jev or a tier rule                         |

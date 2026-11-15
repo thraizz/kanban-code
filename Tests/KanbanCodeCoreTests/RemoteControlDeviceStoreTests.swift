@@ -25,10 +25,10 @@ struct RemoteControlDeviceStoreTests {
     func roundTrip() throws {
         let path = Self.path()
         let store = RemoteDeviceStore(path: path)
-        let (device, token) = try store.add(name: "iPhone", scope: .full)
+        let (device, token) = try store.add(name: "Phone", scope: .full)
         #expect(store.authenticate(token: token)?.id == device.id)
         #expect(store.authenticate(token: token + "x") == nil)
-        #expect(store.list().map(\.name) == ["iPhone"])
+        #expect(store.list().map(\.name) == ["Phone"])
 
         let raw = try String(contentsOfFile: path, encoding: .utf8)
         #expect(!raw.contains(token))
@@ -77,7 +77,7 @@ struct RemoteControlDeviceStoreTests {
     @Test("lastSeenAt is written at most once a minute")
     func lastSeenThrottle() throws {
         let store = RemoteDeviceStore(path: Self.path())
-        let (_, token) = try store.add(name: "iPhone", scope: .full)
+        let (_, token) = try store.add(name: "Phone", scope: .full)
         let first = try #require(store.authenticate(token: token)?.lastSeenAt)
         let second = try #require(store.authenticate(token: token)?.lastSeenAt)
         #expect(first == second)

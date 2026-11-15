@@ -3,18 +3,18 @@ import KanbanCodeCore
 import KanbanCodeRemoteKit
 import Synchronization
 
-// Development server for the remote control clients (iOS app, `kanban remote`):
+// Development server for the remote control clients (`kanban remote` and others):
 // the real RemoteControlServer over a fake board that reacts to tasks and
 // prompts, with real shells (or rush) behind the terminals.
 //
-//   swift run kanban-code-remote-demo --pair iPhone
+//   swift run kanban-code-remote-demo --pair laptop
 //   swift run kanban-code-remote-demo --port 7790 --pair openclaw --scope agent --rush <rush id>
 //
 // Two masters, as a Mac and an always-on box:
 //
-//   swift run kanban-code-remote-demo --port 7790 --machine machine_mac:Studio --pair iPhone
+//   swift run kanban-code-remote-demo --port 7790 --machine machine_mac:Studio --pair laptop
 //   swift run kanban-code-remote-demo --port 7791 --machine machine_box:rchaves-platform --cards box \
-//       --foreign machine_mac:Studio --pair iPhone
+//       --foreign machine_mac:Studio --pair laptop
 
 struct DemoOptions {
     var port = 7790
@@ -296,7 +296,7 @@ final class DemoHost: RemoteControlHost {
                 add(.assistant, "The export report needs a new database index. I did not add it: it locks the table for minutes.")
             }
         }
-        let body = (1...12).map { "Part \($0): what moved, what stayed on the old endpoint and how it was checked. Long enough to wrap over several lines on a phone." }
+        let body = (1...12).map { "Part \($0): what moved, what stayed on the old endpoint and how it was checked. Long enough to wrap over several lines on a narrow screen." }
         add(.assistant, "## Final report\n\nAll 40 reports are on the new API.\n\n" + body.joined(separator: "\n\n"))
         add(.user, "[Message from @deploy-bot]: the nightly export failed once and passed on retry")
         add(.assistant, "Noted. Waiting for a decision on the export index.")
@@ -310,7 +310,7 @@ final class DemoHost: RemoteControlHost {
         let t = Date().addingTimeInterval(-1200)
         func long(_ title: String, paragraphs: Int, last: String) -> String {
             let body = (1...paragraphs).map { i in
-                "\(title) part \(i): the notes cover the change, why it was made, what to check after upgrading and which settings moved. Every paragraph is long enough to wrap over several lines on a phone."
+                "\(title) part \(i): the notes cover the change, why it was made, what to check after upgrading and which settings moved. Every paragraph is long enough to wrap over several lines on a narrow screen."
             }
             return (body + [last]).joined(separator: "\n\n")
         }
@@ -320,7 +320,7 @@ final class DemoHost: RemoteControlHost {
     }
 
     /// A session whose answers hold markdown tables: three columns with
-    /// long text in the first and last, a table too wide for a phone, and
+    /// long text in the first and last, a table too wide for a narrow screen, and
     /// lines with pipes that are not a table.
     static func tableConversation(_ task: String) -> [RemoteMessage] {
         let t = Date().addingTimeInterval(-2400)
@@ -366,7 +366,7 @@ final class DemoHost: RemoteControlHost {
         var out = conversation(task)
         let t = Date().addingTimeInterval(-10_800)
         let parts = (1...45).map { i in
-            "\(i). Part \(i) of the earlier work: what was asked, which files changed, what failed and how it was fixed. Long enough to wrap over several lines on a phone."
+            "\(i). Part \(i) of the earlier work: what was asked, which files changed, what failed and how it was fixed. Long enough to wrap over several lines on a narrow screen."
         }
         let summary = "This session is being continued from a previous conversation that ran out of context. "
             + "The summary below covers the earlier portion of the conversation.\n\nSummary:\n"
@@ -383,7 +383,7 @@ final class DemoHost: RemoteControlHost {
     static let slowSendCards: Set<String> = ["card_compact"]
 
     /// A pasted log of thousands of lines and a code block with one line of
-    /// minified JSON a few hundred KB long: what made the phone's text
+    /// minified JSON a few hundred KB long: what can make a client's text
     /// layout stall for seconds.
     static func hugeMessages(_ task: String) -> [RemoteMessage] {
         let t = Date().addingTimeInterval(-50_000)

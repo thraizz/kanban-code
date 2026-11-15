@@ -38,7 +38,7 @@ Feature: Any file attached to a chat message
 
   Scenario: A card another master owns
     Given the card is owned by the box
-    When I attach "demo.mp4" on the Mac or on the phone
+    When I attach "demo.mp4" on the Mac
     Then the file is sent in chunks of 8 MiB to POST /v1/cards/{id}/files on the box
     And it lands in ~/.kanban-code/files/<upload>/demo.mp4 on the box, with its original name
     And the prompt names that path on the box
@@ -52,11 +52,6 @@ Feature: Any file attached to a chat message
     When I attach a file over 2 GB
     Then the chip says it is over the 2 GB limit and nothing is uploaded
     And a file over 512 MB for a boxd or ssh machine is refused with that limit named
-
-  Scenario: The phone attaches any file
-    Given the iPhone app on a master that lists the "files" feature
-    When I pick "Choose File" in the + menu and pick "report.pdf"
-    Then it uploads with progress and the message carries its "[File: ...]" line
 
   Scenario: The CLI sends a file
     When I run "kanban remote send <card> 'look at this' --file demo.mp4"

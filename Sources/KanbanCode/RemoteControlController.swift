@@ -77,7 +77,7 @@ final class RemoteControlController {
             bindAddresses: { RemoteNetworkAddresses.bindable(configured: configured) },
             peerServer: peerServer, syncEngine: syncEngine,
             vault: vault, scrubber: scrubber,
-            // The phone using a card this Mac owns keeps the Mac awake for a while.
+            // A paired device using a card this Mac owns keeps the Mac awake for a while.
             activity: { cardId in
                 let ownedHere = await MainActor.run { store.state.links[cardId].map(store.state.isOwnedLocally) ?? false }
                 if ownedHere { RemoteWakeHold.shared.touch(card: cardId) }

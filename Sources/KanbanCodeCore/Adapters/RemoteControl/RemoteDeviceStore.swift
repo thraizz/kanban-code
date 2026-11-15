@@ -14,7 +14,7 @@ import Synchronization
 /// `~/.kanban-code/remote/devices.json`:
 ///
 /// ```json
-/// {"devices":[{"id":"...","name":"iPhone","scope":"full","tokenHash":"<sha256 hex>",
+/// {"devices":[{"id":"...","name":"laptop","scope":"full","tokenHash":"<sha256 hex>",
 ///              "createdAt":"2026-09-26T10:00:00.000Z","lastSeenAt":null}]}
 /// ```
 ///
