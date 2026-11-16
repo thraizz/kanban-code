@@ -140,6 +140,36 @@ struct SessionResourcesTests {
         #expect(memory["card-a-sh"]?.totalBytes == 51 * mib)
     }
 
+    @Test("a shell Claude left running under the pane is counted once, with its children")
+    func countsRunningShells() {
+        let snapshot = "/bin/bash -c source /home/u/.claude/shell-snapshots/snapshot-bash-1-x.sh && eval 'until done; do sleep 20; done'"
+        let processes: [SessionProcessTree.Process] = [
+            .init(pid: 10, ppid: 1, bytes: mib, command: "-bash"),
+            .init(pid: 11, ppid: 10, bytes: mib, command: "claude --resume s1"),
+            .init(pid: 12, ppid: 11, bytes: mib, command: snapshot),
+            .init(pid: 13, ppid: 12, bytes: mib, command: "sleep 20"),
+            .init(pid: 20, ppid: 1, bytes: mib, command: "-bash"),
+            .init(pid: 21, ppid: 20, bytes: mib, command: "claude --resume s2"),
+        ]
+        let memory = SessionProcessTree.measure(processes: processes, paneRoots: [("busy", 10), ("quiet", 20)])
+        #expect(memory["busy"]?.runningShells == 1)
+        #expect(memory["quiet"]?.runningShells == 0)
+    }
+
+    @Test("a card with a running shell is never stopped, whatever its column or the memory pressure")
+    func runningShellBlocksHibernation() {
+        let state = AppState()
+        state.links["c1"] = Link(id: "c1", column: .done, lastActivity: now,
+                                 sessionLink: SessionLink(sessionId: "s1"), tmuxLink: TmuxLink(sessionName: "t1"))
+        state.tmuxSessions = ["t1"]
+        let candidates = state.hibernationCandidates(memoryBySession: ["t1": CardMemory(totalBytes: 1, runningShells: 1)])
+        #expect(candidates.first?.isWorking == true)
+        let settings = SessionResourceSettings(hibernateDoneAfterMinutes: 1, hibernateIdleAfterHours: 1, maxLiveSessions: 0)
+        var quiet = candidates
+        quiet[0].lastActive = now.addingTimeInterval(-48 * 3600)
+        #expect(HibernationPolicy.decide(cards: quiet, settings: settings, pressure: .critical, now: now).isEmpty)
+    }
+
     // MARK: - Board
 
     @Test("a card's memory sums all its terminals; candidates skip open and shell-only cards")

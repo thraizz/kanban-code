@@ -443,4 +443,21 @@ struct AssignColumnTests {
         )
         #expect(AssignColumn.assign(link: link, activityState: .needsAttention, hasWorktree: true) == .waiting)
     }
+
+    @Test("A shell still running in the live session keeps the card In Progress, even with a merged PR")
+    func runningShellKeepsInProgress() {
+        var link = Link(column: .done, sessionLink: SessionLink(sessionId: "s1"), tmuxLink: TmuxLink(sessionName: "t1"))
+        link.prLinks = [PRLink(number: 1, status: .merged)]
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention, hasPR: true, allPRsDone: true,
+                                    hasLiveSession: true, hasRunningShell: true) == .inProgress)
+        #expect(AssignColumn.assign(link: link, activityState: .idleWaiting, hasLiveSession: true, hasRunningShell: true) == .inProgress)
+        // Blocked on a permission prompt: the human has to act.
+        #expect(AssignColumn.assign(link: link, activityState: .awaitingPermission, hasLiveSession: true, hasRunningShell: true) == .waiting)
+        // Without the shell, the merged PR finishes the card as before.
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention, hasPR: true, allPRsDone: true,
+                                    hasLiveSession: true) == .done)
+        // A shell count left over from a dead session counts for nothing.
+        #expect(AssignColumn.assign(link: link, activityState: .needsAttention, hasPR: true, allPRsDone: true,
+                                    hasRunningShell: true) == .done)
+    }
 }

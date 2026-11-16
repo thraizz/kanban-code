@@ -1010,7 +1010,8 @@ public enum Reducer {
             let oldColumn = link.column
             UpdateCardColumn.update(
                 link: &link, activityState: activity,
-                hasWorktree: hasWorktree, hasLiveSession: hasLiveSession)
+                hasWorktree: hasWorktree, hasLiveSession: hasLiveSession,
+                hasRunningShell: (state.cardMemory[id]?.runningShells ?? 0) > 0)
             if link.column != oldColumn {
                 state.links[id] = link
                 changed = true
@@ -2339,7 +2340,8 @@ public enum Reducer {
                     link: &link,
                     activityState: activity,
                     hasWorktree: hasWorktree || hasTmux,
-                    hasLiveSession: hasTmux
+                    hasLiveSession: hasTmux,
+                    hasRunningShell: (state.cardMemory[link.id]?.runningShells ?? 0) > 0
                 )
 
                 // Copy session's firstPrompt into link.promptBody

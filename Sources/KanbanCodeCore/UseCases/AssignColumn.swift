@@ -7,13 +7,16 @@ public enum AssignColumn {
     /// Assign a column to a link based on current state signals.
     /// `hasLiveSession` is whether one of the card's tmux sessions is running
     /// right now — the only signal strong enough to pull an archived card back.
+    /// `hasRunningShell` is whether the assistant has a shell running under
+    /// its pane (`CardMemory.runningShells`).
     public static func assign(
         link: Link,
         activityState: ActivityState? = nil,
         hasPR: Bool = false,
         allPRsDone: Bool = false,
         hasWorktree: Bool = false,
-        hasLiveSession: Bool = false
+        hasLiveSession: Bool = false,
+        hasRunningShell: Bool = false
     ) -> KanbanCodeColumn {
         // A headless run (`claude -p` from a script) that no card claims is
         // reachable in All Sessions only, whatever its activity says.
@@ -46,6 +49,15 @@ public enum AssignColumn {
         // Actively working always shows in progress unless the archive guard
         // above proved there is no live work signal.
         if activityState == .activelyWorking {
+            return .inProgress
+        }
+
+        // A shell the assistant left running in its live session (a
+        // backfill it watches, a long build) is work in flight even though
+        // the turn ended: the assistant comes back when it finishes. Not a
+        // merged PR, not a drag, not Done: In Progress, until a permission
+        // prompt blocks it on the human.
+        if hasRunningShell && hasLiveSession && activityState != .awaitingPermission {
             return .inProgress
         }
 

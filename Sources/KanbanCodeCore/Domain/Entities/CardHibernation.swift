@@ -45,10 +45,16 @@ public struct CardMemory: Sendable, Equatable {
     public var topBytes: Int
     /// Over the warning limit of Settings > Resources.
     public var exceedsWarning: Bool
+    /// Shells the assistant runs under the card: a Bash tool call, or one it
+    /// put in the background. One still running after the turn ended is work
+    /// in flight (a backfill, a watcher), and the assistant comes back when
+    /// it finishes.
+    public var runningShells: Int
 
     public init(totalBytes: Int, browserBytes: Int = 0, browserPids: [Int32] = [], topCommand: String = "", topBytes: Int = 0,
-                exceedsWarning: Bool = false) {
+                exceedsWarning: Bool = false, runningShells: Int = 0) {
         self.exceedsWarning = exceedsWarning
+        self.runningShells = runningShells
         self.totalBytes = totalBytes
         self.browserBytes = browserBytes
         self.browserPids = browserPids

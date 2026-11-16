@@ -104,12 +104,14 @@ public enum SessionProcessTree {
         var result: [String: CardMemory] = [:]
         for (session, root) in paneRoots {
             var memory = result[session] ?? CardMemory(totalBytes: 0)
-            // (pid, inside a Playwright server, inside a browser)
-            var stack: [(Int32, Bool, Bool)] = [(root, false, false)]
+            // (pid, inside a Playwright server, inside a browser, inside an assistant shell)
+            var stack: [(Int32, Bool, Bool, Bool)] = [(root, false, false, false)]
             var visited = Set<Int32>()
-            while let (pid, underPlaywright, underBrowser) = stack.popLast() {
+            while let (pid, underPlaywright, underBrowser, underShell) = stack.popLast() {
                 guard visited.insert(pid).inserted, let p = byPid[pid] else { continue }
                 memory.totalBytes += p.bytes
+                let shell = isAssistantShell(p.command)
+                if shell && !underShell { memory.runningShells += 1 }
                 if p.bytes > memory.topBytes {
                     memory.topBytes = p.bytes
                     memory.topCommand = shortCommand(p.command)
@@ -121,7 +123,7 @@ public enum SessionProcessTree {
                 }
                 let playwright = underPlaywright || isPlaywrightServer(p.command)
                 for child in children[pid] ?? [] {
-                    stack.append((child, playwright, underBrowser || browser))
+                    stack.append((child, playwright, underBrowser || browser, underShell || shell))
                 }
             }
             result[session] = memory
@@ -133,6 +135,12 @@ public enum SessionProcessTree {
         command.contains("Google Chrome") || command.contains("Chromium")
             || command.contains("chrome-headless-shell") || command.contains("Microsoft Edge")
             || command.contains("/ms-playwright/")
+    }
+
+    /// A shell Claude Code runs for its Bash tool, foreground or background:
+    /// `bash -c source ~/.claude/shell-snapshots/snapshot-….sh && eval …`.
+    static func isAssistantShell(_ command: String) -> Bool {
+        command.contains("/shell-snapshots/snapshot-")
     }
 
     /// Only browsers of `@playwright/mcp` are closed: it opens a new one on
@@ -292,6 +300,7 @@ extension AppState {
                 total.totalBytes += m.totalBytes
                 total.browserBytes += m.browserBytes
                 total.browserPids += m.browserPids
+                total.runningShells += m.runningShells
                 if m.topBytes > total.topBytes {
                     total.topBytes = m.topBytes
                     total.topCommand = m.topCommand
@@ -338,7 +347,10 @@ extension AppState {
                 column: link.column,
                 lastActive: lastActive,
                 canHibernate: canHibernate,
-                isWorking: activity == .activelyWorking || activity == .awaitingPermission,
+                // A shell still running after the turn is work in flight:
+                // stopping the session kills it.
+                isWorking: activity == .activelyWorking || activity == .awaitingPermission
+                    || (memoryByCard[link.id]?.runningShells ?? 0) > 0,
                 memory: memoryByCard[link.id]
             )
         }
