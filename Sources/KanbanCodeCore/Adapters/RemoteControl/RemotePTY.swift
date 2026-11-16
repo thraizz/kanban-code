@@ -27,6 +27,21 @@ final class RemotePTYProcess: @unchecked Sendable {
     private let writeQueue = DispatchQueue(label: "kanban.remote.pty.write")
     private let lock = NSLock()
     private var exited = false
+    /// Set once `terminate()` is called; later resizes are dropped.
+    private var hangingUp = false
+    /// Uptime of the last TIOCSWINSZ, read and written on `writeQueue`.
+    private var lastResizeUptime: UInt64 = 0
+
+    /// How long a hang-up waits after the last resize.
+    ///
+    /// tmux 3.8 crashes the whole server, every session on it, when a client
+    /// sends a resize after it said it was exiting: `MSG_RESIZE` reaches
+    /// `tty_resize` on the tty `MSG_EXITING` already closed, and writes into
+    /// its freed buffer. A `tmux attach` that gets SIGWINCH and SIGHUP close
+    /// together does exactly that, because libevent hands it pending signals
+    /// in number order, SIGHUP (1) before SIGWINCH (28). Switching cards
+    /// resizes the old terminal and then closes it, so both arrive together.
+    static let resizeSettleNanos: UInt64 = 500_000_000
 
     private init(pid: pid_t, master: Int32) {
         self.pid = pid
@@ -155,22 +170,39 @@ final class RemotePTYProcess: @unchecked Sendable {
     func resize(cols: Int, rows: Int) {
         let master = self.master
         writeQueue.async { [self] in
-            guard !hasExited else { return }
+            guard !hasExited, !lock.withLock({ hangingUp }) else { return }
             var size = winsize(ws_row: UInt16(clamping: rows), ws_col: UInt16(clamping: cols), ws_xpixel: 0, ws_ypixel: 0)
             _ = ioctl(master, UInt(TIOCSWINSZ), &size)
+            lastResizeUptime = DispatchTime.now().uptimeNanoseconds
         }
     }
 
     /// Hangs up the child's process group, then kills it if it lingers.
+    ///
+    /// No resize goes out once this is called, and the hang-up waits until
+    /// the last one is ``resizeSettleNanos`` old (see there for why).
     func terminate() {
         guard !hasExited else { return }
+        let alreadyHangingUp = lock.withLock { () -> Bool in
+            defer { hangingUp = true }
+            return hangingUp
+        }
+        guard !alreadyHangingUp else { return }
         let pid = self.pid
-        kill(-pid, SIGHUP)
-        kill(pid, SIGHUP)
-        DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { [self] in
-            guard !hasExited else { return }
-            kill(-pid, SIGKILL)
-            kill(pid, SIGKILL)
+        // Queued behind any resize already sent, so its time is final here.
+        writeQueue.async { [self] in
+            let since = DispatchTime.now().uptimeNanoseconds &- lastResizeUptime
+            let wait = since >= Self.resizeSettleNanos ? 0 : Self.resizeSettleNanos - since
+            DispatchQueue.global().asyncAfter(deadline: .now() + .nanoseconds(Int(wait))) { [self] in
+                guard !hasExited else { return }
+                kill(-pid, SIGHUP)
+                kill(pid, SIGHUP)
+                DispatchQueue.global().asyncAfter(deadline: .now() + 1.5) { [self] in
+                    guard !hasExited else { return }
+                    kill(-pid, SIGKILL)
+                    kill(pid, SIGKILL)
+                }
+            }
         }
     }
 }
