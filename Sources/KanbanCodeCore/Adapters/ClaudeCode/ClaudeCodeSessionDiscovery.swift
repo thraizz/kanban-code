@@ -3,19 +3,24 @@ import Foundation
 /// Discovers Claude Code sessions by scanning ~/.claude/projects/.
 /// Merges sessions-index.json metadata with .jsonl file scanning.
 ///
-/// Caching strategy: keeps the full result from the last scan. On subsequent
-/// scans, only re-processes project directories whose own mtime changed (i.e.
-/// files were added/removed/renamed). Within unchanged directories, per-file
-/// mtime checks skip re-parsing unchanged .jsonl files.
+/// Caching strategy: keeps the full result from the last scan. A project
+/// directory is listed again (and its sessions-index.json read again) only
+/// when its own mtime changed, i.e. files were added, removed or renamed.
+/// Every pass still checks each transcript's mtime: a running session
+/// appends to its file, which leaves the directory's mtime alone, and its
+/// `modifiedTime` (the card's last activity) must follow those writes.
 public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Sendable {
     private let claudeDir: String
     private var lastScanTime: Date?
 
     /// Cache: sessionId → parsed session (from all dirs combined)
     private var cachedSessions: [String: Session] = [:]
-    /// Per-directory mtime to skip unchanged directories entirely
+    /// Per-directory mtime, to skip listing an unchanged directory again
     private var dirMtimes: [String: Date] = [:]
-    /// Per-file mtime to skip unchanged .jsonl files within changed directories
+    /// The .jsonl files and the index entries of each directory as last listed
+    private var dirJsonlFiles: [String: [String]] = [:]
+    private var dirIndexById: [String: [String: SessionIndexReader.IndexEntry]] = [:]
+    /// Per-file mtime to skip re-parsing unchanged .jsonl files
     private var fileMtimes: [String: Date] = [:]
     /// Track which sessions came from which directory for eviction
     private var dirSessionIds: [String: Set<String>] = [:]
@@ -75,31 +80,35 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
             }
             seenDirs.insert(dirName)
 
-            // Check directory mtime — skip entirely if unchanged
+            // An unchanged directory mtime means no file was added or
+            // removed: reuse the listing and the index. Appending to a
+            // transcript does not touch the directory, so the files are
+            // still checked one by one below.
             let dirAttrs = try? fileManager.attributesOfItem(atPath: dirPath)
             let dirMtime = dirAttrs?[.modificationDate] as? Date
-            if let cached = dirMtimes[dirName], dirMtime == cached {
-                continue // No files added/removed in this directory
+            let jsonlFiles: [String]
+            let indexById: [String: SessionIndexReader.IndexEntry]
+            if let dirMtime, dirMtimes[dirName] == dirMtime, let files = dirJsonlFiles[dirName] {
+                jsonlFiles = files
+                indexById = dirIndexById[dirName] ?? [:]
+            } else {
+                dirMtimes[dirName] = dirMtime
+                let indexPath = (dirPath as NSString).appendingPathComponent("sessions-index.json")
+                let indexEntries = (try? SessionIndexReader.readIndex(at: indexPath, directoryName: dirName)) ?? []
+                var byId: [String: SessionIndexReader.IndexEntry] = [:]
+                for entry in indexEntries {
+                    byId[entry.sessionId] = entry
+                }
+                let contents = (try? fileManager.contentsOfDirectory(atPath: dirPath)) ?? []
+                jsonlFiles = contents.filter { $0.hasSuffix(".jsonl") }
+                indexById = byId
+                dirJsonlFiles[dirName] = jsonlFiles
+                dirIndexById[dirName] = byId
             }
-            dirMtimes[dirName] = dirMtime
 
-            // Directory changed — re-scan it
             var dirSessions: Set<String> = []
             var skipped = dirSkippedIds[dirName] ?? []
             let mayBeExcluded = headlessExclusion.mayMatchClaudeProjectDir(dirName)
-
-            // Read index file for summaries
-            let indexPath = (dirPath as NSString).appendingPathComponent("sessions-index.json")
-            let indexEntries = (try? SessionIndexReader.readIndex(at: indexPath, directoryName: dirName)) ?? []
-
-            var indexById: [String: SessionIndexReader.IndexEntry] = [:]
-            for entry in indexEntries {
-                indexById[entry.sessionId] = entry
-            }
-
-            // Scan .jsonl files
-            let contents = (try? fileManager.contentsOfDirectory(atPath: dirPath)) ?? []
-            let jsonlFiles = contents.filter { $0.hasSuffix(".jsonl") }
 
             for jsonlFile in jsonlFiles {
                 let filePath = (dirPath as NSString).appendingPathComponent(jsonlFile)
@@ -193,6 +202,8 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
         // Evict entire directories that were removed
         for removedDir in Set(dirMtimes.keys).subtracting(seenDirs) {
             dirMtimes.removeValue(forKey: removedDir)
+            dirJsonlFiles.removeValue(forKey: removedDir)
+            dirIndexById.removeValue(forKey: removedDir)
             dirSkippedIds.removeValue(forKey: removedDir)
             if let ids = dirSessionIds.removeValue(forKey: removedDir) {
                 let dirPath = (claudeDir as NSString).appendingPathComponent(removedDir)

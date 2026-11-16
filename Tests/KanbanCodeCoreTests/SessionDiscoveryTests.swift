@@ -183,4 +183,36 @@ struct SessionDiscoveryTests {
             #expect(second.map(\.jsonlPath) == [to])
         }
     }
+
+    @Test("A session appending to its transcript moves its time, though its directory did not change")
+    func appendInUnchangedDirectoryMovesTime() async throws {
+        // A running session appends to its file, which leaves the project
+        // directory's mtime alone. Its time is the card's last activity, which
+        // hibernation reads: a stale one stopped a session that was working.
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        let projectDir = (dir as NSString).appendingPathComponent("-Users-test-live")
+        try FileManager.default.createDirectory(atPath: projectDir, withIntermediateDirectories: true)
+        let path = (projectDir as NSString).appendingPathComponent("live-sess.jsonl")
+        try #"{"type":"user","sessionId":"live-sess","message":{"content":"Run the backfill"},"cwd":"/test","timestamp":"2026-11-16T10:35:39.619Z"}"#
+            .write(toFile: path, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.modificationDate: Date(timeIntervalSinceNow: -600)], ofItemAtPath: path)
+        let dirMtime = Date(timeIntervalSinceNow: -600)
+        try FileManager.default.setAttributes([.modificationDate: dirMtime], ofItemAtPath: projectDir)
+
+        let discovery = ClaudeCodeSessionDiscovery(claudeDir: dir)
+        _ = try await discovery.discoverSessions()
+
+        let handle = try #require(FileHandle(forWritingAtPath: path))
+        handle.seekToEndOfFile()
+        handle.write(Data(("\n" + #"{"type":"system","subtype":"away_summary","timestamp":"2026-11-16T10:42:22.189Z"}"#).utf8))
+        try handle.close()
+        try FileManager.default.setAttributes([.modificationDate: dirMtime], ofItemAtPath: projectDir)
+
+        let sessions = try await discovery.discoverSessions()
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        #expect(sessions.first?.modifiedTime == formatter.date(from: "2026-11-16T10:42:22.189Z"))
+    }
 }
