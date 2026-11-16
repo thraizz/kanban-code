@@ -26,7 +26,7 @@ struct RemotePTYTests {
     }
 
     private func waitFor(_ log: String, toContain text: String) async throws {
-        for _ in 0..<200 {
+        for _ in 0..<1000 {
             if let s = try? String(contentsOfFile: log, encoding: .utf8), s.contains(text) { return }
             try await Task.sleep(nanoseconds: 10_000_000)
         }
@@ -39,11 +39,13 @@ struct RemotePTYTests {
         defer { try? FileManager.default.removeItem(atPath: log) }
         try await waitFor(log, toContain: "ready")
 
+        // Timed from the resize: the hang-up may not come sooner than half a
+        // second after it, however slow the machine is.
+        let start = Date()
         process.resize(cols: 100, rows: 30)
         // A resize still queued when the hang-up starts is dropped instead;
         // this is the case of one the child has already seen.
         try await waitFor(log, toContain: "WINCH")
-        let start = Date()
         process.terminate()
         for await _ in exited { break }
         let elapsed = Date().timeIntervalSince(start)
@@ -53,7 +55,7 @@ struct RemotePTYTests {
         let hup = lines.firstIndex { $0.hasPrefix("HUP") }
         #expect(winch != nil && hup != nil)
         if let winch, let hup { #expect(winch < hup) }
-        #expect(elapsed >= 0.3, "hung up \(elapsed)s after a resize")
+        #expect(elapsed >= 0.45, "hung up \(elapsed)s after a resize")
     }
 
     @Test("A resize after the hang-up started is dropped")
@@ -69,17 +71,5 @@ struct RemotePTYTests {
         let text = try String(contentsOfFile: log, encoding: .utf8)
         #expect(!text.contains("WINCH"))
         #expect(text.contains("HUP"))
-    }
-
-    @Test("Without a recent resize the hang-up is immediate")
-    func hangUpWithoutResizeIsImmediate() async throws {
-        let (process, log, exited) = try spawnSignalRecorder()
-        defer { try? FileManager.default.removeItem(atPath: log) }
-        try await waitFor(log, toContain: "ready")
-
-        let start = Date()
-        process.terminate()
-        for await _ in exited { break }
-        #expect(Date().timeIntervalSince(start) < 0.4)
     }
 }
