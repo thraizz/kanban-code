@@ -70,9 +70,11 @@ extension MasterEngine {
             memoryByCard[id]?.exceedsWarning = memory.totalBytes >= settings.memoryWarningBytes
         }
         store.dispatch(.cardMemoryScanned(memoryByCard))
+        let candidates = state.hibernationCandidates(memoryBySession: memoryBySession)
         let decisions = HibernationPolicy.decide(
-            cards: state.hibernationCandidates(memoryBySession: memoryBySession),
-            settings: settings, pressure: pressure)
+            cards: candidates, settings: settings, pressure: pressure)
+        traceHibernation(candidates: candidates, decisions: decisions, settings: settings,
+                         measuredSessions: Set(memoryBySession.keys), state: state)
         var hibernated: [String] = []
         for decision in decisions {
             switch decision {
@@ -92,6 +94,61 @@ extension MasterEngine {
             store.dispatch(.setNotice("Stopped \(hibernated.count == 1 ? "a quiet session" : "\(hibernated.count) quiet sessions") to free memory: \(titles). Resume brings them back.", kind: .success))
         }
         return decisions
+    }
+
+    /// Logs why each card with a live session is or is not stopped, once per
+    /// change of its standing: which limit it is past, and what holds it
+    /// (work, a running shell, the selection). A session stopped or kept
+    /// against expectation can then be explained from the log alone.
+    func traceHibernation(candidates: [HibernationPolicy.LiveCard], decisions: [HibernationPolicy.Decision],
+                          settings: SessionResourceSettings, measuredSessions: Set<String>, state: AppState,
+                          now: Date = .now) {
+        var lines: [String: String] = [:]
+        let chosen = Dictionary(decisions.compactMap { decision -> (String, String)? in
+            if case .hibernate(let id, let reason) = decision { return (id, reason.rawValue) }
+            return nil
+        }, uniquingKeysWith: { a, _ in a })
+        for card in candidates {
+            let quiet = now.timeIntervalSince(card.lastActive)
+            let limit: TimeInterval? = switch card.column {
+            case .done: settings.hibernateDoneAfterMinutes.map { TimeInterval($0 * 60) }
+            case .waiting, .inReview: settings.hibernateIdleAfterHours.map { TimeInterval($0 * 3600) }
+            default: nil
+            }
+            let past = limit.map { quiet >= $0 } ?? false
+            let link = state.links[card.cardId]
+            var held: [String] = []
+            if card.isWorking { held.append("working") }
+            if (card.memory?.runningShells ?? 0) > 0 { held.append("shells=\(card.memory?.runningShells ?? 0)") }
+            if !card.canHibernate {
+                if state.selectedCardId == card.cardId { held.append("selected") }
+                if link?.isLaunching == true { held.append("launching") }
+                if link?.sessionLink == nil { held.append("no session") }
+                if held.isEmpty { held.append("queued prompt or live child") }
+            }
+            let verdict = chosen[card.cardId].map { "stop (\($0))" }
+                ?? (past ? "keep: " + (held.isEmpty ? "not chosen" : held.joined(separator: ", ")) : "keep: within limit")
+            lines[card.cardId] = "column=\(card.column.rawValue) past-limit=\(past) \(verdict)"
+        }
+        // A live session the monitor cannot weigh at all: not measured
+        // (no tmux pane seen) or not this master's.
+        for link in state.links.values {
+            guard let name = link.tmuxLink?.sessionName, state.tmuxSessions.contains(name),
+                  lines[link.id] == nil, link.tmuxLink?.isShellOnly != true, !link.isTombstone else { continue }
+            let why = !state.isOwnedLocally(link) ? "another master's"
+                : link.remote != nil || link.isRemote ? "remote"
+                : !measuredSessions.contains(name) ? "pane not measured" : "not a candidate"
+            lines[link.id] = "column=\(link.column.rawValue) ignored: \(why)"
+        }
+        for (id, line) in lines where hibernationTrace[id] != line {
+            KanbanCodeLog.info("hibernate", "card=\(id.prefix(12)) quiet=\(lastActiveMinutes(id, candidates, now))m \(line)")
+        }
+        hibernationTrace = lines
+    }
+
+    private func lastActiveMinutes(_ id: String, _ candidates: [HibernationPolicy.LiveCard], _ now: Date) -> Int {
+        guard let card = candidates.first(where: { $0.cardId == id }) else { return -1 }
+        return Int(now.timeIntervalSince(card.lastActive) / 60)
     }
 
     /// Runs until cancelled: reconciles every `interval()`, then `afterPass`.

@@ -47,6 +47,9 @@ public final class MasterEngine {
     public var attentionCenter: AttentionCenter?
     /// What the attention scan last saw of each transcript, by path.
     var attentionScanMarks: [String: AttentionScanMark] = [:]
+    /// What the resource monitor last logged about each live card, so a
+    /// card's line is written again only when its standing changes.
+    var hibernationTrace: [String: String] = [:]
 
     /// What a card's new local session gets in its environment for the
     /// vault (the card id and a fresh session token); nil without a vault.
