@@ -326,11 +326,7 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
 
         // A tool call carries its input (a whole file for Write), so read
         // more than one short line's worth.
-        let fileSize = handle.seekToEndOfFile()
-        let readSize: UInt64 = min(256 * 1024, fileSize)
-        handle.seek(toFileOffset: fileSize - readSize)
-        let data = handle.availableData
-        guard let tail = String(data: data, encoding: .utf8) else { return false }
+        let tail = handle.tailText(maxBytes: 256 * 1024)
 
         for line in tail.split(separator: "\n", omittingEmptySubsequences: true).reversed() {
             guard line.contains("\"type\":\"assistant\"") || line.contains("\"type\":\"user\""),
@@ -384,11 +380,7 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
 
         // An entry carries its tool input or output, so read well past one
         // short line.
-        let fileSize = handle.seekToEndOfFile()
-        let readSize: UInt64 = min(1024 * 1024, fileSize)
-        handle.seek(toFileOffset: fileSize - readSize)
-        let data = handle.availableData
-        guard let tail = String(data: data, encoding: .utf8) else { return nil }
+        let tail = handle.tailText(maxBytes: 1024 * 1024)
 
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
@@ -419,11 +411,7 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
         defer { try? handle.close() }
 
         // Read the last 4KB — enough for the last jsonl line
-        let fileSize = handle.seekToEndOfFile()
-        let readSize: UInt64 = min(4096, fileSize)
-        handle.seek(toFileOffset: fileSize - readSize)
-        let data = handle.availableData
-        guard let tail = String(data: data, encoding: .utf8) else { return false }
+        let tail = handle.tailText(maxBytes: 4096)
 
         // Find the last non-empty line
         let lines = tail.split(separator: "\n", omittingEmptySubsequences: true)

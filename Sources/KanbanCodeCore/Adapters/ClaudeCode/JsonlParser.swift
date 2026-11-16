@@ -114,9 +114,7 @@ public enum JsonlParser {
     public static func lastWrittenAt(_ filePath: String, tailBytes: UInt64 = 64 * 1024) -> Date? {
         guard let handle = FileHandle(forReadingAtPath: filePath) else { return nil }
         defer { try? handle.close() }
-        let fileSize = handle.seekToEndOfFile()
-        handle.seek(toFileOffset: fileSize - min(tailBytes, fileSize))
-        guard let tail = String(data: handle.availableData, encoding: .utf8) else { return nil }
+        let tail = handle.tailText(maxBytes: tailBytes)
 
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]

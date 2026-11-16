@@ -192,4 +192,41 @@ struct JsonlParserTests {
         let normal: [String: Any] = ["type": "user", "message": ["content": "test"]]
         #expect(JsonlParser.isCaveatMessage(normal) == false)
     }
+
+    @Test("The last write is found when the tail window starts inside a multi-byte character")
+    func lastWrittenAtWithSplitCharacter() throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        // "ü" is two bytes. The first line ends in them, so a window of the
+        // last line, the newline, `"}` and an odd number of bytes starts on
+        // the second byte of one.
+        let last = #"{"type":"system","subtype":"away_summary","timestamp":"2026-11-16T12:13:55.705Z"}"#
+        let path = try writeJsonl(dir, "s.jsonl", [
+            #"{"type":"user","timestamp":"2026-11-16T12:00:00.000Z","note":"üüüüüüüüüü"}"#,
+            last,
+        ])
+        let window = UInt64(last.utf8.count + 1 + 2 + 1)
+
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let expected = formatter.date(from: "2026-11-16T12:13:55.705Z")
+        let starts = (0..<4).map { JsonlParser.lastWrittenAt(path, tailBytes: window + UInt64($0)) }
+        #expect(starts.allSatisfy { $0 == expected })
+    }
+
+    @Test("The tail is read to the end of the file, not one block of it")
+    func tailTextReadsToTheEnd() throws {
+        let dir = try makeTempDir()
+        defer { cleanup(dir) }
+        // Far more than one read() block in front of the last line.
+        var lines = (0..<2000).map { #"{"type":"assistant","n":\#($0),"timestamp":"2026-11-16T10:00:00.000Z"}"# }
+        lines.append(#"{"type":"system","subtype":"away_summary","timestamp":"2026-11-16T12:13:55.705Z"}"#)
+        let path = try writeJsonl(dir, "big.jsonl", lines)
+
+        let handle = try #require(FileHandle(forReadingAtPath: path))
+        defer { try? handle.close() }
+        let tail = handle.tailText(maxBytes: 64 * 1024)
+        #expect(tail.utf8.count == 64 * 1024)
+        #expect(tail.hasSuffix(lines.last!))
+    }
 }

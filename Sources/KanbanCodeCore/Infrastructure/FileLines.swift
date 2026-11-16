@@ -169,4 +169,18 @@ extension FileHandle {
     public var blockLineRecords: FileLineRecords {
         FileLineRecords(lines: FileLines(handle: self))
     }
+
+    /// The last `maxBytes` of the file as text, read to the end.
+    ///
+    /// Not `availableData` after a seek: on Linux that returns one `read()`,
+    /// 4 KiB, so a 64 KiB tail was the 4 KiB that starts 64 KiB before the
+    /// end, and the "last" line was an old one or none at all. The window's
+    /// start can split a UTF-8 character; that first line is partial anyway,
+    /// so the text is decoded leniently instead of failing as a whole.
+    public func tailText(maxBytes: UInt64) -> String {
+        let fileSize = seekToEndOfFile()
+        seek(toFileOffset: fileSize - min(maxBytes, fileSize))
+        let data = readDataToEndOfFile()
+        return String(decoding: data, as: UTF8.self)
+    }
 }
