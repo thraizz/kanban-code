@@ -15,14 +15,20 @@ struct AttentionScanMark: Equatable {
 extension MasterEngine {
     /// Cards whose session can raise attention requests here: owned by this
     /// master, Claude, live, not archived, and not a subagent of another card.
+    ///
+    /// Live means a tmux session of the card runs here, or the Claude
+    /// process of the session runs in a terminal outside Kanban Code. Without
+    /// the second, a permission prompt of a session in a Ghostty window was
+    /// withdrawn a second after it was raised, as if the session were gone.
     func attentionCandidates() -> [(cardId: String, sessionId: String, path: String)] {
         let state = store.state
         return state.links.values.compactMap { link in
             guard !link.manuallyArchived, link.parentCardId == nil, state.isOwnedLocally(link),
                   link.effectiveAssistant == .claude,
-                  let session = link.sessionLink, let path = session.sessionPath,
-                  let tmux = link.tmuxLink?.sessionName, state.tmuxSessions.contains(tmux)
+                  let session = link.sessionLink, let path = session.sessionPath
             else { return nil }
+            let tmuxLive = link.tmuxLink.map { state.tmuxSessions.contains($0.sessionName) } ?? false
+            guard tmuxLive || (!link.isRemote && state.claudeProcesses[session.sessionId] != nil) else { return nil }
             return (link.id, session.sessionId, path)
         }
     }
@@ -38,6 +44,7 @@ extension MasterEngine {
     }
 
     func scanAttention() async {
+        await scanClaudeProcesses()
         let candidates = attentionCandidates()
         var seenPaths = Set<String>()
         var liveSessions = Set<String>()
@@ -68,6 +75,17 @@ extension MasterEngine {
             if let sessionId = request.sessionId, !liveSessions.contains(sessionId) {
                 store.dispatch(.attentionResolved(id: request.id, resolution: nil, by: "session"))
             }
+        }
+    }
+
+    /// Reads which Claude Code processes run on this Mac.
+    func scanClaudeProcesses() async {
+        guard let directory = platform.claudeSessionsDirectory else { return }
+        let processes = await Task.detached(priority: .utility) {
+            ClaudeLiveSessions.scan(directory: directory)
+        }.value
+        if processes != store.state.claudeProcesses {
+            store.dispatch(.claudeProcessesScanned(processes))
         }
     }
 

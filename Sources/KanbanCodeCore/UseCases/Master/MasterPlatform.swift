@@ -105,5 +105,9 @@ public struct MasterPlatform: Sendable {
     /// Claude's projects directory, where transcripts live by working directory.
     public var claudeProjectsDirectory: String = (NSHomeDirectory() as NSString).appendingPathComponent(".claude/projects")
 
+    /// Where Claude Code registers each running process
+    /// (`ClaudeLiveSessions`); nil leaves them unread.
+    public var claudeSessionsDirectory: String? = ClaudeLiveSessions.defaultDirectory
+
     public init() {}
 }

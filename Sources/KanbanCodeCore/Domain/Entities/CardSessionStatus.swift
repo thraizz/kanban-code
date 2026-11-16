@@ -50,14 +50,24 @@ public enum CardSessionStatus: Sendable, Equatable {
     case failed(String)
     /// The session ended; a resume continues the conversation.
     case ended
+    /// The session runs in a terminal outside Kanban Code (a Ghostty or
+    /// Terminal window), so this app has no terminal of it. A resume here
+    /// would start a second process on the same transcript.
+    case elsewhere(ClaudeLiveSession)
 
     /// Whether the way on is a resume (of the session, or of its machine).
     public var canResume: Bool {
         switch self {
         case .ended, .failed: true
         case .machine(let state): state.canResume
-        case .none, .live, .starting, .moving: false
+        case .none, .live, .starting, .moving, .elsewhere: false
         }
+    }
+
+    /// Whether the session runs in a terminal outside Kanban Code.
+    public var isElsewhere: Bool {
+        if case .elsewhere = self { return true }
+        return false
     }
 
     /// Whether work is in flight: a spinner goes with the line.
@@ -65,7 +75,7 @@ public enum CardSessionStatus: Sendable, Equatable {
         switch self {
         case .starting, .moving: true
         case .machine(let state): state == .resuming || state.keepsTerminal
-        case .none, .live, .failed, .ended: false
+        case .none, .live, .failed, .ended, .elsewhere: false
         }
     }
 
@@ -90,6 +100,10 @@ public enum CardSessionStatus: Sendable, Equatable {
         switch self {
         case .none: return "No agent session"
         case .live: return ""
+        case .elsewhere(let process):
+            let place = process.tty.map { "on \($0)" } ?? "pid \(process.pid)"
+            return "\(assistant) is running in another terminal (\(place))"
+
         case .starting(let line), .moving(let line), .failed(let line): return line
         case .machine(let state):
             guard let remote = link.remote else { return "" }
@@ -109,7 +123,7 @@ public enum CardSessionStatus: Sendable, Equatable {
     /// every client knows those from `isLive` and the session id.
     public func remote(for link: Link) -> RemoteSessionStatus? {
         switch self {
-        case .none, .live, .ended: nil
+        case .none, .live, .ended, .elsewhere: nil
         case .starting: RemoteSessionStatus(kind: .starting, text: text(for: link))
         case .moving: RemoteSessionStatus(kind: .moving, text: text(for: link))
         case .machine: RemoteSessionStatus(kind: .machine, text: text(for: link), canResume: canResume)
@@ -147,6 +161,7 @@ public enum CardSessionStatus: Sendable, Equatable {
         report: CardStartReport?,
         peer: RemoteSessionStatus? = nil,
         machineState: RemoteMachineState?,
+        runningElsewhere: ClaudeLiveSession? = nil,
         now: Date = .now
     ) -> CardSessionStatus {
         if let moving { return .moving(moving) }
@@ -160,6 +175,9 @@ public enum CardSessionStatus: Sendable, Equatable {
             let machine = RemoteMachineOverlay.state(
                 remote: link.remote, machineState: machineState, hasLiveSession: true, isRemote: link.isRemote)
             return machine == .none ? .live : .machine(machine)
+        }
+        if let runningElsewhere, link.sessionLink?.sessionId == runningElsewhere.sessionId {
+            return .elsewhere(runningElsewhere)
         }
         if case .failed(let line) = report { return .failed(line) }
         if let peer, let status = CardSessionStatus(remote: peer) { return status }

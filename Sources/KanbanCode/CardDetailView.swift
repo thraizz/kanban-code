@@ -1569,7 +1569,8 @@ struct CardDetailView: View {
                             maxWidth: 240
                         )
                     }
-                    if card.link.tmuxLink == nil {
+                    // A session running in another terminal is resumed there.
+                    if card.link.tmuxLink == nil, !card.sessionStatus.isElsewhere {
                         let hasSession = card.link.sessionLink != nil
                         let isStart = card.column == .backlog || !hasSession
                         Button(action: onResume) {

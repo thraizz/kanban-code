@@ -717,6 +717,13 @@ public final class MasterEngine {
             forwardToOwner(cardId, "resume the card", isStart: true) { client in _ = try await client.resume(cardId: cardId) }
             return false
         }
+        if case .elsewhere(let process) = card.sessionStatus {
+            // A second `claude --resume` would write the same transcript
+            // as the process that still runs it.
+            KanbanCodeLog.info("resume", "Resume of card=\(cardId.prefix(12)) refused: session runs as pid \(process.pid) outside Kanban Code")
+            store.dispatch(.setNotice(card.sessionStatus.text(for: card.link) + ". Answer it there, or quit it first to resume here.", kind: .error))
+            return false
+        }
         if let moving = stillMovingHere(cardId) {
             // Its paths are still the releasing master's and its transcript
             // is on the way; the adoption resumes it once both are here.

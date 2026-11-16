@@ -56,6 +56,23 @@ struct CardSessionStatusTests {
         #expect(CardSessionStatus.of(link: live, moving: nil, report: .failed("Resume failed: old"), machineState: nil) == .live)
     }
 
+    @Test("a session running in another terminal offers no resume, and a live tmux session wins")
+    func elsewhere() {
+        let process = ClaudeLiveSession(pid: 90719, sessionId: "0f1e2d3c-aaaa", tty: "ttys001")
+        let status = CardSessionStatus.of(link: link(), moving: nil, report: nil, machineState: nil, runningElsewhere: process)
+        #expect(status == .elsewhere(process))
+        #expect(!status.canResume)
+        #expect(status.isElsewhere)
+        #expect(status.text(for: link()) == "Claude Code is running in another terminal (on ttys001)")
+        #expect(status.remote(for: link()) == nil)
+
+        let other = ClaudeLiveSession(pid: 1, sessionId: "another-session", tty: nil)
+        #expect(CardSessionStatus.of(link: link(), moving: nil, report: nil, machineState: nil, runningElsewhere: other) == .ended)
+
+        let live = link(tmux: TmuxLink(sessionName: "claude-0f1e2d3c"))
+        #expect(CardSessionStatus.of(link: live, moving: nil, report: nil, machineState: nil, runningElsewhere: process) == .live)
+    }
+
     @Test("ended and never-run sessions")
     func endedAndNone() {
         #expect(CardSessionStatus.of(link: link(), moving: nil, report: nil, machineState: nil) == .ended)

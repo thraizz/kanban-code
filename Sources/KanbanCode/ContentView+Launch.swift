@@ -209,6 +209,11 @@ extension ContentView {
 
     func resumeCard(cardId: String) {
         guard let card = store.state.cards.first(where: { $0.id == cardId }) else { return }
+        if card.sessionStatus.isElsewhere {
+            // The engine refuses it too; this keeps the launch sheet shut.
+            store.dispatch(.setNotice(card.sessionStatus.text(for: card.link) + ". Answer it there, or quit it first to resume here.", kind: .error))
+            return
+        }
         let sessionId = card.link.sessionLink?.sessionId ?? card.link.id
         // For worktree cards, cd into the worktree — that's where Claude stored the session data.
         let projectPath: String

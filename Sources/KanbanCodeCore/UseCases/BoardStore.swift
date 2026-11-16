@@ -96,6 +96,10 @@ public final class AppState: @unchecked Sendable {
     /// scan that barely moves does not rebuild the cards.
     public var cardMemory: [String: CardMemory] = [:] { didSet { cardInputsVersion &+= 1 } }
     public var tmuxSessions: Set<String> = []                  // live tmux names
+    /// Claude Code processes running on this Mac, by session id, from
+    /// `~/.claude/sessions`. A card whose session has no live tmux session
+    /// here runs in a terminal outside Kanban Code.
+    public var claudeProcesses: [String: ClaudeLiveSession] = [:] { didSet { cardInputsVersion &+= 1 } }
     /// Messages queued in each live rush host, by session name; hosts with
     /// an empty queue are left out.
     public var rushQueues: [String: [String]] = [:]
@@ -417,7 +421,9 @@ public final class AppState: @unchecked Sendable {
                     moving: handoverLine(cardId: link.id),
                     report: cardStarts[link.id],
                     peer: owner != nil ? peerCards[link.id]?.status : nil,
-                    machineState: link.remote.flatMap { remoteMachineStates[$0.machineName] })
+                    machineState: link.remote.flatMap { remoteMachineStates[$0.machineName] },
+                    runningElsewhere: owner == nil && !link.isRemote && link.effectiveAssistant == .claude
+                        ? link.sessionLink.flatMap { claudeProcesses[$0.sessionId] } : nil)
             )
         }
         let cardsChanged = newCards != cards
@@ -676,6 +682,8 @@ public enum Action: Sendable {
     case rushQueuesScanned([String: [String]])
     /// What every blocked rush host waits on, from the same scan.
     case rushNeedsScanned([String: String])
+    /// The Claude Code processes running on this Mac (`ClaudeLiveSessions`).
+    case claudeProcessesScanned([String: ClaudeLiveSession])
     /// The slash commands of a card's chat, read from its owner.
     case slashCommandsLoaded(cardId: String, commands: [RemoteSlashCommand])
     /// One rush host's queue, read after acting on it.
@@ -2043,6 +2051,10 @@ public enum Reducer {
 
         case .rushNeedsScanned(let needs):
             if state.rushNeeds != needs { state.rushNeeds = needs }
+            return []
+
+        case .claudeProcessesScanned(let processes):
+            if state.claudeProcesses != processes { state.claudeProcesses = processes }
             return []
 
         case .slashCommandsLoaded(let cardId, let commands):
