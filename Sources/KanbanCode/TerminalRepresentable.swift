@@ -87,14 +87,23 @@ final class TerminalCache {
     private var ownerWaits: [String: Int] = [:]
 
     /// Start the tmux attach process if the terminal has a non-zero frame and hasn't started yet.
-    /// A terminal of a card whose owner is not known yet waits for it (up to 30 seconds).
+    /// A terminal of a card whose owner is not known yet waits for it: up
+    /// to 30 seconds while the identities load, and for as long as a peer
+    /// that may own the card does not answer (the card shows why). Started
+    /// before, it would attach to a session this Mac does not have.
     func startProcessIfNeeded(for sessionName: String) {
         guard let terminal = terminals[sessionName] else { return }
         guard !startedSessions.contains(sessionName) else { return }
         guard terminal.frame.width > 0, terminal.frame.height > 0 else { return }
-        if AppServices.terminalWaitsForOwner(sessionName), (ownerWaits[sessionName] ?? 0) < 60 {
-            ownerWaits[sessionName, default: 0] += 1
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) { [weak self] in
+        let wait = AppServices.terminalOwnerWait(sessionName)
+        let waited = ownerWaits[sessionName] ?? 0
+        if wait == .peerSilent || (wait == .loading && waited < 60) {
+            ownerWaits[sessionName] = waited + 1
+            let delay: TimeInterval = waited < 60 ? 0.5 : 2
+            if waited == 60 {
+                KanbanCodeLog.info("terminal-view", "session=\(sessionName) waits for the peer that owns its card")
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
                 self?.startProcessIfNeeded(for: sessionName)
             }
             return

@@ -7,11 +7,14 @@ public struct CardOwner: Sendable, Equatable, Hashable {
     public let id: String
     public let name: String
     public let online: Bool
+    /// Why this master cannot reach it, while it cannot.
+    public let outage: PeerOutage?
 
-    public init(id: String, name: String, online: Bool) {
+    public init(id: String, name: String, online: Bool, outage: PeerOutage? = nil) {
         self.id = id
         self.name = name
         self.online = online
+        self.outage = outage
     }
 }
 

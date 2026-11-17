@@ -74,6 +74,16 @@ extension ContentView {
                                     .font(.app(.caption))
                                     .foregroundStyle(.secondary)
                                     .lineLimit(1)
+                                // ssh can be up while the master on the
+                                // machine is not: its cards' terminals stay
+                                // empty then.
+                                if let outage = store.state.peerOutage(sshMachine: name) {
+                                    Label(outage.line, systemImage: "exclamationmark.triangle.fill")
+                                        .font(.app(.caption))
+                                        .foregroundStyle(.orange)
+                                        .fixedSize(horizontal: false, vertical: true)
+                                        .help("Cards this machine's Kanban Code runs show their terminals through it, not over ssh.")
+                                }
                             }
                             Spacer(minLength: 0)
                         }

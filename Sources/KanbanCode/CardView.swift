@@ -549,7 +549,7 @@ struct CardBadgesRow: View {
             }
             .font(.app(.caption2))
             .foregroundStyle(owner.online ? Color.indigo : Color.secondary)
-            .help(owner.online ? "Runs on \(owner.name)" : "Runs on \(owner.name), which is offline")
+            .help(owner.online ? "Runs on \(owner.name)" : owner.outage.map { "Runs on \(owner.name). \($0.line)" } ?? "Runs on \(owner.name), which is offline")
         }
 
         // Remote execution indicator

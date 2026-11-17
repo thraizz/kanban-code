@@ -372,6 +372,7 @@ public final class AppState: @unchecked Sendable {
         for status in peerStatuses.values {
             if let machine = status.machine { machines[machine.id] = (machine.name, status.online) }
         }
+        var outages: [String: PeerOutage?] = [:]
         let newCards = links.values.map { original in
             var link = original
             var owner: CardOwner?
@@ -382,7 +383,11 @@ public final class AppState: @unchecked Sendable {
                     link.projectPath = local
                 }
                 let known = machines[ownerId]
-                owner = CardOwner(id: ownerId, name: known?.name ?? ownerId, online: known?.online ?? false)
+                if outages[ownerId] == nil { outages[ownerId] = .some(peerOutage(ownerMachine: ownerId)) }
+                let outage = outages[ownerId] ?? nil
+                owner = CardOwner(
+                    id: ownerId, name: known?.name ?? outage?.name ?? ownerId,
+                    online: known?.online ?? false, outage: outage)
                 // The chat of a card another master runs reads its local copy.
                 if let sid = link.sessionLink?.sessionId, let mirrored = peerTranscriptPaths[sid] {
                     link.sessionLink?.sessionPath = mirrored

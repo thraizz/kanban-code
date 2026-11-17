@@ -961,8 +961,14 @@ struct CardDetailView: View {
                             transcriptBehind(status)
                         }
 
-                        // The session runs on; only the way to it is gone.
-                        if showReconnectBanner, selectedBrowserTabId == nil {
+                        // The master that runs the card does not answer:
+                        // its terminals stream from there, so say why they
+                        // are empty.
+                        if let outage = card.owner?.outage, selectedBrowserTabId == nil {
+                            peerOutageBar(outage)
+                                .frame(maxHeight: .infinity, alignment: .top)
+                        } else if showReconnectBanner, selectedBrowserTabId == nil {
+                            // The session runs on; only the way to it is gone.
                             sessionStatusBar(status)
                                 .frame(maxHeight: .infinity, alignment: .top)
                                 .allowsHitTesting(false)
@@ -1185,6 +1191,28 @@ struct CardDetailView: View {
                 .multilineTextAlignment(.center)
                 .textSelection(.enabled)
             sessionStatusButton(status)
+        }
+        .padding(.vertical, 10)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity)
+        .background(.ultraThinMaterial)
+    }
+
+    /// The warning over the terminal of a card whose master does not answer.
+    private func peerOutageBar(_ outage: PeerOutage) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "wifi.exclamationmark")
+                .foregroundStyle(.orange)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(outage.line)
+                    .font(.app(.callout))
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+                Text("The terminal opens once it answers. Check that this Mac can reach it, e.g. its firewall.")
+                    .font(.app(.caption))
+                    .foregroundStyle(.secondary)
+            }
+            Spacer(minLength: 0)
         }
         .padding(.vertical, 10)
         .padding(.horizontal, 16)

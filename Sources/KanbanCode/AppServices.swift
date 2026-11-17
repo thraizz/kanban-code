@@ -95,16 +95,14 @@ enum AppServices {
     /// Whether the terminal `sessionName` must wait before it starts: its
     /// card names an owner, and this Mac does not know yet whether that is
     /// itself or which peer it is (the identity and peer statuses load after
-    /// the board). Started early, the terminal would look for the session
-    /// on this Mac.
+    /// the board, and a peer that does not answer has no machine id here).
+    /// Started early, the terminal would look for the session on this Mac.
     @MainActor
-    static func terminalWaitsForOwner(_ sessionName: String) -> Bool {
+    static func terminalOwnerWait(_ sessionName: String) -> OwnerWait {
         let state = AppComposition.shared.store.state
-        guard let link = state.links.values.first(where: { $0.tmuxLink?.allSessionNames.contains(sessionName) == true }),
-              let owner = link.ownerMachine else { return false }
-        if state.localMachineId.isEmpty { return true }
-        if owner == state.localMachineId { return false }
-        return !state.peerStatuses.values.contains { $0.machine?.id == owner }
+        guard let link = state.links.values.first(where: { $0.tmuxLink?.allSessionNames.contains(sessionName) == true })
+        else { return .none }
+        return state.ownerWait(ownerMachine: link.ownerMachine)
     }
 
     /// The shell script a terminal of a card another master owns runs: the
