@@ -355,6 +355,20 @@ public final class AppState: @unchecked Sendable {
         return localProjectSlugs.first { $0.value.lowercased() == slug }?.key
     }
 
+    /// The activity of a card another master runs. The owner's busy and
+    /// live flags beat this master's hook state, which can trail them, with
+    /// one exception: the flags cannot say a question or permission prompt
+    /// is waiting, and the hook events of the owner's sessions reach this
+    /// master too, so a prompt seen here is kept while the session is live.
+    nonisolated static func peerOwnedActivity(
+        local: ActivityState?, peer: PeerCardState?, hasLiveTerminal: Bool
+    ) -> ActivityState? {
+        let isLive = peer?.isLive ?? hasLiveTerminal
+        if isLive, local == .awaitingPermission { return .awaitingPermission }
+        guard let peer else { return hasLiveTerminal ? .idleWaiting : nil }
+        return peer.isBusy ? .activelyWorking : (peer.isLive ? .idleWaiting : nil)
+    }
+
     func rebuildCards() {
         guard cardInputsVersion != builtCardInputsVersion else { return }
         builtCardInputsVersion = cardInputsVersion
@@ -400,14 +414,15 @@ public final class AppState: @unchecked Sendable {
             let session = link.sessionLink.flatMap { sessions[$0.sessionId] }
             var activity = link.sessionLink.flatMap { activityMap[$0.sessionId] }
             if owner != nil {
-                if let peer = peerCards[link.id] {
+                let peer = peerCards[link.id]
+                activity = Self.peerOwnedActivity(
+                    local: activity, peer: peer,
+                    hasLiveTerminal: link.tmuxLink != nil && link.tmuxLink?.isPrimaryDead != true)
+                if let peer {
                     // The owner's word on liveness and the queue beats the
                     // synced links, which trail it by a sync round.
-                    activity = peer.isBusy ? .activelyWorking : (peer.isLive ? .idleWaiting : nil)
                     if link.tmuxLink != nil { link.tmuxLink?.isPrimaryDead = peer.isLive ? nil : true }
                     link.queuedPrompts = peer.queue.isEmpty ? nil : peer.queue
-                } else {
-                    activity = link.tmuxLink != nil && link.tmuxLink?.isPrimaryDead != true ? .idleWaiting : nil
                 }
             }
             // The activity of a paused machine is frozen with it; the last
