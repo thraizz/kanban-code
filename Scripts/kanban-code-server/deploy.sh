@@ -3,8 +3,8 @@
 #
 #   Scripts/kanban-code-server/deploy.sh [user@host]      (default root@51.159.202.175)
 #
-# The host needs a Swift 6.2 toolchain in /opt/swift (swift.org tarball for the
-# distribution) or on its PATH, plus zlib (zlib1g-dev on Debian). The target user
+# The host needs a Swift 6.2 toolchain in /opt/swift or ~/.local/share/swift/current
+# (swift.org tarball for the distribution) or on its PATH, plus zlib (zlib1g-dev on Debian). The target user
 # may be root or a normal user; a normal user needs passwordless sudo (`sudo -n`)
 # for the install and systemctl steps, and the service then runs as that user
 # with its HOME. The committed tree (HEAD) is unpacked into
@@ -30,7 +30,7 @@ git -C "$ROOT" archive --format=tar HEAD | ssh "$HOST" "cat > $TARBALL"
 # build folder and the CLI copy, and starve the host of memory.
 ssh "$HOST" flock /tmp/kanban-code-deploy.lock bash -s <<REMOTE
 set -euo pipefail
-export PATH=/opt/swift/usr/bin:\$PATH
+export PATH=/opt/swift/usr/bin:\$HOME/.local/share/swift/current/usr/bin:\$PATH
 SUDO=""
 if [ "\$(id -u)" -ne 0 ]; then SUDO="sudo -n"; fi
 RUN_USER=\$(id -un)
