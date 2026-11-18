@@ -9,6 +9,10 @@ import Foundation
 public enum InheritedSessionEnvironment {
     static let names: Set<String> = [
         "RUSH_SESSION", "KANBAN_CARD_ID", "KANBAN_CARD_TOKEN",
+        // The hook script files every event under this id when it is set:
+        // inherited by the app, it would file every card's events under the
+        // CLI agent that launched it.
+        "KANBAN_SESSION_ID",
         "CLAUDECODE", "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ID",
         "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_EXECPATH",
         "CLAUDE_CODE_MESSAGING_SOCKET", "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_TMPDIR",

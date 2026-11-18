@@ -5,11 +5,15 @@ on:
     paths:
       - "cli/**"
       - ".github/workflows/cli-ci.yml"
+      # hooks.test.ts checks the CLI's hook.sh against the app's.
+      - "Sources/KanbanCodeCore/Adapters/ClaudeCode/HookManager.swift"
   push:
     branches: [main]
     paths:
       - "cli/**"
       - ".github/workflows/cli-ci.yml"
+      # hooks.test.ts checks the CLI's hook.sh against the app's.
+      - "Sources/KanbanCodeCore/Adapters/ClaudeCode/HookManager.swift"
 
 jobs:
   test:

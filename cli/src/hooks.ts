@@ -38,45 +38,99 @@ function defaultHookScriptPath(): string {
 /// Appends one timestamped line per hook event to hook-events.jsonl. No jq
 /// dependency (lightweight grep parsing). Honors KANBAN_CODE_HOME so the same
 /// script works in tests and in alternate deployments.
-const HOOK_SCRIPT = `#!/usr/bin/env bash
-# Kanban hook handler. Receives JSON on stdin from Claude Code or Codex hooks and
-# appends a timestamped event line to <kanban-home>/hook-events.jsonl.
+///
+/// The app (HookManager.swift) writes this same script to the same path, and
+/// whichever ran last owns the file: hooks.test.ts and HookManagerTests fail
+/// when the two texts differ. The Mac's machine bootstrap runs
+/// `kanban hooks install`, so a CLI copy without a field the app reads (the
+/// subagent id) took it from every hook event on that machine.
+export const HOOK_SCRIPT = `#!/usr/bin/env bash
+# Kanban hook handler for coding assistants (Claude Code, Gemini CLI, Codex).
+# Receives JSON on stdin from hooks, appends a timestamped
+# event line to <kanban-home>/hook-events.jsonl.
+# Written by both the app and \`kanban hooks install\`: keep the two identical.
+
 set -euo pipefail
 
-EVENTS_DIR="\${KANBAN_CODE_HOME:-\$HOME/.kanban-code}"
+# A side chat (/btw, /catchup) forks a session to answer a question and
+# writes nothing: it is not a session of the board.
+if [ -n "\${KANBAN_SIDE_CHAT:-}" ]; then cat > /dev/null; exit 0; fi
+
+EVENTS_DIR="\${KANBAN_CODE_HOME:-$HOME/.kanban-code}"
 EVENTS_FILE="\${EVENTS_DIR}/hook-events.jsonl"
+
+# Ensure directory exists
 mkdir -p "$EVENTS_DIR"
 
+# Read the JSON payload from stdin
 input=$(cat)
 
+# Extract fields using lightweight parsing (no jq dependency)
 session_id=$(echo "$input" | grep -o '"session_id":"[^"]*"' | head -1 | cut -d'"' -f4)
 hook_event=$(echo "$input" | grep -o '"hook_event_name":"[^"]*"' | head -1 | cut -d'"' -f4)
 transcript=$(echo "$input" | grep -o '"transcript_path":"[^"]*"' | head -1 | cut -d'"' -f4)
 
+# Fallback: try sessionId (different hook formats)
 if [ -z "$session_id" ]; then
     session_id=$(echo "$input" | grep -o '"sessionId":"[^"]*"' | head -1 | cut -d'"' -f4)
 fi
-# The launcher exports KANBAN_SESSION_ID (the stable uuidv5 of the slug) into the
-# session, so events correlate to the agent's card regardless of the id the
-# runtime mints internally. This is what lets Codex (which generates its own
-# session id) share the daemon/bridge correlation path with Claude.
+
+# The CLI launcher exports KANBAN_SESSION_ID (the stable uuidv5 of the
+# slug) into the session, so events correlate to the agent's card
+# whatever id the runtime mints (Codex makes its own).
 if [ -n "\${KANBAN_SESSION_ID:-}" ]; then
-    session_id="\$KANBAN_SESSION_ID"
+    session_id="$KANBAN_SESSION_ID"
 fi
+
+# Skip if we couldn't extract a session ID
 [ -z "$session_id" ] && exit 0
 
-# For UserPromptSubmit, capture the whole payload (base64, so the prompt's
-# quotes/newlines survive) so the daemon can mirror the exact text the agent
-# received once receipt is confirmed.
-payload_b64=""
-if [ "$hook_event" = "UserPromptSubmit" ] || [ "$hook_event" = "Notification" ]; then
+# Get current timestamp
+timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+
+# SessionStart carries a source (startup, resume, clear, compact) that
+# tells a real fresh start apart from a compaction of a live session.
+# Gated on the event name: other payloads can carry a "source" key
+# inside user text or tool input, and that must not leak in here.
+extra=""
+if [ "$hook_event" = "SessionStart" ]; then
+    start_source=$(echo "$input" | grep -o '"source":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    if [ -n "$start_source" ]; then
+        extra=",\\"source\\":\\"$start_source\\""
+    fi
+fi
+# A Notification carries its type (permission_prompt, idle_prompt, ...)
+# and text, and a UserPromptSubmit the prompt the CLI daemon mirrors once
+# the agent got it; the whole payload goes along, base64 so quotes and
+# newlines survive.
+if [ "$hook_event" = "Notification" ] || [ "$hook_event" = "UserPromptSubmit" ]; then
     payload_b64=$(printf '%s' "$input" | base64 | tr -d '\\n')
+    extra="$extra,\\"payloadB64\\":\\"$payload_b64\\""
 fi
 
-timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-printf '{"sessionId":"%s","event":"%s","timestamp":"%s","transcriptPath":"%s","payloadB64":"%s"}\\n' \\
-    "$session_id" "$hook_event" "$timestamp" "$transcript" "$payload_b64" >> "$EVENTS_FILE"
-`;
+# Notification carries a type (permission_prompt, idle_prompt, ...) that
+# tells a blocking permission prompt apart from an idle reminder.
+if [ "$hook_event" = "Notification" ]; then
+    notification_type=$(echo "$input" | grep -o '"notification_type":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    if [ -n "$notification_type" ]; then
+        extra="$extra,\\"notificationType\\":\\"$notification_type\\""
+    fi
+fi
+
+# SubagentStart and SubagentStop name the subagent, so a stop can be
+# matched to its own start: Claude Code also sends stops with no start
+# (after a Stop hook runs, for instance), which must not end the count
+# of a background agent that is still working.
+if [ "$hook_event" = "SubagentStart" ] || [ "$hook_event" = "SubagentStop" ]; then
+    agent_id=$(echo "$input" | grep -o '"agent_id":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
+    if [ -n "$agent_id" ]; then
+        extra="$extra,\\"agentId\\":\\"$agent_id\\""
+    fi
+fi
+
+# Append event line
+printf '{"sessionId":"%s","event":"%s","timestamp":"%s","transcriptPath":"%s"%s}\\n' \\
+    "$session_id" "$hook_event" "$timestamp" "$transcript" "$extra" >> "$EVENTS_FILE"`;
 
 /// Captures Claude Code's context/token usage per session into
 /// <kanban-home>/context/<sessionId>.json after each assistant response.

@@ -291,11 +291,17 @@ public enum HookManager {
         )
     }
 
-    private static let hookScriptContent = """
+    /// The one hook script of every Kanban Code install. The CLI's
+    /// `kanban hooks install` (`cli/src/hooks.ts`) writes the same text to
+    /// the same path, and tests on both sides fail when the two differ:
+    /// whichever ran last wins the file, and a remote machine ran without
+    /// subagent ids after the Mac's bootstrap installed the CLI's older copy.
+    static let hookScriptContent = """
     #!/usr/bin/env bash
-    # Kanban hook handler for coding assistants (Claude Code, Gemini CLI).
+    # Kanban hook handler for coding assistants (Claude Code, Gemini CLI, Codex).
     # Receives JSON on stdin from hooks, appends a timestamped
-    # event line to ~/.kanban-code/hook-events.jsonl.
+    # event line to <kanban-home>/hook-events.jsonl.
+    # Written by both the app and `kanban hooks install`: keep the two identical.
 
     set -euo pipefail
 
@@ -303,7 +309,7 @@ public enum HookManager {
     # writes nothing: it is not a session of the board.
     if [ -n "${KANBAN_SIDE_CHAT:-}" ]; then cat > /dev/null; exit 0; fi
 
-    EVENTS_DIR="${HOME}/.kanban-code"
+    EVENTS_DIR="${KANBAN_CODE_HOME:-$HOME/.kanban-code}"
     EVENTS_FILE="${EVENTS_DIR}/hook-events.jsonl"
 
     # Ensure directory exists
@@ -320,6 +326,13 @@ public enum HookManager {
     # Fallback: try sessionId (different hook formats)
     if [ -z "$session_id" ]; then
         session_id=$(echo "$input" | grep -o '"sessionId":"[^"]*"' | head -1 | cut -d'"' -f4)
+    fi
+
+    # The CLI launcher exports KANBAN_SESSION_ID (the stable uuidv5 of the
+    # slug) into the session, so events correlate to the agent's card
+    # whatever id the runtime mints (Codex makes its own).
+    if [ -n "${KANBAN_SESSION_ID:-}" ]; then
+        session_id="$KANBAN_SESSION_ID"
     fi
 
     # Skip if we couldn't extract a session ID
@@ -340,8 +353,10 @@ public enum HookManager {
         fi
     fi
     # A Notification carries its type (permission_prompt, idle_prompt, ...)
-    # and text; the whole payload goes along, base64 so quotes survive.
-    if [ "$hook_event" = "Notification" ]; then
+    # and text, and a UserPromptSubmit the prompt the CLI daemon mirrors once
+    # the agent got it; the whole payload goes along, base64 so quotes and
+    # newlines survive.
+    if [ "$hook_event" = "Notification" ] || [ "$hook_event" = "UserPromptSubmit" ]; then
         payload_b64=$(printf '%s' "$input" | base64 | tr -d '\\n')
         extra="$extra,\\"payloadB64\\":\\"$payload_b64\\""
     fi
@@ -351,7 +366,7 @@ public enum HookManager {
     if [ "$hook_event" = "Notification" ]; then
         notification_type=$(echo "$input" | grep -o '"notification_type":"[^"]*"' | head -1 | cut -d'"' -f4 || true)
         if [ -n "$notification_type" ]; then
-            extra=",\\"notificationType\\":\\"$notification_type\\""
+            extra="$extra,\\"notificationType\\":\\"$notification_type\\""
         fi
     fi
 

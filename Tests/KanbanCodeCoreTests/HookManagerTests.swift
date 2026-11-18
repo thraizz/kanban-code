@@ -325,6 +325,35 @@ struct HookManagerTests {
         #expect(events.map(\.agentId) == ["a1", "a1", nil])
     }
 
+    /// The CLI's `kanban hooks install` writes hook.sh to the same path, and
+    /// the Mac's machine bootstrap runs it: the copy written last wins. A CLI
+    /// copy without the subagent id once left a finished background agent
+    /// counted as running, holding its card in In Progress.
+    @Test("the CLI writes the exact hook script the app writes")
+    func cliHookScriptMatches() throws {
+        let root = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
+        let source = try String(
+            contentsOf: root.appendingPathComponent("cli/src/hooks.ts"), encoding: .utf8)
+        let open = "export const HOOK_SCRIPT = `"
+        let start = try #require(source.range(of: open))
+        let end = try #require(source.range(of: "`;\n", range: start.upperBound..<source.endIndex))
+        // Undo the template literal's escapes (\\, \`, \$).
+        var cliScript = ""
+        var escaped = false
+        for ch in source[start.upperBound..<end.lowerBound] {
+            if escaped {
+                cliScript.append(ch)
+                escaped = false
+            } else if ch == "\\" {
+                escaped = true
+            } else {
+                cliScript.append(ch)
+            }
+        }
+        #expect(cliScript == HookManager.hookScriptContent)
+    }
+
     @Test("refreshHookScript rewrites a stale script and skips a missing one")
     func refreshHookScriptRewritesStale() throws {
         let dir = try makeTempDir()
