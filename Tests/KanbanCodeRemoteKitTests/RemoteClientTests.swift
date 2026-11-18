@@ -16,8 +16,8 @@ struct RemotePairLinkTests {
     @Test("Unencoded urls, whitespace and a trailing slash are tolerated")
     func tolerant() throws {
         let link = try #require(RemotePairLink.parse(
-            "  kanbancode://pair?url=https://mac.tail1.ts.net:7780/&token=kc_x \n"))
-        #expect(link.baseURL.absoluteString == "https://mac.tail1.ts.net:7780")
+            "  kanbancode://pair?url=https://mac.lan:7780/&token=kc_x \n"))
+        #expect(link.baseURL.absoluteString == "https://mac.lan:7780")
         #expect(link.name == nil)
     }
 
@@ -59,9 +59,9 @@ struct RemoteClientRequestTests {
 
     @Test("A base url with a path keeps it")
     func basePath() {
-        let c = RemoteClient(baseURL: URL(string: "https://mac.ts.net/kanban/")!, token: "t")
-        #expect(c.url("v1/board").absoluteString == "https://mac.ts.net/kanban/v1/board")
-        #expect(c.webSocketURL("v1/events").absoluteString == "wss://mac.ts.net/kanban/v1/events")
+        let c = RemoteClient(baseURL: URL(string: "https://mac.lan/kanban/")!, token: "t")
+        #expect(c.url("v1/board").absoluteString == "https://mac.lan/kanban/v1/board")
+        #expect(c.webSocketURL("v1/events").absoluteString == "wss://mac.lan/kanban/v1/events")
     }
 
     @Test("Card ids are escaped and queries encoded")

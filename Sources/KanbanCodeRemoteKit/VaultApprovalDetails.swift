@@ -65,7 +65,7 @@ public struct VaultApprovalDetails: Codable, Sendable, Equatable, Hashable {
     public var leaseSeconds: Double?
     /// The card the client claimed when the master could not verify it.
     public var claimedCardId: String?
-    /// A device over the tailnet, for requests not on loopback.
+    /// A device over the network, for requests not on loopback.
     public var remoteDevice: String?
     /// Executable names from the caller up.
     public var ancestry: [String]

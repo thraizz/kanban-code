@@ -345,7 +345,7 @@ public struct VaultCaller: Codable, Sendable, Equatable {
     public var pid: Int?
     /// Executable names from the caller up to launchd/init.
     public var ancestry: [String]
-    /// Not on loopback: a device over the tailnet.
+    /// Not on loopback: a device over the network.
     public var remoteDevice: String?
     /// The calling process's working directory, as the master read it.
     public var cwd: String?

@@ -139,7 +139,7 @@ Feature: Vault projects, environments and card identity
       | changes a secret's tier             | the human is asked  |
 
   Scenario: A request over the network always asks
-    Given a device that calls the vault over the tailnet
+    Given a device that calls the vault over the network
     When it asks for a secret of tier open
     Then the human is asked
 

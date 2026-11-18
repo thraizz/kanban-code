@@ -134,36 +134,34 @@ export function revokeDevice(idOrName: string, path = remoteDevicesPath()): Pair
 
 // ── Pairing link ─────────────────────────────────────────────────────
 
-interface TailscaleSelf {
-  DNSName?: string;
-  TailscaleIPs?: string[];
-}
+const WILDCARDS = new Set(["0.0.0.0", "::"]);
 
-const TAILSCALE_BINARIES = ["tailscale", "/Applications/Tailscale.app/Contents/MacOS/Tailscale"];
-
-/** The Mac's tailnet address: MagicDNS name, else its Tailscale IP, else nothing. */
-export function tailscaleHost(
-  run: (bin: string) => string = (bin) =>
-    execFileSync(bin, ["status", "--json"], { encoding: "utf8", timeout: 5000, stdio: ["ignore", "pipe", "ignore"] })
-): string | undefined {
-  for (const bin of TAILSCALE_BINARIES) {
-    let self: TailscaleSelf | undefined;
-    try {
-      self = (JSON.parse(run(bin)) as { Self?: TailscaleSelf }).Self;
-    } catch {
-      continue;
-    }
-    const dns = self?.DNSName?.replace(/\.$/, "");
-    if (dns) return dns;
-    const ips = self?.TailscaleIPs ?? [];
-    const ip = ips.find((a) => !a.includes(":")) ?? ips[0];
-    if (ip) return ip.includes(":") ? `[${ip}]` : ip;
+/**
+ * The address and port the Mac's remote control answers other machines on:
+ * the first address of `remoteControl.bindAddresses` in settings.json that is
+ * not a wildcard (an IPv4 one first) and its `remoteControl.port`, as the app's
+ * own pairing link uses them. Undefined parts when nothing is configured.
+ */
+export function configuredRemoteAddress(
+  read: () => string = () => readFileSync(join(kanbanHome(), "settings.json"), "utf8")
+): { host?: string; port?: number } {
+  let remote: { bindAddresses?: unknown; port?: unknown } | undefined;
+  try {
+    remote = (JSON.parse(read()) as { remoteControl?: typeof remote }).remoteControl;
+  } catch {
+    return {};
   }
-  return undefined;
+  const addresses = (Array.isArray(remote?.bindAddresses) ? remote.bindAddresses : [])
+    .filter((a): a is string => typeof a === "string")
+    .map((a) => a.trim().replace(/^\[(.*)\]$/, "$1").replace(/%.*$/, ""))
+    .filter((a) => a && !WILDCARDS.has(a));
+  const ip = addresses.find((a) => !a.includes(":")) ?? addresses[0];
+  const port = typeof remote?.port === "number" && remote.port > 0 ? remote.port : undefined;
+  return { host: ip === undefined ? undefined : ip.includes(":") ? `[${ip}]` : ip, port };
 }
 
-export function defaultServerUrl(host = tailscaleHost(), port = REMOTE_DEFAULT_PORT): string {
-  return `http://${host ?? "127.0.0.1"}:${port}`;
+export function defaultServerUrl(address = configuredRemoteAddress()): string {
+  return `http://${address.host ?? "127.0.0.1"}:${address.port ?? REMOTE_DEFAULT_PORT}`;
 }
 
 /** The Mac's name as the app shows it (System Settings > General > Sharing), else the host name. */

@@ -166,7 +166,7 @@ The service graph of the app (store, boxd supervisor, session registry, tmux rou
 
 ## Ssh machines
 
-An ssh machine is an always-on host, for example a server on the tailnet, that runs cards the way a boxd machine does. Settings, Remote, mode "SSH machines" (the default mode) lists them: a name, the ssh target (`user@host` or a host alias of `~/.ssh/config`), and the folder the repositories are cloned into (`~/Projects` by default). A card stores the name as its machine.
+An ssh machine is an always-on host, for example a server on the LAN or the VPN, that runs cards the way a boxd machine does. Settings, Remote, mode "SSH machines" (the default mode) lists them: a name, the ssh target (`user@host` or a host alias of `~/.ssh/config`), and the folder the repositories are cloned into (`~/Projects` by default). A card stores the name as its machine.
 
 The supervisor reaches it through `SshHostPort`, and `MachinePortRouter` sends every other machine name to boxd:
 

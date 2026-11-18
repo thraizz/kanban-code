@@ -1,6 +1,6 @@
 # kanban remote
 
-`kanban remote` drives a Kanban Code master (the Mac app, or `kanban-code-server` on a Linux box) over its HTTP API (`docs/remote-control.md` at the repo root). It runs on any machine with Node.js 20 or newer that can reach the master, usually over Tailscale. Sessions run on the masters; this CLI only reads the board and sends requests.
+`kanban remote` drives a Kanban Code master (the Mac app, or `kanban-code-server` on a Linux box) over its HTTP API (`docs/remote-control.md` at the repo root). It runs on any machine with Node.js 20 or newer that can reach the master: the same LAN, or a VPN such as WireGuard. Sessions run on the masters; this CLI only reads the board and sends requests.
 
 ## Install on another machine
 
@@ -36,11 +36,11 @@ Only the `kanban remote` commands are meant for that machine. The other `kanban`
    kanban remote pair --name openclaw --scope agent
    ```
 
-   It prints the token once, the `kanbancode://pair` link, and the `login` command to run. The URL uses the Mac's Tailscale MagicDNS name when `tailscale status` works, else its Tailscale IP, on port 7780. Pass `--url` to use another address, for example the `https://<mac>.<tailnet>.ts.net:7780` of `tailscale serve`.
+   It prints the token once, the `kanbancode://pair` link, and the `login` command to run. The URL uses the first address of Settings > Remote Control > bind addresses (`remoteControl.bindAddresses`), on its port (7780 by default), else `127.0.0.1`. Pass `--url` to use another address, for example the Mac's address on the VPN.
 3. On the other machine:
 
    ```bash
-   kanban remote login http://<mac>.<tailnet>.ts.net:7780 --token kc_...
+   kanban remote login http://192.168.178.59:7780 --token kc_...
    kanban remote whoami
    ```
 

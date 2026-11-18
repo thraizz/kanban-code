@@ -65,7 +65,7 @@ app: build cli install-cli
 	@echo '<key>NSHighResolutionCapable</key><true/>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@# Notifications default to Persistent: an approval waits on screen.
 	@echo '<key>NSUserNotificationAlertStyle</key><string>alert</string>' >> $(BUNDLE_DIR)/Contents/Info.plist
-	@# Peer masters answer plain http on the tailnet (WireGuard encrypts it).
+	@# Peer masters answer plain http on the LAN or over the WireGuard VPN.
 	@echo '<key>NSAppTransportSecurity</key><dict><key>NSAllowsArbitraryLoads</key><true/></dict>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<key>LSUIElement</key><false/>' >> $(BUNDLE_DIR)/Contents/Info.plist
 	@echo '<key>CFBundleIconFile</key><string>AppIcon</string>' >> $(BUNDLE_DIR)/Contents/Info.plist

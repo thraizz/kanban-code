@@ -1,7 +1,7 @@
 /**
  * `kanban remote`: drive the Kanban Code app on a Mac over its HTTP API
- * (docs/remote-control.md) from any machine on the same tailnet, such as an
- * agent on a Linux VM. The client side imports nothing that needs macOS, so
+ * (docs/remote-control.md) from any machine that can reach it (LAN, VPN), such
+ * as an agent on a Linux VM. The client side imports nothing that needs macOS, so
  * the same build runs on plain node elsewhere.
  *
  * `pair`, `devices` and `revoke` run on the Mac itself and edit
@@ -731,7 +731,7 @@ export function parseTimeout(raw: string): number {
 export function registerRemoteCommands(program: Command, io: RemoteIO = defaultRemoteIO()): Command {
   const remote = program
     .command("remote")
-    .description("Drive Kanban Code on a Mac over its remote API (from another device on the tailnet, another machine or an agent)");
+    .description("Drive Kanban Code on a Mac over its remote API (from another device, another machine or an agent)");
 
   const println = (text: string) => io.out(text.endsWith("\n") ? text : text + "\n");
   const printJson = (data: unknown) => io.out(JSON.stringify(data, null, 2) + "\n");
@@ -1149,7 +1149,7 @@ export function registerRemoteCommands(program: Command, io: RemoteIO = defaultR
     .description("On the Mac: add a device and print its token and pairing link")
     .requiredOption("--name <name>", "device name, e.g. laptop or openclaw")
     .addOption(new Option("--scope <scope>", "full (a device you use) or agent").choices([...REMOTE_SCOPES]).default("full"))
-    .option("--url <url>", `server URL in the link (default: the Mac's Tailscale name, port ${REMOTE_DEFAULT_PORT})`)
+    .option("--url <url>", `server URL in the link (default: the first of Settings > Remote Control > bind addresses, port ${REMOTE_DEFAULT_PORT})`)
     .option("--json", "output as JSON")
     .action(
       run(async (opts: { name: string; scope: RemoteScope; url?: string; json?: boolean }) => {

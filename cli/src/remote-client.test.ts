@@ -26,7 +26,8 @@ import {
   readDevicesFile,
   remoteDevicesPath,
   revokeDevice,
-  tailscaleHost,
+  configuredRemoteAddress,
+  defaultServerUrl,
 } from "./remote-devices.js";
 import { shouldProxy } from "./remote-proxy.js";
 
@@ -320,11 +321,12 @@ describe("kanban remote login / whoami / logout", () => {
     assert.equal(existsSync(join(home, "remote-client.json")), false);
   });
 
-  test("an unreachable Mac names Tailscale", async () => {
+  test("an unreachable Mac names the bind addresses and the firewall", async () => {
     const r = await run(["login", "http://127.0.0.1:9", "--token", FULL_TOKEN]);
     assert.equal(r.code, 1);
     assert.match(r.err, /Cannot reach Kanban Code at http:\/\/127\.0\.0\.1:9/);
-    assert.match(r.err, /Tailscale/);
+    assert.match(r.err, /bindAddresses/);
+    assert.match(r.err, /firewall/);
   });
 
   test("whoami reports the device, env vars override the file", async () => {
@@ -652,8 +654,8 @@ describe("helpers", () => {
   });
 
   test("normalizeUrl adds a scheme and trims slashes", () => {
-    assert.equal(normalizeUrl("mac.tail1234.ts.net:7780/"), "http://mac.tail1234.ts.net:7780");
-    assert.equal(normalizeUrl("https://mac.ts.net:7780"), "https://mac.ts.net:7780");
+    assert.equal(normalizeUrl("mac.lan:7780/"), "http://mac.lan:7780");
+    assert.equal(normalizeUrl("https://mac.lan:7780"), "https://mac.lan:7780");
   });
 });
 
@@ -718,12 +720,12 @@ describe("devices.json", () => {
   });
 
   test("pair, devices and revoke commands", async () => {
-    const r = await run(["pair", "--name", "openclaw", "--scope", "agent", "--url", "http://mac.tail.ts.net:7780", "--json"]);
+    const r = await run(["pair", "--name", "openclaw", "--scope", "agent", "--url", "http://mac.lan:7780", "--json"]);
     assert.equal(r.code, 0, r.err);
     const out = JSON.parse(r.out);
     assert.match(out.token, /^kc_[0-9A-Za-z]{40}$/);
-    assert.equal(out.link, pairingLink("http://mac.tail.ts.net:7780", out.token));
-    assert.ok(out.link.startsWith(`kanbancode://pair?url=http%3A%2F%2Fmac.tail.ts.net%3A7780&token=${out.token}&name=`));
+    assert.equal(out.link, pairingLink("http://mac.lan:7780", out.token));
+    assert.ok(out.link.startsWith(`kanbancode://pair?url=http%3A%2F%2Fmac.lan%3A7780&token=${out.token}&name=`));
     assert.equal(readDevicesFile().devices[0].tokenHash, hashRemoteToken(out.token));
 
     let list = await run(["devices"]);
@@ -744,11 +746,17 @@ describe("devices.json", () => {
     assert.equal(existsSync(remoteDevicesPath()), false);
   });
 
-  test("tailscaleHost prefers MagicDNS, then the IPv4, then nothing", () => {
-    const status = (self: object) => () => JSON.stringify({ Self: self });
-    assert.equal(tailscaleHost(status({ DNSName: "mac.tail1234.ts.net.", TailscaleIPs: ["100.1.2.3"] })), "mac.tail1234.ts.net");
-    assert.equal(tailscaleHost(status({ DNSName: "", TailscaleIPs: ["fd7a::1", "100.1.2.3"] })), "100.1.2.3");
-    assert.equal(tailscaleHost(() => { throw new Error("not installed"); }), undefined);
+  test("the pairing URL is the first configured bind address that is not a wildcard, IPv4 first", () => {
+    const settings = (remoteControl: object) => () => JSON.stringify({ remoteControl });
+    assert.deepEqual(
+      configuredRemoteAddress(settings({ bindAddresses: ["0.0.0.0", "fd00::5", "192.168.178.59"], port: 7781 })),
+      { host: "192.168.178.59", port: 7781 }
+    );
+    assert.deepEqual(configuredRemoteAddress(settings({ bindAddresses: ["[fd00::5%en0]"] })), { host: "[fd00::5]", port: undefined });
+    assert.deepEqual(configuredRemoteAddress(settings({ bindAddresses: [] })), { host: undefined, port: undefined });
+    assert.deepEqual(configuredRemoteAddress(() => { throw new Error("no settings"); }), {});
+    assert.equal(defaultServerUrl({ host: "192.168.178.59" }), "http://192.168.178.59:7780");
+    assert.equal(defaultServerUrl({}), "http://127.0.0.1:7780");
   });
 });
 
