@@ -32,6 +32,13 @@ final class SocketRemoteByteStream: RemoteByteStream, @unchecked Sendable {
     private var closed = false
     private var onClose: (@Sendable () -> Void)?
     private var buffer = [UInt8](repeating: 0, count: 256 * 1024)
+    /// Set on `sendQueue` right before the descriptor is closed, and read
+    /// only there. The kernel hands the number to the next accepted
+    /// connection at once, so a send queued after the close would otherwise
+    /// write into that connection: a terminal whose viewer left kept
+    /// writing its last output, and the `[lost tty]` of its hang-up, into
+    /// the terminal the viewer opened next.
+    private var descriptorClosed = false
 
     static let sendTimeoutMs: Int32 = 30_000
 
@@ -67,10 +74,8 @@ final class SocketRemoteByteStream: RemoteByteStream, @unchecked Sendable {
             self.onClose = onClose
             let source = DispatchSource.makeReadSource(fileDescriptor: fd, queue: queue)
             source.setEventHandler { [weak self] in self?.readReady() }
-            let fd = self.fd
-            let sendQueue = self.sendQueue
-            // Closing after the queued sends keeps a write from hitting a reused descriptor.
-            source.setCancelHandler { sendQueue.async { close(fd) } }
+            // Closing after the queued sends lets them go out; later ones fail.
+            source.setCancelHandler { [self] in sendQueue.async { self.closeDescriptor() } }
             readSource = source
         }
     }
@@ -128,10 +133,21 @@ final class SocketRemoteByteStream: RemoteByteStream, @unchecked Sendable {
     }
 
     func send(_ data: Data, completion: @escaping @Sendable (Error?) -> Void) {
-        let fd = self.fd
-        sendQueue.async {
+        sendQueue.async { [self] in
+            guard !descriptorClosed else {
+                completion(POSIXError(.EBADF))
+                return
+            }
             completion(Self.writeAll(fd: fd, data: data))
         }
+    }
+
+    /// Runs on `sendQueue`: closes the descriptor once, after the sends
+    /// queued before it.
+    private func closeDescriptor() {
+        guard !descriptorClosed else { return }
+        descriptorClosed = true
+        close(fd)
     }
 
     private static func writeAll(fd: Int32, data: Data) -> Error? {
@@ -176,7 +192,7 @@ final class SocketRemoteByteStream: RemoteByteStream, @unchecked Sendable {
             readArmed = true
             readSource.cancel()
         } else {
-            close(fd)
+            sendQueue.async { self.closeDescriptor() }
         }
         let callback = onClose
         onClose = nil
