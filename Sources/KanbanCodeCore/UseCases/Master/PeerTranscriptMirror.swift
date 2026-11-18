@@ -17,6 +17,7 @@ public final class PeerTranscriptMirror {
     private let directory: String
     private var tick = 0
     private var inFlight: Set<String> = []
+    private var foundCopies = false
 
     public init(engine: MasterEngine, kanbanHome: String = (NSHomeDirectory() as NSString).appendingPathComponent(".kanban-code")) {
         self.engine = engine
@@ -40,6 +41,16 @@ public final class PeerTranscriptMirror {
         let state = engine.store.state
         let local = state.localMachineId
         guard !local.isEmpty else { return }
+        if !foundCopies {
+            // Copies made before this launch: the loop below never reads
+            // archived cards again, and an offline owner none at all, so
+            // without this their chat would point at the owner's path.
+            foundCopies = true
+            let found = Self.existingCopies(
+                links: Array(state.links.values), localMachineId: local,
+                known: state.peerTranscriptPaths, directory: directory)
+            if !found.isEmpty { engine.store.dispatch(.peerTranscriptCopiesFound(paths: found)) }
+        }
         let online = Set(state.peerStatuses.values.compactMap { $0.online ? $0.machine?.id : nil })
         guard !online.isEmpty else { return }
 
@@ -67,6 +78,22 @@ public final class PeerTranscriptMirror {
 
     /// Copies the conversation logs of other masters' cards whose
     /// conversations differ from the copy here: the owner's board says so.
+    /// The copies on disk of transcripts other masters own whose path is not
+    /// known yet, by session id.
+    public nonisolated static func existingCopies(
+        links: [Link], localMachineId: String, known: [String: String], directory: String
+    ) -> [String: String] {
+        var found: [String: String] = [:]
+        for link in links {
+            guard let owner = link.ownerMachine, owner != localMachineId,
+                  let sessionId = link.sessionLink?.sessionId, known[sessionId] == nil
+            else { continue }
+            let path = mirrorPath(directory: directory, machineId: owner, sessionId: sessionId)
+            if FileManager.default.fileExists(atPath: path) { found[sessionId] = path }
+        }
+        return found
+    }
+
     private func mirrorConversations(state: AppState, local: String, online: Set<String>) async {
         for (cardId, peer) in state.peerCards {
             guard let owner = state.links[cardId]?.ownerMachine, owner != local, online.contains(owner) else { continue }

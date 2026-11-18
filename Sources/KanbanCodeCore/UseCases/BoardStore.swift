@@ -750,6 +750,8 @@ public enum Action: Sendable {
     case adoptCard(cardId: String, sessionLink: SessionLink?, worktreeLink: WorktreeLink?, projectPath: String?)
     /// A transcript of a card another master owns was copied to `path`.
     case peerTranscriptMirrored(sessionId: String, path: String)
+    /// Copies of other masters' transcripts already on disk, by session id.
+    case peerTranscriptCopiesFound(paths: [String: String])
     /// The cards other masters own that are in a turn right now.
     case peerActivityScanned(cards: [String: PeerCardState])
     /// One card another master owns, as its owner just reported it.
@@ -2544,6 +2546,11 @@ public enum Reducer {
 
         case .peerTranscriptMirrored(let sessionId, let path):
             if state.peerTranscriptPaths[sessionId] != path { state.peerTranscriptPaths[sessionId] = path }
+            return []
+
+        case .peerTranscriptCopiesFound(let paths):
+            let merged = state.peerTranscriptPaths.merging(paths) { current, _ in current }
+            if merged != state.peerTranscriptPaths { state.peerTranscriptPaths = merged }
             return []
 
         case .peerActivityScanned(let cards):
