@@ -95,6 +95,7 @@ public enum LinkSync {
         dst.queuedPrompts = src.queuedPrompts
         dst.discoveredBranches = src.discoveredBranches
         dst.discoveredRepos = src.discoveredRepos
+        dst.subagentBranches = src.subagentBranches
         dst.isRemote = src.isRemote
         dst.remote = src.remote
         dst.apiServiceId = src.apiServiceId
@@ -122,6 +123,7 @@ public enum LinkSync {
             && a.queuedPrompts == b.queuedPrompts
             && a.discoveredBranches == b.discoveredBranches
             && a.discoveredRepos == b.discoveredRepos
+            && a.subagentBranches == b.subagentBranches
             && a.isRemote == b.isRemote
             && a.remote == b.remote
             && a.apiServiceId == b.apiServiceId
@@ -139,7 +141,7 @@ public enum LinkSync {
     static var sharedFieldNames: Set<String> { Set(sharedFields.map(\.name)) }
     static let ownedFieldNames: Set<String> = [
         "projectPath", "source", "createdAt", "lastActivity", "sessionLink", "tmuxLink", "worktreeLink",
-        "queuedPrompts", "discoveredBranches", "discoveredRepos", "isRemote", "remote", "apiServiceId",
+        "queuedPrompts", "discoveredBranches", "discoveredRepos", "subagentBranches", "isRemote", "remote", "apiServiceId",
         "isLaunching", "launchedAt", "headless", "absorbedSessionIds", "hibernation", "ownerMachine", "migrating",
     ]
     /// Per-machine fields that never travel, plus the sync metadata.

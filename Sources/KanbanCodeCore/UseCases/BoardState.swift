@@ -441,6 +441,7 @@ public final class BoardState: @unchecked Sendable {
                 link.manualOverrides.branchWatermark = 0
             }
             link.discoveredBranches = nil
+            link.subagentBranches = nil
             link.worktreeLink = nil
         case .tmux:
             link.tmuxLink = nil

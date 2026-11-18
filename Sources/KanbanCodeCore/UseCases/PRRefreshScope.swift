@@ -57,6 +57,9 @@ public enum PRRefreshScope {
                         scope.branchesByRepo[effectiveRepo, default: []].insert(branch)
                     }
                 }
+                for (branch, repo) in link.subagentBranches ?? [:] {
+                    scope.branchesByRepo[repo.isEmpty ? repoRoot : repo, default: []].insert(branch)
+                }
             }
 
             for pr in link.prLinks {

@@ -352,74 +352,132 @@ public enum JsonlParser {
             handle.seek(toFileOffset: UInt64(offset))
         }
 
-        // Regex: git push [flags...] <remote> <branch>
-        let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*[A-Za-z0-9_][A-Za-z0-9_.\-]*\s+([^\s;&|]+)/
-        // Regex: git checkout -b <branch> or git checkout -B <branch>
-        let checkoutBranchRegex = /git\s+checkout\s+-[bB]\s+(\S+)/
-        // Regex: git switch -c <branch> or git switch --create <branch>
-        let switchCreateRegex = /git\s+switch\s+(?:-c|--create)\s+(\S+)/
-        // Regex: git worktree add ... -b <branch>
-        let worktreeAddRegex = /git\s+worktree\s+add\s+\S+\s+-b\s+(\S+)/
-        // Regex: cd <path> && ... (extract the directory before && chains)
-        let cdRegex = /cd\s+([^\s;&]+)\s*&&/
         var branches = Set<DiscoveredBranch>()
-
         for try await line in handle.blockLines {
-            guard !line.isEmpty else { continue }
+            collectBranches(inLine: line, into: &branches)
+        }
+        return Array(branches).sorted { $0.branch < $1.branch }
+    }
 
-            // Only parse lines that might contain tool_use (Bash commands)
-            guard line.contains("\"tool_use\"") else { continue }
+    /// `extractPushedBranches` reading the file in one go, with no suspension
+    /// per line. For many small files at once (a session's agent
+    /// transcripts), where a suspension per line left the scan queued
+    /// behind other work for seconds.
+    public static func extractPushedBranchesSync(from filePath: String, startOffset: Int = 0) -> [DiscoveredBranch] {
+        guard let handle = FileHandle(forReadingAtPath: filePath) else { return [] }
+        defer { try? handle.close() }
+        if startOffset > 0 { handle.seek(toFileOffset: UInt64(startOffset)) }
+        guard let data = try? handle.readToEnd(), !data.isEmpty else { return [] }
 
-            guard let data = line.data(using: .utf8),
-                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                  let message = obj["message"] as? [String: Any],
-                  let content = message["content"] as? [[String: Any]] else {
-                continue
-            }
-
-            for block in content {
-                guard block["type"] as? String == "tool_use",
-                      block["name"] as? String == "Bash",
-                      let input = block["input"] as? [String: Any],
-                      let command = input["command"] as? String else { continue }
-
-                // Extract cd path if present (e.g. "cd /path/to/repo && git push ...")
-                var repoPath: String?
-                if let cdMatch = command.firstMatch(of: cdRegex) {
-                    let path = String(cdMatch.output.1)
-                    // Resolve to git root: strip .claude/worktrees/<name> suffix
-                    repoPath = resolveGitRoot(path)
-                } else if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
-                    // A command with no `cd` runs where the session runs, and
-                    // the record says where that is. Without it the branch
-                    // carries no repository, and the lookup falls back to the
-                    // card's project, which is a different repository whenever
-                    // the session works outside it.
-                    repoPath = resolveGitRoot(cwd)
+        // Check the bytes of each line before decoding and parsing it: only
+        // a Bash call that runs git can name a branch, and parsing every tool
+        // call (file writes carry whole files) is what made a first read of
+        // an agent-heavy session take seconds.
+        let needles: [[UInt8]] = [Array("\"tool_use\"".utf8), Array("\"Bash\"".utf8), Array("git".utf8)]
+        var lines: [String] = []
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            var start = 0
+            let end = raw.count
+            while start < end {
+                let rest = end - start
+                let nl = memchr(base + start, Int32(UInt8(ascii: "\n")), rest)
+                let lineEnd = nl.map { base.distance(to: UnsafeRawPointer($0)) } ?? end
+                let length = lineEnd - start
+                let matches = needles.allSatisfy { needle in
+                    needle.withUnsafeBytes { memmem(base + start, length, $0.baseAddress, needle.count) != nil }
                 }
-
-                func addBranch(_ ref: String) {
-                    if let branch = pushedBranchName(ref) {
-                        branches.insert(DiscoveredBranch(branch: branch, repoPath: repoPath))
-                    }
+                if matches {
+                    lines.append(String(decoding: UnsafeRawBufferPointer(rebasing: raw[start..<lineEnd]), as: UTF8.self))
                 }
-
-                for match in command.matches(of: pushRegex) {
-                    addBranch(String(match.output.1))
-                }
-                for match in command.matches(of: checkoutBranchRegex) {
-                    addBranch(String(match.output.1))
-                }
-                for match in command.matches(of: switchCreateRegex) {
-                    addBranch(String(match.output.1))
-                }
-                for match in command.matches(of: worktreeAddRegex) {
-                    addBranch(String(match.output.1))
-                }
+                start = lineEnd + 1
             }
         }
 
+        var branches = Set<DiscoveredBranch>()
+        for line in lines {
+            collectBranches(inLine: line, into: &branches)
+        }
         return Array(branches).sorted { $0.branch < $1.branch }
+    }
+
+    // Branch patterns, compiled once: a regex literal is built anew each
+    // time its declaration runs.
+    // Every pattern allows global options before the subcommand
+    // (`git -C <dir> push`, `git -c k=v checkout`), the way agents write it.
+    // Regex: git push [flags...] <remote> <branch>
+    nonisolated(unsafe) private static let pushRegex = /git(?:\s+-[Cc]\s+\S+)*\s+push\s+(?:-[^\s]+\s+)*[A-Za-z0-9_][A-Za-z0-9_.\-]*\s+([^\s;&|]+)/
+    // Regex: git checkout -b <branch> or git checkout -B <branch>
+    nonisolated(unsafe) private static let checkoutBranchRegex = /git(?:\s+-[Cc]\s+\S+)*\s+checkout\s+-[bB]\s+(\S+)/
+    // Regex: git switch -c <branch> or git switch --create <branch>
+    nonisolated(unsafe) private static let switchCreateRegex = /git(?:\s+-[Cc]\s+\S+)*\s+switch\s+(?:-c|--create)\s+(\S+)/
+    // Regex: git worktree add ... -b <branch>, with -b before or after the
+    // path and other flags anywhere (`add -q -b br path`, `add path -b br`)
+    nonisolated(unsafe) private static let worktreeAddRegex = /git(?:\s+-[Cc]\s+\S+)*\s+worktree\s+add\s+(?:[^\s;|&]+\s+)*?-[bB]\s+([^\s;|&]+)/
+    // Regex: cd <path> && ... (extract the directory before && chains)
+    nonisolated(unsafe) private static let cdRegex = /cd\s+([^\s;&]+)\s*&&/
+
+    /// The branches one transcript line's Bash commands create or push.
+    private static func collectBranches(inLine line: String, into branches: inout Set<DiscoveredBranch>) {
+        guard !line.isEmpty else { return }
+
+        // Only parse lines that might contain tool_use (Bash commands)
+        guard line.contains("\"tool_use\"") else { return }
+
+        guard let data = line.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let message = obj["message"] as? [String: Any],
+              let content = message["content"] as? [[String: Any]] else {
+            return
+        }
+
+
+        for block in content {
+            guard block["type"] as? String == "tool_use",
+                  block["name"] as? String == "Bash",
+                  let input = block["input"] as? [String: Any],
+                  let command = input["command"] as? String,
+                  command.contains("git") else { continue }
+
+            // Extract cd path if present (e.g. "cd /path/to/repo && git push ...")
+            var repoPath: String?
+            if command.contains("cd "), let cdMatch = command.firstMatch(of: cdRegex) {
+                let path = String(cdMatch.output.1)
+                // Resolve to git root: strip .claude/worktrees/<name> suffix
+                repoPath = resolveGitRoot(path)
+            } else if command.contains("-C"), let dir = gitDirOption(in: command) {
+                // `git -C /repo …` names the repository outright.
+                repoPath = resolveGitRoot(dir)
+            } else if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
+                // A command with no `cd` runs where the session runs, and
+                // the record says where that is. Without it the branch
+                // carries no repository, and the lookup falls back to the
+                // card's project, which is a different repository whenever
+                // the session works outside it.
+                repoPath = resolveGitRoot(cwd)
+            }
+
+            func addBranch(_ ref: String) {
+                if let branch = pushedBranchName(ref) {
+                    branches.insert(DiscoveredBranch(branch: branch, repoPath: repoPath))
+                }
+            }
+
+            // Swift regexes backtrack slowly through long commands (scripts,
+            // heredocs): run each only on a command that names its subcommand.
+            if command.contains("push") {
+                for match in command.matches(of: pushRegex) { addBranch(String(match.output.1)) }
+            }
+            if command.contains("checkout") {
+                for match in command.matches(of: checkoutBranchRegex) { addBranch(String(match.output.1)) }
+            }
+            if command.contains("switch") {
+                for match in command.matches(of: switchCreateRegex) { addBranch(String(match.output.1)) }
+            }
+            if command.contains("worktree") {
+                for match in command.matches(of: worktreeAddRegex) { addBranch(String(match.output.1)) }
+            }
+        }
     }
 
     /// The branch a pushed ref names on the remote, nil for the default
@@ -455,7 +513,7 @@ public enum JsonlParser {
         let handle = try FileHandle(forReadingFrom: URL(fileURLWithPath: filePath))
         defer { try? handle.close() }
 
-        let pushRegex = /git\s+push\s+(?:-[^\s]+\s+)*[A-Za-z0-9_][A-Za-z0-9_.\-]*\s+([^\s;&|]+)/
+        let pushRegex = /git(?:\s+-[Cc]\s+\S+)*\s+push\s+(?:-[^\s]+\s+)*[A-Za-z0-9_][A-Za-z0-9_.\-]*\s+([^\s;&|]+)/
         let cdRegex = /cd\s+([^\s;&]+)\s*&&/
 
         let chunkSize = 256 * 1024
@@ -505,6 +563,8 @@ public enum JsonlParser {
                     var repoPath: String?
                     if let cdMatch = command.firstMatch(of: cdRegex) {
                         repoPath = resolveGitRoot(String(cdMatch.output.1))
+                    } else if let dir = gitDirOption(in: command) {
+                        repoPath = resolveGitRoot(dir)
                     } else if let cwd = obj["cwd"] as? String, !cwd.isEmpty {
                         repoPath = resolveGitRoot(cwd)
                     }
@@ -524,6 +584,24 @@ public enum JsonlParser {
 
     /// Resolve a path to its likely git root.
     /// Strips `.claude/worktrees/<name>` suffix since worktrees are inside the repo.
+    /// The directory of a `git -C <dir>` option, when it is an absolute path.
+    /// A shell variable (`git -C $ROOT`) says nothing here.
+    static func gitDirOption(in command: String) -> String? {
+        guard let match = command.firstMatch(of: /git\s+-C\s+["']?(\/[^\s"';&|]+)/) else { return nil }
+        return String(match.output.1)
+    }
+
+    /// The transcripts of the background agents a Claude Code session
+    /// started: `<session>/subagents/agent-*.jsonl` beside `<session>.jsonl`.
+    /// Their commands are not in the session's own file, so a branch an
+    /// agent creates or pushes is only found here.
+    public static func subagentTranscriptPaths(forSession sessionPath: String) -> [String] {
+        guard sessionPath.hasSuffix(".jsonl") else { return [] }
+        let dir = String(sessionPath.dropLast(".jsonl".count)) + "/subagents"
+        guard let names = try? FileManager.default.contentsOfDirectory(atPath: dir) else { return [] }
+        return names.filter { $0.hasSuffix(".jsonl") }.sorted().map { dir + "/" + $0 }
+    }
+
     private static func resolveGitRoot(_ path: String) -> String {
         // Pattern: /repo/.claude/worktrees/<name> → /repo
         if let range = path.range(of: "/.claude/worktrees/") {

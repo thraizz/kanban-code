@@ -238,6 +238,13 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     /// Key = branch name, value = git repo root path.
     public var discoveredRepos: [String: String]?
 
+    /// Branches the session's background agents (Claude Code `Agent` tool)
+    /// created or pushed, found in their own transcripts. Key = branch,
+    /// value = git repo root. They give the card the agents' pull requests
+    /// and keep their worktrees from becoming cards of their own, but never
+    /// become the card's worktree: the session itself runs elsewhere.
+    public var subagentBranches: [String: String]?
+
     /// Whether this card's project is configured for remote execution.
     public var isRemote: Bool
 
@@ -455,6 +462,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         pinnedSortOrder: Int? = nil,
         discoveredBranches: [String]? = nil,
         discoveredRepos: [String: String]? = nil,
+        subagentBranches: [String: String]? = nil,
         headless: Bool? = nil,
         absorbedSessionIds: [String]? = nil,
         hibernation: CardHibernation? = nil,
@@ -499,6 +507,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         self.pinnedSortOrder = pinnedSortOrder
         self.discoveredBranches = discoveredBranches
         self.discoveredRepos = discoveredRepos
+        self.subagentBranches = subagentBranches
         self.headless = headless
         self.absorbedSessionIds = absorbedSessionIds
         self.hibernation = hibernation
@@ -518,7 +527,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, parentCardId, modelOverride, modelVariantOverride
         case selfCompactContextThresholdTokens
         case isRemote, remote, isLaunching, launchedAt, sortOrder, pinnedAt, pinnedSortOrder
-        case discoveredBranches, discoveredRepos, assistant, apiServiceId, headless, absorbedSessionIds, hibernation
+        case discoveredBranches, discoveredRepos, subagentBranches, assistant, apiServiceId, headless, absorbedSessionIds, hibernation
         case ownerMachine, rev, ownerRev, fieldRevs, migrating, deletedAt
         // Typed links (new nested format)
         case sessionLink, tmuxLink, worktreeLink, prLinks, issueLink, queuedPrompts, browserTabs
@@ -557,6 +566,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         pinnedSortOrder = try c.decodeIfPresent(Int.self, forKey: .pinnedSortOrder)
         discoveredBranches = try c.decodeIfPresent([String].self, forKey: .discoveredBranches)
         discoveredRepos = try c.decodeIfPresent([String: String].self, forKey: .discoveredRepos)
+        subagentBranches = try c.decodeIfPresent([String: String].self, forKey: .subagentBranches)
         assistant = try c.decodeIfPresent(CodingAssistant.self, forKey: .assistant)
         apiServiceId = try c.decodeIfPresent(String.self, forKey: .apiServiceId)
         headless = try c.decodeIfPresent(Bool.self, forKey: .headless)
@@ -668,6 +678,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
         try c.encodeIfPresent(pinnedSortOrder, forKey: .pinnedSortOrder)
         try c.encodeIfPresent(discoveredBranches, forKey: .discoveredBranches)
         try c.encodeIfPresent(discoveredRepos, forKey: .discoveredRepos)
+        try c.encodeIfPresent(subagentBranches, forKey: .subagentBranches)
         try c.encodeIfPresent(assistant, forKey: .assistant)
         try c.encodeIfPresent(apiServiceId, forKey: .apiServiceId)
         try c.encodeIfPresent(headless, forKey: .headless)

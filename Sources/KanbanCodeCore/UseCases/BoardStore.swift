@@ -1567,6 +1567,7 @@ public enum Reducer {
                     link.manualOverrides.branchWatermark = 0
                 }
                 link.discoveredBranches = nil  // clear old cached branches
+                link.subagentBranches = nil
                 link.worktreeLink = nil
             case .tmux:
                 link.tmuxLink = nil
@@ -1823,6 +1824,7 @@ public enum Reducer {
             link.prLinks = []
             link.discoveredBranches = nil
             link.discoveredRepos = nil
+            link.subagentBranches = nil
             // Kill tmux sessions — they're running in the old project
             var effects: [Effect] = []
             if let tmux = link.tmuxLink {
@@ -1857,6 +1859,7 @@ public enum Reducer {
                 link.prLinks = []
                 link.discoveredBranches = nil
                 link.discoveredRepos = nil
+                link.subagentBranches = nil
             }
             var effects: [Effect] = []
             if let tmux = link.tmuxLink {
@@ -2751,6 +2754,8 @@ public final class BoardStore: @unchecked Sendable {
     private var ghRateLimitedUntil: ContinuousClock.Instant = .now
     private var lastAutoBranchDiscovery: ContinuousClock.Instant = .now - .seconds(120)
     private var lastAutoBranchDiscoveryByCard: [String: ContinuousClock.Instant] = [:]
+    /// Bytes of each background-agent transcript already scanned for branches.
+    private var subagentScanOffsets: [String: Int] = [:]
     public var appIsActive: Bool = true
 
     /// Whether sessions found on disk that no card knows become cards (in
@@ -3364,6 +3369,20 @@ public final class BoardStore: @unchecked Sendable {
             )
             ph.end(tAuto, "branchAutoDiscovery")
 
+            // Branches the sessions' background agents made. Every pass, and
+            // before the reconciler: an agent's `git worktree add` must be
+            // claimed by its card before the worktree shows up as an orphan.
+            let tSub = ph.begin("subagentBranches")
+            let localIds = Set(existingLinks.filter { state.isOwnedLocally($0) }.map(\.id))
+            let subagentInput = existingLinks
+            let offsetsInput = subagentScanOffsets
+            let subagentScan = await Task.detached(priority: .userInitiated) {
+                await Self.scanSubagentBranches(links: subagentInput, onlyIds: localIds, offsets: offsetsInput)
+            }.value
+            existingLinks = subagentScan.links
+            subagentScanOffsets = subagentScan.offsets
+            ph.end(tSub, "subagentBranches", detail: "\(subagentScan.offsets.count) transcripts")
+
             // Collect branches + PR numbers that can still change. Finished
             // cards' merged PRs never move again, and looking them all up made
             // one pass take minutes across a hundred repos.
@@ -3473,7 +3492,12 @@ public final class BoardStore: @unchecked Sendable {
                 mergedLinks = mergedLinks.map { migrating[$0.id] ?? $0 }
             }
             ph.end(t3, "reconciler", detail: "\(existingLinks.count) existing → \(mergedLinks.count) merged")
-            let mergedDuplicates = CardReconciler.mergedDuplicates(existing: existingLinks, reconciled: mergedLinks)
+            var mergedDuplicates = CardReconciler.mergedDuplicates(existing: existingLinks, reconciled: mergedLinks)
+            for (orphanId, ownerId) in CardReconciler.orphansOfSubagentWork(mergedLinks, localMachineId: state.localMachineId)
+            where mergedDuplicates[orphanId] == nil {
+                KanbanCodeLog.info("reconciler", "Orphan \(orphanId.prefix(12)) only holds pull requests of card \(ownerId.prefix(12))'s agents → merging")
+                mergedDuplicates[orphanId] = ownerId
+            }
 
             // Update existing PR statuses from the by-number results. A pull
             // request is matched by the repository its own URL names, so a
@@ -3699,6 +3723,50 @@ public final class BoardStore: @unchecked Sendable {
     /// reads. A full read of a 150 MB session held the reconcile for 23 s on a
     /// loaded host; the manual "Discover Branches and PRs" still reads it all.
     static let autoBranchScanBytes = 8 * 1024 * 1024
+
+    /// Reads what is new in the background-agent transcripts of the cards
+    /// still at work and records the branches the agents created or pushed in
+    /// `subagentBranches`. `offsets` holds the bytes already read per file.
+    nonisolated static func scanSubagentBranches(
+        links: [Link],
+        onlyIds: Set<String>? = nil,
+        offsets: [String: Int]
+    ) async -> (links: [Link], offsets: [String: Int]) {
+        let workingColumns: Set<KanbanCodeColumn> = [.inProgress, .waiting, .inReview]
+        var links = links
+        var nextOffsets: [String: Int] = [:]
+        for i in links.indices {
+            let link = links[i]
+            guard onlyIds?.contains(link.id) ?? true,
+                  !link.manuallyArchived,
+                  workingColumns.contains(link.column),
+                  link.effectiveAssistant == .claude,
+                  let sessionPath = link.sessionLink?.sessionPath, !sessionPath.isEmpty
+            else { continue }
+
+            var found: [JsonlParser.DiscoveredBranch] = []
+            for path in JsonlParser.subagentTranscriptPaths(forSession: sessionPath) {
+                let size = ((try? FileManager.default.attributesOfItem(atPath: path))?[.size] as? Int) ?? 0
+                let start = offsets[path] ?? 0
+                nextOffsets[path] = size
+                guard size > start else { continue }
+                found += JsonlParser.extractPushedBranchesSync(from: path, startOffset: start)
+            }
+
+            var claimed = link.subagentBranches ?? [:]
+            for discovered in found {
+                let branch = discovered.branch
+                if link.worktreeLink?.branch == branch || (link.discoveredBranches ?? []).contains(branch) { continue }
+                guard claimed[branch] == nil else { continue }
+                claimed[branch] = discovered.repoPath ?? link.projectPath ?? ""
+                KanbanCodeLog.info("reconcile", "subagent branch: card=\(link.id.prefix(12)) branch=\(branch)")
+            }
+            if claimed != (link.subagentBranches ?? [:]) {
+                links[i].subagentBranches = claimed
+            }
+        }
+        return (links, nextOffsets)
+    }
 
     private func autoDiscoverBranchesForRecentlyActiveCards(
         links: inout [Link],

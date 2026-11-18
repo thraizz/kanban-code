@@ -48,6 +48,49 @@ public enum CardReconciler {
         }
     }
 
+    /// Whether `link` knows `branch` only because one of its session's
+    /// background agents made it, not from its own worktree or pushes.
+    static func claimsOnlyThroughSubagent(_ link: Link, branch: String) -> Bool {
+        link.subagentBranches?[branch] != nil
+            && link.worktreeLink?.branch != branch
+            && !(link.discoveredBranches ?? []).contains(branch)
+    }
+
+    /// Discovered cards that hold nothing but pull requests another card's
+    /// background agents opened: orphan id to the card that owns them.
+    ///
+    /// A worktree an agent made before its card knew the branch became a card
+    /// of its own, and kept the agent's pull request once the worktree was
+    /// removed. Once the owning card carries every one of those pull requests
+    /// (matched through its `subagentBranches`), the orphan is a duplicate.
+    public static func orphansOfSubagentWork(_ links: [Link], localMachineId: String? = nil) -> [String: String] {
+        // PR number + repository → the card whose agents opened it.
+        var ownerByPR: [String: String] = [:]
+        for link in links where !(link.subagentBranches ?? [:]).isEmpty && link.sessionLink != nil {
+            for pr in link.prLinks {
+                ownerByPR["\(pr.number) \(pr.repoKey ?? "")"] = link.id
+            }
+        }
+        guard !ownerByPR.isEmpty else { return [:] }
+        let claimed = Set(links.flatMap { ($0.subagentBranches ?? [:]).keys })
+
+        var out: [String: String] = [:]
+        for link in links {
+            guard link.source == .discovered,
+                  link.sessionLink == nil, link.tmuxLink == nil, link.name == nil,
+                  link.isLaunching != true, !link.prLinks.isEmpty
+            else { continue }
+            if let local = localMachineId, let owner = link.ownerMachine, owner != local { continue }
+            // A live worktree still marks it as an orphan only when an agent's
+            // branch is what it holds; B2 handles that case on the same pass.
+            if let branch = link.worktreeLink?.branch, !claimed.contains(branch) { continue }
+            let owners = Set(link.prLinks.map { ownerByPR["\($0.number) \($0.repoKey ?? "")"] })
+            guard owners.count == 1, let owner = owners.first ?? nil, owner != link.id else { continue }
+            out[link.id] = owner
+        }
+        return out
+    }
+
     /// Cards of `existing` the reconciler merged into another card with the
     /// same session (B3): duplicate id to keeper id.
     public static func mergedDuplicates(existing: [Link], reconciled: [Link]) -> [String: String] {
@@ -95,6 +138,13 @@ public enum CardReconciler {
                     if !(cardIdsByBranch[branch]?.contains(link.id) ?? false) {
                         cardIdsByBranch[branch, default: []].append(link.id)
                     }
+                }
+            }
+            // And the branches its session's background agents made: their
+            // pull requests are the card's, and their worktrees are not orphans.
+            for branch in (link.subagentBranches ?? [:]).keys.sorted() {
+                if !(cardIdsByBranch[branch]?.contains(link.id) ?? false) {
+                    cardIdsByBranch[branch, default: []].append(link.id)
                 }
             }
         }
@@ -317,6 +367,10 @@ public enum CardReconciler {
                             } else if link.manualOverrides.isBranchDiscoveryBlocked {
                                 // Branch discovery blocked (watermark or legacy) — don't re-attach worktree
                                 continue
+                            } else if claimsOnlyThroughSubagent(link, branch: baseName) {
+                                // A background agent's worktree: the session
+                                // itself runs elsewhere, so it is not the card's.
+                                continue
                             } else {
                                 // Attach worktree only if repo matches the card's expected repo for this branch.
                                 // discoveredRepos tracks which repo each branch came from; absent = projectPath.
@@ -371,8 +425,13 @@ public enum CardReconciler {
 
             for orphanId in orphanIds where orphanId != keeperId {
                 if let orphan = linksById[orphanId] {
-                    if keeper.worktreeLink == nil { keeper.worktreeLink = orphan.worktreeLink }
+                    if keeper.worktreeLink == nil, !claimsOnlyThroughSubagent(keeper, branch: branch) {
+                        keeper.worktreeLink = orphan.worktreeLink
+                    }
                     if keeper.tmuxLink == nil { keeper.tmuxLink = orphan.tmuxLink }
+                    for pr in orphan.prLinks where !keeper.prLinks.contains(where: { $0.number == pr.number }) {
+                        keeper.prLinks.append(pr)
+                    }
                     KanbanCodeLog.info("reconciler", "Dedup: absorbing orphan \(orphanId.prefix(12)) (branch=\(branch)) into \(keeperId.prefix(12))")
                 }
                 linksById.removeValue(forKey: orphanId)
