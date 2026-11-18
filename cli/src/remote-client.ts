@@ -470,7 +470,8 @@ function unreachableMessage(baseUrl: string, error: unknown): string {
   return (
     `Cannot reach Kanban Code at ${baseUrl} (${reason}).\n` +
     "Check that the master answers: on a Mac, Kanban Code open with Settings > Remote Control on; on a box, " +
-    "`systemctl status kanban-code-server`. A remote master must be on the same Tailscale tailnet (`tailscale status`)."
+    "`systemctl status kanban-code-server`, listening on the address above (its remoteControl.bindAddresses), " +
+    "with no firewall between here and that port."
   );
 }
 
