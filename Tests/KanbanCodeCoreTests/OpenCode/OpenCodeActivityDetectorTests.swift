@@ -1,3 +1,4 @@
+#if canImport(SQLite3) // Linux has no system SQLite module
 import Testing
 import Foundation
 @testable import KanbanCodeCore
@@ -110,3 +111,4 @@ struct OpenCodeActivityDetectorTests {
         #expect(states["ses_a"] == .needsAttention, "a Stop with no newer write must not look like work")
     }
 }
+#endif

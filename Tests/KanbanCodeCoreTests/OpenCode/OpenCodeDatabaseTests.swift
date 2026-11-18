@@ -1,3 +1,4 @@
+#if canImport(SQLite3) // Linux has no system SQLite module
 import Testing
 import Foundation
 @testable import KanbanCodeCore
@@ -107,3 +108,4 @@ struct OpenCodeDatabaseTests {
         #expect(OpenCodeDatabase.defaultPath(environment: [:]).hasSuffix("/.local/share/opencode/opencode.db"))
     }
 }
+#endif

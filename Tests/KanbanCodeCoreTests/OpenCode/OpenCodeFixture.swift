@@ -1,3 +1,4 @@
+#if canImport(SQLite3) // Linux has no system SQLite module
 import Foundation
 import SQLite3
 @testable import KanbanCodeCore
@@ -99,3 +100,4 @@ final class OpenCodeFixture {
         "'" + value.replacingOccurrences(of: "'", with: "''") + "'"
     }
 }
+#endif

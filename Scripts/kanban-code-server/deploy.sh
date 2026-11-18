@@ -11,7 +11,7 @@
 # ~/Projects/kanban-server on the host, built there in release mode with a static
 # Swift runtime, installed as /usr/local/bin/kanban-code-server and restarted,
 # with the `kanban export` helper next to it in /usr/local/bin/kanban-code-export.
-# The CLI from the same tree is built there too (node + pnpm on the host) and
+# The CLI from the same tree is built there too (node, and pnpm on PATH or in ~/.local/bin) and
 # installed into ~/.kanban-code/cli, which the host's `kanban` wrapper runs.
 set -euo pipefail
 
@@ -30,7 +30,8 @@ git -C "$ROOT" archive --format=tar HEAD | ssh "$HOST" "cat > $TARBALL"
 # build folder and the CLI copy, and starve the host of memory.
 ssh "$HOST" flock /tmp/kanban-code-deploy.lock bash -s <<REMOTE
 set -euo pipefail
-export PATH=/opt/swift/usr/bin:\$PATH
+# ssh without a terminal skips ~/.bashrc, where tools such as pnpm live.
+export PATH=/opt/swift/usr/bin:\$HOME/.local/bin:\$PATH
 # A per-user toolchain brings its own setup (PATH, libraries the distribution lacks).
 if [ -f ~/.local/share/swift/env.sh ]; then . ~/.local/share/swift/env.sh; fi
 SUDO=""

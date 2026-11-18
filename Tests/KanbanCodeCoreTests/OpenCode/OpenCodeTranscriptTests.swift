@@ -1,3 +1,4 @@
+#if canImport(SQLite3) // Linux has no system SQLite module
 import Testing
 import Foundation
 @testable import KanbanCodeCore
@@ -114,3 +115,4 @@ struct OpenCodeTranscriptTests {
         #expect(turns.isEmpty)
     }
 }
+#endif
