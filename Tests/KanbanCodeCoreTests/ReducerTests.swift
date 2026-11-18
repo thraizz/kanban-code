@@ -360,6 +360,19 @@ struct ReducerTests {
         #expect(effects.count == 3)
     }
 
+    @Test("All Sessions is newest first, whatever sortOrder a card kept")
+    func allSessionsIgnoresSortOrder() {
+        var old = makeLink(id: "card_old", column: .allSessions, updatedAt: Date(timeIntervalSince1970: 1_700_000_000))
+        old.sortOrder = 0 // carried over from a drag in another lane
+        let new = makeLink(id: "card_new", column: .allSessions, updatedAt: Date(timeIntervalSince1970: 1_800_000_000))
+        var state = stateWith([old, new])
+        state.rebuildCards()
+
+        #expect(state.cards(in: .allSessions).map(\.id) == ["card_new", "card_old"])
+        let effects = Reducer.reduce(state: &state, action: .reorderCard(cardId: "card_old", targetCardId: "card_new", above: true))
+        #expect(effects.isEmpty)
+    }
+
     @Test("A drag survives a reconcile that snapshotted the old order")
     func reorderSurvivesStaleReconcile() {
         let timestamp = Date(timeIntervalSince1970: 1_700_000_000)

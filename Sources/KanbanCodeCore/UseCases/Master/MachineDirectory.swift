@@ -112,6 +112,9 @@ extension AppState {
             guard let id else { return "another master" }
             return peerStatuses.values.first { $0.machine?.id == id }?.machine?.name ?? id
         }
+        if !isOwnedLocally(link), let owner = link.ownerMachine, let problem = peersNotFetching[owner] {
+            return "Not picked up by \(name(owner)) yet. \(problem)"
+        }
         var text = isOwnedLocally(link)
             ? "Moving here from \(name(link.ownerRev?.machine))"
             : "Moving to \(name(link.ownerMachine))"

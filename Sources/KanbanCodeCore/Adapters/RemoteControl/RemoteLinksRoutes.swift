@@ -4,8 +4,9 @@ import KanbanCodeRemoteKit
 /// What the peer sync routes need from the master that serves them.
 public protocol PeerLinksServing: AnyObject, Sendable {
     /// `GET /v1/links`: served cards and tombstones changed after `since`
-    /// (all of them when `epoch` is not the current one).
-    func linksPage(since: Int?, epoch: String?) async -> LinksPage
+    /// (all of them when `epoch` is not the current one). `machine` is the
+    /// machine id of the peer asking, when it says.
+    func linksPage(since: Int?, epoch: String?, machine: String?) async -> LinksPage
     /// `POST /v1/links/changed?machine=`: a peer says its cards changed.
     func peerLinksChanged(machineId: String?) async
     /// `GET /v1/peers`: this machine and the peers it syncs with.
@@ -62,7 +63,8 @@ enum RemoteLinksRoutes {
                 since = value
             }
             let epoch = query["epoch"].flatMap { $0.isEmpty ? nil : $0 }
-            return .json(await server.linksPage(since: since, epoch: epoch))
+            let machine = query["machine"].flatMap { $0.isEmpty ? nil : $0 }
+            return .json(await server.linksPage(since: since, epoch: epoch, machine: machine))
 
         case ["links", "changed"]:
             guard method == "POST" else { return .error(405, "use POST") }
@@ -91,9 +93,9 @@ public final class BoardPeerLinksServer: PeerLinksServing {
 
     /// A peer is served this master's links only once they are loaded: an
     /// earlier page would be a full page of nothing, with a cursor past it.
-    public func linksPage(since: Int?, epoch: String?) async -> LinksPage {
+    public func linksPage(since: Int?, epoch: String?, machine: String?) async -> LinksPage {
         await store.loadLocalLinks()
-        return await MainActor.run { store.peerLinksPage(since: since, epoch: epoch) }
+        return await MainActor.run { store.peerLinksPage(machine: machine, since: since, epoch: epoch) }
     }
 
     public func peerLinksChanged(machineId: String?) async {

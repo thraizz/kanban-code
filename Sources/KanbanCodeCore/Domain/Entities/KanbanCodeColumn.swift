@@ -23,4 +23,11 @@ public enum KanbanCodeColumn: String, Codable, CaseIterable, Sendable {
     public var allowsBoardTaskCreation: Bool {
         self != .allSessions
     }
+
+    /// Whether cards keep a drag-set `sortOrder` here. All Sessions is a
+    /// history, always newest first: a card archived from another lane would
+    /// otherwise carry that lane's position and stay above newer sessions.
+    public var keepsManualOrder: Bool {
+        self != .allSessions
+    }
 }

@@ -229,11 +229,12 @@ public final class BoardState: @unchecked Sendable {
     }
 
     /// Cards for a specific column, sorted by manual sortOrder then last activity (newest first).
+    /// All Sessions ignores sortOrder and is always newest first.
     public func cards(in column: KanbanCodeColumn) -> [KanbanCodeCard] {
         filteredCards.filter { $0.column == column && $0.link.parentCardId == nil }
             .sorted {
                 // Cards with sortOrder come first, ordered by sortOrder ascending
-                switch ($0.link.sortOrder, $1.link.sortOrder) {
+                switch (column.keepsManualOrder ? $0.link.sortOrder : nil, column.keepsManualOrder ? $1.link.sortOrder : nil) {
                 case (let a?, let b?): return a < b
                 case (_?, nil): return true
                 case (nil, _?): return false

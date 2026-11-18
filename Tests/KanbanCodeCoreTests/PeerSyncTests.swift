@@ -629,7 +629,7 @@ private final class FakeTransport: PeerLinksTransport, @unchecked Sendable {
     var requests: [(peer: String, since: Int?, epoch: String?)] = []
     var notified: [String] = []
 
-    func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?) async throws -> LinksPage {
+    func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
         try lock.withLock {
             requests.append((peer.id, since, epoch))
             if failing.contains(peer.id) { throw PeerSyncError.http(502, "down") }
@@ -801,7 +801,7 @@ struct PeerSyncLoopTests {
         var changed: [String?] = []
         var asked: [(Int?, String?)] = []
         init(page: LinksPage) { self.page = page }
-        func linksPage(since: Int?, epoch: String?) async -> LinksPage {
+        func linksPage(since: Int?, epoch: String?, machine: String?) async -> LinksPage {
             asked.append((since, epoch))
             return page
         }

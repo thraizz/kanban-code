@@ -102,3 +102,36 @@ extension AppState {
         return silentPeers.isEmpty ? .none : .peerSilent
     }
 }
+
+/// Whether a peer master reaches this one. A card launched on or handed to
+/// a peer is only released here: the peer picks it up when it fetches this
+/// master's cards, and then asks this master for the prompt or transcript.
+/// This master reaching the peer says nothing about that direction (a
+/// firewall or a changed address can block only one of them), so it goes by
+/// when the peer last fetched.
+public enum PeerReachBack {
+    /// A peer fetches every few seconds; this long without one is a peer
+    /// that cannot.
+    public static let window: TimeInterval = 90
+
+    /// Why the peer `machineId` would not pick up a card released to it;
+    /// nil when it fetched lately, or when that cannot be told: this master
+    /// started less than `window` ago, or a peer too old to say who it is
+    /// fetched lately.
+    public static func problem(
+        machineId: String, name: String, pulls: [String: Date], since: Date, now: Date = .now
+    ) -> String? {
+        if let last = pulls[machineId], now.timeIntervalSince(last) < window { return nil }
+        if let anonymous = pulls[""], now.timeIntervalSince(anonymous) < window { return nil }
+        if now.timeIntervalSince(since) < window { return nil }
+        let when = pulls[machineId].map { "since \(Self.clock(from: $0))" } ?? "since this app started"
+        return "\(name) has not fetched cards from this machine \(when), so it cannot take one over. "
+            + "Check this machine's address in \(name)'s Settings › Peers, and its firewall."
+    }
+
+    private static func clock(from date: Date) -> String {
+        let f = DateFormatter()
+        f.dateFormat = "HH:mm"
+        return f.string(from: date)
+    }
+}

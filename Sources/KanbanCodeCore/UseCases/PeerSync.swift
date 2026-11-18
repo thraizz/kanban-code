@@ -6,7 +6,8 @@ import KanbanCodeRemoteKit
 
 /// Fetches a peer's cards. The live one is HTTP; tests pass their own.
 public protocol PeerLinksTransport: Sendable {
-    func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?) async throws -> LinksPage
+    /// `machineId` is this machine's, so the peer knows who reaches it.
+    func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage
     /// Tells a peer this machine's cards changed, so it pulls now instead of
     /// at its next tick. Best effort.
     func notifyChanged(peer: PeerConfig, machineId: String) async
@@ -40,7 +41,7 @@ public struct HTTPPeerLinksTransport: PeerLinksTransport {
         self.timeout = timeout
     }
 
-    static func linksURL(base: String, since: Int?, epoch: String?) -> URL? {
+    static func linksURL(base: String, since: Int?, epoch: String?, machine: String? = nil) -> URL? {
         var trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
         while trimmed.hasSuffix("/") { trimmed.removeLast() }
         guard var components = URLComponents(string: trimmed + "/v1/links"),
@@ -49,12 +50,13 @@ public struct HTTPPeerLinksTransport: PeerLinksTransport {
         var items: [URLQueryItem] = []
         if let since { items.append(URLQueryItem(name: "since", value: String(since))) }
         if let epoch { items.append(URLQueryItem(name: "epoch", value: epoch)) }
+        if let machine, !machine.isEmpty { items.append(URLQueryItem(name: "machine", value: machine)) }
         components.queryItems = items.isEmpty ? nil : items
         return components.url
     }
 
-    public func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?) async throws -> LinksPage {
-        guard let url = Self.linksURL(base: peer.url, since: since, epoch: epoch) else {
+    public func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
+        guard let url = Self.linksURL(base: peer.url, since: since, epoch: epoch, machine: machineId) else {
             throw PeerSyncError.badURL(peer.url)
         }
         var request = URLRequest(url: url, timeoutInterval: timeout)
@@ -167,7 +169,7 @@ public actor PeerSync {
         guard let peer = peers.first(where: { $0.id == peerId }), peer.enabled else { return false }
         let cursor = cursors[peer.id]
         do {
-            let page = try await transport.fetchLinks(peer: peer, since: cursor?.seq, epoch: cursor?.epoch)
+            let page = try await transport.fetchLinks(peer: peer, since: cursor?.seq, epoch: cursor?.epoch, machineId: identity.id)
             guard page.machine.id != identity.id else { throw PeerSyncError.selfPeer }
             if !page.links.isEmpty {
                 await dispatch(.peerLinksMerged(peer: page.machine.id, links: page.links))
@@ -280,6 +282,14 @@ extension BoardStore {
     public var localMachine: MachineIdentity {
         MachineIdentity(id: state.localMachineId, name: state.localMachineName,
                         alwaysOn: state.localMachineAlwaysOn ? true : nil)
+    }
+
+    /// The page `GET /v1/links` answers with. `machine` is the peer asking,
+    /// when it says (older peers do not), noted as a sign that it reaches
+    /// this master.
+    public func peerLinksPage(machine: String?, since: Int?, epoch: String?) -> LinksPage {
+        notePeerPull(machine: machine)
+        return peerLinksPage(since: since, epoch: epoch)
     }
 
     /// The page `GET /v1/links` answers with.
