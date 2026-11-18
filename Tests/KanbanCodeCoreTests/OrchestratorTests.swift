@@ -114,12 +114,34 @@ struct OrchestratorTests {
         #expect(prompt.hasSuffix("What is blocked?"))
     }
 
-    @Test func theRunIsUnsavedAndLimitedToBash() {
-        let args = ClaudeOrchestratorRunner.arguments(settingsPath: "/s.json", model: "sonnet")
-        #expect(args.contains("--no-session-persistence"))
+    @Test func aNewChatStartsItsSessionAndALaterQuestionResumesIt() {
+        let first = OrchestratorJob(sessionId: "S1", resume: false, prompt: "p")
+        let args = ClaudeOrchestratorRunner.arguments(job: first, settingsPath: "/s.json", model: "sonnet")
+        #expect(args.firstIndex(of: "--session-id").map { args[$0 + 1] } == "S1")
         #expect(!args.contains("--resume"))
-        #expect(args.firstIndex(of: "--tools").map { args[$0 + 1] } == "Bash")
+        #expect(!args.contains("--no-session-persistence"))
+        #expect(args.firstIndex(of: "--tools").map { args[$0 + 1] } == "Bash,Read,Grep,Glob")
         #expect(args.suffix(2) == ["--model", "sonnet"])
+        let next = ClaudeOrchestratorRunner.arguments(job: OrchestratorJob(sessionId: "S1", resume: true, prompt: "p"),
+                                                      settingsPath: "/s.json", model: nil)
+        #expect(next.firstIndex(of: "--resume").map { next[$0 + 1] } == "S1")
+        #expect(!next.contains("--session-id"))
+    }
+
+    @Test func theStreamReportsToolCallsAsStepsOnce() {
+        var stream = OrchestratorStream()
+        let tool = #"{"type":"assistant","parent_tool_use_id":null,"message":{"content":[{"type":"tool_use","id":"t1","name":"Bash","input":{"command":"kanban search ratchet --days 0","description":"Search"}}]}}"#
+        let text = #"{"type":"stream_event","event":{"type":"content_block_delta","delta":{"type":"text_delta","text":"Found it."}}}"#
+        _ = stream.consume(Data((tool + "\n" + tool + "\n" + text + "\n").utf8))
+        stream.finish()
+        #expect(stream.steps == [OrchestratorStep(tool: "Bash", summary: "kanban search ratchet --days 0")])
+        #expect(stream.answerSoFar == "Found it.")
+    }
+
+    @Test func turnsSurviveEncoding() throws {
+        let turn = OrchestratorTurn(question: "q", answer: "a", steps: [OrchestratorStep(tool: "Read", summary: "~/x")])
+        let data = try JSONEncoder().encode([turn])
+        #expect(try JSONDecoder().decode([OrchestratorTurn].self, from: data) == [turn])
     }
 
     /// Runs the hook script with a PreToolUse payload; returns its decision.
@@ -147,25 +169,32 @@ struct OrchestratorTests {
         return specific?["permissionDecision"] as? String ?? "none"
     }
 
-    @Test func theHookAllowsReadOnlyKanbanCommands() throws {
-        #expect(try decision(tool: "Bash", command: "kanban transcript card_123 -n 10") == "allow")
-        #expect(try decision(tool: "Bash", command: "kanban show card_1") == "allow")
-        #expect(try decision(tool: "Bash", command: "kanban list --json") == "allow")
-        #expect(try decision(tool: "Bash", command: "kanban conversation show swift-otter --card c") == "allow")
-        #expect(try decision(tool: "Bash", command: "kanban status") == "allow")
+    @Test func theHookAllowsSearchingReadingAndSteering() throws {
+        #expect(try decision(tool: "Bash", command: "kanban search ratchet --days 0") == "allow")
+        #expect(try decision(tool: "Bash", command: "kanban send card_1 'run the tests'") == "allow")
+        #expect(try decision(tool: "Bash", command: "kanban relink card_1 d93cf695") == "allow")
+        #expect(try decision(tool: "Bash", command: "kanban export d93cf695 | grep -n ratchet") == "allow")
+        #expect(try decision(tool: "Bash", command: "cd ~/dev/x && claude -p --resume abc --fork-session --no-session-persistence 'q'") == "allow")
+        #expect(try decision(tool: "Bash", command: "tmux kill-session -t mine") == "allow")
+        #expect(try decision(tool: "Bash", command: "git log --oneline -5") == "allow")
+        #expect(try decision(tool: "Bash", command: "python3 -c 'import json; json.load(open(\"links.json\"))'") == "allow")
+        #expect(try decision(tool: "Read") == "allow")
+        #expect(try decision(tool: "Grep") == "allow")
+        #expect(try decision(tool: "Glob") == "allow")
     }
 
-    @Test func theHookRefusesEverythingElse() throws {
-        #expect(try decision(tool: "Bash", command: "kanban send card_1 hi") == "deny")
-        #expect(try decision(tool: "Bash", command: "kanban archive card_1") == "deny")
-        #expect(try decision(tool: "Bash", command: "kanban conversation new") == "deny")
-        #expect(try decision(tool: "Bash", command: "kanban show c; rm -rf ~") == "deny")
-        #expect(try decision(tool: "Bash", command: "kanban show $(whoami)") == "deny")
-        #expect(try decision(tool: "Bash", command: "kanban show c | sh") == "deny")
-        #expect(try decision(tool: "Bash", command: "kanban show c && ls") == "deny")
-        #expect(try decision(tool: "Bash", command: "kanban show c\nrm x") == "deny")
-        #expect(try decision(tool: "Bash", command: "ls ~") == "deny")
-        #expect(try decision(tool: "Bash", command: "kanbanx show") == "deny")
+    @Test func theHookRefusesLastingDamage() throws {
+        #expect(try decision(tool: "Bash", command: "tmux kill-server") == "deny")
+        #expect(try decision(tool: "Bash", command: "pkill -x KanbanCode") == "deny")
+        #expect(try decision(tool: "Bash", command: "ls && kill 123") == "deny")
+        #expect(try decision(tool: "Bash", command: "rm -rf ~/.kanban-code") == "deny")
+        #expect(try decision(tool: "Bash", command: "sudo ls") == "deny")
+        #expect(try decision(tool: "Bash", command: "git push fork main") == "deny")
+        #expect(try decision(tool: "Bash", command: "git -C ~/repo stash") == "deny")
+        #expect(try decision(tool: "Bash", command: "cd x && git reset --hard") == "deny")
+        #expect(try decision(tool: "Bash", command: "echo '[]' > ~/.kanban-code/links.json") == "deny")
+        #expect(try decision(tool: "Bash", command: "sed -i '' s/a/b/ links.json") == "deny")
+        #expect(try decision(tool: "Bash", command: "kanban vault get x") == "deny")
         #expect(try decision(tool: "Write") == "deny")
         #expect(try decision(tool: "Edit") == "deny")
     }

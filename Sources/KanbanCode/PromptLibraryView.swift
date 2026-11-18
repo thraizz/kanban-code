@@ -7,12 +7,14 @@ enum SidebarMode: String, CaseIterable {
     case sessions
     case prompts
     case overview
+    case orchestrator
 
     var label: String {
         switch self {
         case .sessions: "Sessions"
         case .prompts: "Prompts"
         case .overview: "Overview"
+        case .orchestrator: "Orchestrator"
         }
     }
 }

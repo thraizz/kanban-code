@@ -92,6 +92,7 @@ struct ContentView: View {
     @State var newTaskPreset: PromptPreset?
     @AppStorage("sidebarMode") var sidebarModeRaw = SidebarMode.sessions.rawValue
     @State var boardOverview = BoardOverviewModel()
+    @State var orchestratorChat = OrchestratorModel()
     @State var showOnboarding = false
     @AppStorage("appearanceMode") var appearanceMode: AppearanceMode = .auto
     @AppStorage("boardViewMode") var boardViewModeRaw = BoardViewMode.kanban.rawValue
@@ -383,7 +384,7 @@ struct ContentView: View {
         }
     }
 
-    /// Sidebar content: the session list, the prompt library or the overview.
+    /// Sidebar content: the session list, the prompt library, the overview or the orchestrator.
     private var sidebarContent: some View {
         VStack(spacing: 0) {
             Picker("Sidebar", selection: $sidebarModeRaw) {
@@ -403,6 +404,8 @@ struct ContentView: View {
                 BoardOverviewView(store: store, model: boardOverview, onOpenCard: { cardId in
                     store.dispatch(.selectCard(cardId: cardId))
                 })
+            case .orchestrator:
+                OrchestratorView(store: store, model: orchestratorChat, overview: boardOverview)
             default:
                 sidebarListView
             }

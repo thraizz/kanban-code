@@ -115,5 +115,7 @@ For memory/hang investigations, the app self-instruments under `~/.kanban-code/l
 - `main-thread-hangs.log` + `main-thread-samples/*.sample.txt` — watchdog fires `sample` on >500ms main-thread stalls. In sample output, check the THREAD header before blaming code: Swift async work shows under `com.apple.root.*-qos.cooperative` (off main), not `DispatchQueue_1`.
 - `memory-samples/` — `vmmap -summary` artifacts captured on growth/critical/pressure events.
 
+Orchestrator chat (sidebar tab): each run keeps `prompt.txt`, `out.jsonl` (every tool call and result) and `err.txt` in `~/.kanban-code/orchestrator/runs/<yyyyMMdd-HHmmss-id>/` (newest 40); grep `[orchestrator]` in `kanban-code.log` for run, session, steps, time and failures. The chat itself is `~/.kanban-code/orchestrator/chat.json`.
+
 ## Other important notes
 - We never want to create upstream PRs.

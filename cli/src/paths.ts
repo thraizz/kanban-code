@@ -74,3 +74,9 @@ export function codexConfigDir(): string {
 export function codexSessionsDir(): string {
   return join(codexConfigDir(), "sessions");
 }
+
+/// Claude Code's project directory for the orchestrator's own sessions
+/// (they run in ~/.kanban-code/orchestrator). Searches leave it out.
+export function orchestratorProjectDirName(): string {
+  return join(kanbanHome(), "orchestrator").replace(/[^A-Za-z0-9]/g, "-");
+}

@@ -78,6 +78,8 @@ public final class ClaudeCodeSessionDiscovery: SessionDiscovery, @unchecked Send
             guard fileManager.fileExists(atPath: dirPath, isDirectory: &isDir), isDir.boolValue else {
                 continue
             }
+            // The orchestrator's own chats are sessions too; never cards.
+            if dirName == ClaudeOrchestratorRunner.claudeProjectDirName { continue }
             seenDirs.insert(dirName)
 
             // An unchanged directory mtime means no file was added or

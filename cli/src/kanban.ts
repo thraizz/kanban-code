@@ -42,6 +42,8 @@ import { reconcileAll } from "./agents/reconcile.js";
 import { runtimeSpec } from "./agents/runtime.js";
 import { installHooks } from "./hooks.js";
 import { recordCliUsage } from "./usage.js";
+import { formatSearchResult, searchTranscripts } from "./search.js";
+import { claudeProjectsDir, orchestratorProjectDirName } from "./paths.js";
 import { runRemoteAgent } from "./remote-agent.js";
 import { runProxiedCommand, shouldProxy } from "./remote-proxy.js";
 import {
@@ -989,6 +991,40 @@ program
         console.log("");
       }
     }
+  });
+
+// ── kanban search <text...> ──────────────────────────────────────────
+
+program
+  .command("search")
+  .description("Find the sessions and cards a text was said in: every Claude Code transcript (with or without a card), archived cards too")
+  .argument("<text...>", "Words to find, all of them, any order and case; \"quote\" a phrase")
+  .option("-d, --days <n>", "Only transcripts written in the last n days (0 = all)", "30")
+  .option("-l, --limit <n>", "Most sessions to list", "15")
+  .option("-r, --role <role>", "Match user prompts, assistant replies, or any", "any")
+  .option("-j, --json", "Output as JSON")
+  .addHelpText(
+    "after",
+    `
+
+Examples:
+  kanban search ratchet design audit
+  kanban search "how can we push these metrics" --role user --days 7
+  kanban search ui-metrics --days 0 --json
+`
+  )
+  .action((words: string[], opts) => {
+    const role = ["user", "assistant", "any"].includes(opts.role) ? opts.role : "any";
+    const result = searchTranscripts(words.join(" "), {
+      root: claudeProjectsDir(),
+      links: readLinks(),
+      days: Math.max(0, parseInt(opts.days) || 0),
+      limit: Math.max(1, parseInt(opts.limit) || 15),
+      role,
+      skipDirs: [orchestratorProjectDirName()],
+    });
+    if (opts.json) output(result, { json: true });
+    else output(formatSearchResult(result), { json: false });
   });
 
 // ── kanban export [card] ─────────────────────────────────────────────
