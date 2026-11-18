@@ -328,6 +328,7 @@ extension MasterEngine {
         guard link.isLaunching != true, !handoversInFlight.contains(cardId) else { throw MasterPeerError.busy(cardId) }
         guard await peerClient(machineId: machineId) != nil else { throw MasterPeerError.unknownPeer(machineId) }
         guard isPeerOnline(machineId) else { throw MasterPeerError.peerOffline(peerName(machineId)) }
+        if let problem = peerReachBackProblem(machineId) { throw MasterPeerError.failed(problem) }
         handoversInFlight.insert(cardId)
         defer { handoversInFlight.remove(cardId) }
         KanbanCodeLog.info("handover", "Releasing card=\(cardId.prefix(12)) to \(peerName(machineId))")
@@ -375,6 +376,28 @@ extension MasterEngine {
         return "\(line). It resumes by itself once it is here."
     }
 
+    /// Why the peer `machineId` would not pick up a card released to it
+    /// (`PeerReachBack`); nil when it would, or when that cannot be told.
+    func peerReachBackProblem(_ machineId: String) -> String? {
+        let name = store.state.peerStatuses.values.first { $0.machine?.id == machineId }
+            .map { store.state.peerDisplayName($0) } ?? peerName(machineId)
+        return PeerReachBack.problem(
+            machineId: machineId, name: name, pulls: store.peerPulls, since: store.peerPullsSince)
+    }
+
+    /// Notes which peers have not fetched from here lately, for the line of
+    /// a card that waits for one of them. Dispatched only when it changes.
+    func refreshPeersNotFetching() {
+        var problems: [String: String] = [:]
+        for status in store.state.peerStatuses.values {
+            guard let id = status.machine?.id, let problem = peerReachBackProblem(id) else { continue }
+            problems[id] = problem
+        }
+        if problems != store.state.peersNotFetching {
+            store.dispatch(.peersNotFetchingChanged(problems))
+        }
+    }
+
     /// The name of the peer master with this machine id, as Settings shows it.
     public func peerDisplayName(_ machineId: String) -> String { peerName(machineId) }
 
@@ -384,6 +407,14 @@ extension MasterEngine {
 
     /// Hands a card that never ran to a peer, which launches it there.
     func launchOnPeer(cardId: String, prompt: String, worktree: String?, peer: MachineIdentity) {
+        if let problem = peerReachBackProblem(peer.id) {
+            // Released, the card would wait there for a pickup that never
+            // comes; it stays here, not started, with the reason.
+            KanbanCodeLog.warn("handover", "Not launching card=\(cardId.prefix(12)) on \(peer.name): \(problem)")
+            store.dispatch(.cardStartReported(cardId: cardId, report: .failed("Could not start it on \(peer.name): \(problem)")))
+            return
+        }
+        store.dispatch(.cardStartReported(cardId: cardId, report: nil))
         pendingPeerLaunches[cardId] = PeerLaunch(prompt: prompt, worktree: worktree)
         KanbanCodeLog.info("handover", "Launching card=\(cardId.prefix(12)) on \(peer.name)")
         if store.state.links[cardId]?.column == .backlog {
@@ -420,7 +451,14 @@ extension MasterEngine {
             }
         }
         KanbanCodeLog.info("handover", "Serving card=\(cardId.prefix(12)) transcript=\(transcript ?? "none") (\(size) bytes)")
-        let launch = pendingPeerLaunches[cardId]
+        var launch = pendingPeerLaunches[cardId]
+        if launch == nil, link.sessionLink == nil, link.migrating == true,
+           let prompt = link.promptBody ?? link.name, !prompt.isEmpty {
+            // A first launch released before this app restarted: the prompt
+            // it held in memory is gone, the card's own is not.
+            KanbanCodeLog.info("handover", "Serving card=\(cardId.prefix(12)) with its saved prompt")
+            launch = PeerLaunch(prompt: prompt, worktree: nil)
+        }
         var info = RemoteHandoverInfo(
             cardId: cardId,
             sessionId: link.sessionLink?.sessionId,
@@ -477,6 +515,7 @@ extension MasterEngine {
         var lastAttempt: [String: Date] = [:]
         var scannedVersion = -1
         var lastScan = Date.distantPast
+        var lastReachBackCheck = Date.distantPast
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(500))
             let seq = store.state.syncSeq
@@ -486,6 +525,10 @@ extension MasterEngine {
             }
             let local = store.state.localMachineId
             guard !local.isEmpty else { continue }
+            if Date().timeIntervalSince(lastReachBackCheck) >= 5 {
+                lastReachBackCheck = Date()
+                refreshPeersNotFetching()
+            }
             // A released card stops being served once its new owner took it.
             // The cards only need a look when they changed, or when a
             // failed adoption is due for another try.

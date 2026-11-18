@@ -66,3 +66,69 @@ struct PeerOutageTests {
         #expect(owner?.outage?.error == "The request timed out.")
     }
 }
+
+@Suite("A peer that does not fetch from here is not handed cards")
+struct PeerReachBackTests {
+    private let start = Date(timeIntervalSince1970: 1_000_000)
+
+    @Test("a peer that fetched within the window reaches this master")
+    func fresh() {
+        let pulls = ["machine_osaka": start.addingTimeInterval(500)]
+        #expect(PeerReachBack.problem(
+            machineId: "machine_osaka", name: "osaka", pulls: pulls, since: start, now: start.addingTimeInterval(560)) == nil)
+    }
+
+    @Test("a peer whose last fetch is older than the window cannot take a card, and the line says since when")
+    func stale() throws {
+        let pulls = ["machine_osaka": start.addingTimeInterval(100)]
+        let problem = try #require(PeerReachBack.problem(
+            machineId: "machine_osaka", name: "osaka", pulls: pulls, since: start, now: start.addingTimeInterval(400)))
+        #expect(problem.hasPrefix("osaka has not fetched cards from this machine since "))
+        #expect(problem.contains("osaka's Settings › Peers"))
+    }
+
+    @Test("a peer that never fetched: no verdict while this master is new, then a refusal")
+    func never() {
+        #expect(PeerReachBack.problem(machineId: "m", name: "osaka", pulls: [:], since: start, now: start.addingTimeInterval(30)) == nil)
+        let problem = PeerReachBack.problem(machineId: "m", name: "osaka", pulls: [:], since: start, now: start.addingTimeInterval(120))
+        #expect(problem?.contains("since this app started") == true)
+    }
+
+    @Test("an older peer that does not say who it is gives no verdict while it fetches")
+    func anonymous() {
+        let pulls = ["": start.addingTimeInterval(110)]
+        #expect(PeerReachBack.problem(machineId: "m", name: "osaka", pulls: pulls, since: start, now: start.addingTimeInterval(120)) == nil)
+    }
+
+    @Test("a card released to a peer that does not fetch says so instead of moving forever")
+    func movingLine() {
+        let state = AppState()
+        state.localMachineId = "machine_mac"
+        state.peerStatuses["peer_osaka"] = PeerStatus(
+            peerId: "peer_osaka", machine: MachineIdentity(id: "machine_osaka", name: "osaka"), online: true)
+        state.links["card_1"] = Link(id: "card_1", name: "card", ownerMachine: "machine_osaka", migrating: true)
+        #expect(state.handoverLine(cardId: "card_1") == "Moving to osaka")
+        state.peersNotFetching = ["machine_osaka": "osaka has not fetched cards from this machine since 13:51."]
+        #expect(state.handoverLine(cardId: "card_1") == "Not picked up by osaka yet. osaka has not fetched cards from this machine since 13:51.")
+    }
+
+    @Test("the fetch names the machine asking, and the route passes it on")
+    func wire() async {
+        let url = HTTPPeerLinksTransport.linksURL(base: "http://h:7780", since: 3, epoch: "e", machine: "machine_mac")
+        #expect(url?.absoluteString == "http://h:7780/v1/links?since=3&epoch=e&machine=machine_mac")
+        let server = RecordingServer()
+        _ = await RemoteLinksRoutes.handle(method: "GET", rest: ["links"], query: ["machine": "machine_mac"], server: server)
+        _ = await RemoteLinksRoutes.handle(method: "GET", rest: ["links"], query: [:], server: server)
+        #expect(server.machines == ["machine_mac", nil])
+    }
+
+    private final class RecordingServer: PeerLinksServing, @unchecked Sendable {
+        var machines: [String?] = []
+        func linksPage(since: Int?, epoch: String?, machine: String?) async -> LinksPage {
+            machines.append(machine)
+            return LinksPage(machine: MachineIdentity(id: "m", name: "m"), epoch: "e", seq: 0, full: true, links: [])
+        }
+        func peerLinksChanged(machineId: String?) async {}
+        func peersOverview() async -> PeersOverview { PeersOverview(machine: MachineIdentity(id: "m", name: "m"), peers: []) }
+    }
+}
