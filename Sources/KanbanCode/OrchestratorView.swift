@@ -166,6 +166,7 @@ struct OrchestratorView: View {
     var overview: BoardOverviewModel
 
     @State private var draft = ""
+    @State private var scrollPosition = ScrollPosition(edge: .bottom)
     @FocusState private var inputFocused: Bool
 
     private static let suggestions = [
@@ -200,31 +201,37 @@ struct OrchestratorView: View {
         .padding(.vertical, 7)
     }
 
+    /// A plain `VStack` scrolled with `ScrollPosition`, as the card chat does.
+    ///
+    /// Not `LazyVStack` with `.defaultScrollAnchor(.bottom)`. The anchor
+    /// re-pins the bottom on every graph update, and the rows' heights depend
+    /// on the width they are measured at, so the bottom it pins to can move
+    /// again in the pass it asks for. On a 1x display that never settled: a
+    /// window-wide update (holding Cmd redraws the project tabs) set off a
+    /// `ScrollViewCommitMutation` per layout pass until AppKit threw for too
+    /// many constraint passes. A chat this short gains nothing from laziness.
     private var messages: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 14) {
-                    if model.turns.isEmpty && model.pendingQuestion == nil {
-                        emptyState
-                    }
-                    ForEach(model.turns) { turn in
-                        OrchestratorExchange(question: turn.question, answer: turn.answer,
-                                             steps: turn.steps, error: turn.error, running: false)
-                    }
-                    if let question = model.pendingQuestion {
-                        OrchestratorExchange(question: question, answer: model.partialAnswer,
-                                             steps: model.partialSteps, error: nil, running: true)
-                    }
-                    Color.clear.frame(height: 1).id("bottom")
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                if model.turns.isEmpty && model.pendingQuestion == nil {
+                    emptyState
                 }
-                .padding(12)
+                ForEach(model.turns) { turn in
+                    OrchestratorExchange(question: turn.question, answer: turn.answer,
+                                         steps: turn.steps, error: turn.error, running: false)
+                }
+                if let question = model.pendingQuestion {
+                    OrchestratorExchange(question: question, answer: model.partialAnswer,
+                                         steps: model.partialSteps, error: nil, running: true)
+                }
             }
-            .defaultScrollAnchor(.bottom)
-            .onChange(of: model.partialAnswer) { proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: model.partialSteps.count) { proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: model.turns.count) { proxy.scrollTo("bottom", anchor: .bottom) }
-            .onChange(of: model.pendingQuestion) { proxy.scrollTo("bottom", anchor: .bottom) }
+            .padding(12)
         }
+        .scrollPosition($scrollPosition)
+        .onChange(of: model.partialAnswer) { scrollPosition.scrollTo(edge: .bottom) }
+        .onChange(of: model.partialSteps.count) { scrollPosition.scrollTo(edge: .bottom) }
+        .onChange(of: model.turns.count) { scrollPosition.scrollTo(edge: .bottom) }
+        .onChange(of: model.pendingQuestion) { scrollPosition.scrollTo(edge: .bottom) }
     }
 
     private var emptyState: some View {
