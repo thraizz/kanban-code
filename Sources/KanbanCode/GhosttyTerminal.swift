@@ -123,6 +123,8 @@ final class GhosttySurfaceView: NSView {
     private var keyTextAccumulator: [String]?
     private var cursor: NSCursor = .iBeam
     private var commandWasHeld = false
+    /// The tmux session this terminal shows, set by `TerminalCache`.
+    var sessionName: String?
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -302,10 +304,12 @@ final class GhosttySurfaceView: NSView {
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
         guard window?.firstResponder === self, event.type == .keyDown else { return false }
-        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v",
-           surface != nil, let text = NSPasteboard.general.string(forType: .string) {
-            paste(text: text)
-            return true
+        if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "v", surface != nil {
+            if let text = NSPasteboard.general.string(forType: .string) {
+                paste(text: text)
+                return true
+            }
+            if pasteImageWhereAssistantRuns() { return true }
         }
         if event.modifierFlags.contains(.command), event.charactersIgnoringModifiers == "c" {
             // Ghostty copies through its own binding (copy_to_clipboard) on Cmd+C.
@@ -313,6 +317,65 @@ final class GhosttySurfaceView: NSView {
             return true
         }
         return false
+    }
+
+    /// An image pasted into the terminal of a card whose assistant runs on
+    /// another master or on a machine. The assistant there reads the
+    /// clipboard of its own machine, which has nothing, so the bytes go to
+    /// that machine and the paste types the path of the file there, as a
+    /// dropped file does. False when the assistant runs on this Mac or the
+    /// clipboard holds no image.
+    private func pasteImageWhereAssistantRuns() -> Bool {
+        guard let sessionName,
+              let cardId = AppComposition.shared.store.state.links.values
+                .first(where: { $0.tmuxLink?.allSessionNames.contains(sessionName) == true })?.id
+        else { return false }
+        let engine = AppComposition.shared.engine
+        let route = engine.promptFileRoute(cardId: cardId)
+        guard route != .local, let data = Self.pngData(from: .general) else { return false }
+        switch route {
+        case .local:
+            return false
+        case .peer(let machineId, _):
+            Task { [weak self] in
+                do {
+                    let path = try await engine.uploadPastedImage(cardId: cardId, data: data)
+                    // Typed through the terminal's own stream to the owner,
+                    // the way keystrokes go.
+                    self?.paste(text: path + " ")
+                } catch {
+                    Self.reportImagePasteFailure(place: engine.peerDisplayName(machineId), error: error)
+                }
+            }
+        case .machine(let machine):
+            guard let supervisor = AppServices.boxdSupervisor else { return false }
+            Task {
+                do {
+                    let path = try await supervisor.uploadPastedImage(machineName: machine, data: data)
+                    // Through the machine's tmux server, on the same bridge
+                    // as the upload, so the file is there when the path is.
+                    try await AppServices.tmux.pasteText(to: sessionName, text: path + " ")
+                } catch {
+                    Self.reportImagePasteFailure(place: machine, error: error)
+                }
+            }
+        }
+        UsageLog.record("terminal", "paste-image-remote")
+        return true
+    }
+
+    private static func reportImagePasteFailure(place: String, error: Error) {
+        let message = "Could not paste the image on \(place): \(error.localizedDescription)"
+        KanbanCodeLog.warn("terminal", message)
+        AppComposition.shared.store.dispatch(.setError(message))
+    }
+
+    /// PNG bytes of the image on the pasteboard; a screenshot arrives as TIFF.
+    static func pngData(from pasteboard: NSPasteboard) -> Data? {
+        if let png = pasteboard.data(forType: .png) { return png }
+        guard let tiff = pasteboard.data(forType: .tiff),
+              let bitmap = NSBitmapImageRep(data: tiff) else { return nil }
+        return bitmap.representation(using: .png, properties: [:])
     }
 
     // MARK: Mouse

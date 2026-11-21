@@ -69,6 +69,9 @@ public struct RemoteHandoverInfo: Codable, Sendable, Equatable {
     /// launches it with, and the worktree to create ("" for a random name).
     public var launchPrompt: String?
     public var launchWorktree: String?
+    /// The images of that first prompt, in the order of its `[Image #N]`
+    /// markers. Older masters leave it out.
+    public var launchImages: [RemoteImage]?
     /// The folder the conversation ran in when it ran over ssh on the
     /// adopting master's own machine: the adopter continues there, with
     /// the worktree and transcript as they are.

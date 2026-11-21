@@ -745,6 +745,43 @@ struct MasterHandoverTests {
         #expect(box.tmux.created.count == 1)
     }
 
+    @Test("a first launch on a peer hands the prompt's images to the peer")
+    func launchOnPeerWithImages() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-img-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let origin = "\(root)/origin/widgets.git"
+        let repoA = "\(root)/mac/widgets"
+        try FileManager.default.createDirectory(atPath: "\(root)/origin", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: "\(root)/mac", withIntermediateDirectories: true)
+        try await sh(["git", "init", "--bare", "-q", origin], in: root)
+        try await sh(["git", "clone", "-q", origin, repoA], in: root)
+        try await sh(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], in: repoA)
+        try await sh(["git", "push", "-q", "origin", "HEAD"], in: repoA)
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3])
+        let imagePath = "\(root)/shot.png"
+        try png.write(to: URL(fileURLWithPath: imagePath))
+
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        await mac.peerSync.pullAll()
+        await box.peerSync.pullAll()
+
+        mac.store.dispatch(.createManualTask(Link(id: "card_img", name: "Fix it", projectPath: repoA, column: .backlog,
+                                                  promptBody: "[Image #1] fix this", promptImagePaths: [imagePath])))
+        mac.engine.launch(cardId: "card_img", prompt: "[Image #1] fix this", projectPath: repoA, worktreeName: nil,
+                          runRemotely: true, machineChoice: .existing("box"))
+        let info = try await mac.engine.handoverInfo(cardId: "card_img")
+        #expect(info.launchPrompt == "[Image #1] fix this")
+        #expect(info.launchImages?.count == 1)
+        #expect(info.launchImages?.first?.bytes == png)
+        #expect(info.launchImages?.first?.mediaType == "image/png")
+    }
+
     @Test("a card of a project with no remote says whether the project has commits to bring")
     func unpublishedProjectTellsItsCommits() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-\(UUID().uuidString)")

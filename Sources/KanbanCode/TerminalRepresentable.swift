@@ -35,6 +35,7 @@ final class TerminalCache {
         // to avoid intermediate sizes triggering tmux redraws during animations.
         terminal.autoresizingMask = []
         terminal.isHidden = true
+        terminal.sessionName = sessionName
         terminals[sessionName] = terminal
         logGrowthIfNeeded(trigger: "create session=\(sessionName)")
         return terminal

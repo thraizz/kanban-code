@@ -479,6 +479,7 @@ extension MasterEngine {
         if let launch {
             info.launchPrompt = launch.prompt
             info.launchWorktree = launch.worktree
+            info.launchImages = Self.remoteImages(atPaths: link.promptImagePaths ?? [])
         }
         if let remote = link.remote, link.isRemote,
            let target = store.state.links[cardId]?.ownerMachine,
@@ -692,6 +693,18 @@ extension MasterEngine {
             )
         } else if let prompt = info.launchPrompt {
             let isGitRepo = FileManager.default.fileExists(atPath: (repoRoot as NSString).appendingPathComponent(".git"))
+            // The prompt's images, kept with the card as the New Task dialog keeps them.
+            // A bad image is left out rather than keeping the card from starting.
+            var imagePaths: [String] = []
+            do {
+                imagePaths = try RemotePromptImages.write(
+                    RemotePromptImages.decode(info.launchImages), to: RemotePromptImages.taskDirectory, prefix: "handover")
+            } catch {
+                KanbanCodeLog.warn("handover", "Images of card=\(cardId.prefix(12)) left out: \(error.localizedDescription)")
+            }
+            if !imagePaths.isEmpty {
+                KanbanCodeLog.info("handover", "Launching card=\(cardId.prefix(12)) with \(imagePaths.count) image(s)")
+            }
             launch(
                 cardId: cardId,
                 prompt: prompt,
@@ -699,11 +712,21 @@ extension MasterEngine {
                 worktreeName: isGitRepo && assistant.supportsWorktree ? info.launchWorktree : nil,
                 runRemotely: false,
                 skipPermissions: platform.skipPermissions(),
+                images: imagePaths.compactMap { ImageAttachment.fromPath($0) },
                 assistant: assistant,
                 modelOverride: link.modelOverride,
                 keepSelection: true
             )
         }
+    }
+
+    /// The images at `paths` for the remote API; a file that is gone is left out.
+    static func remoteImages(atPaths paths: [String]) -> [RemoteImage]? {
+        let images = paths.compactMap { path -> RemoteImage? in
+            guard let data = FileManager.default.contents(atPath: path) else { return nil }
+            return RemoteImage(mediaType: RemotePromptImages.mimeType(of: data), data: data.base64EncodedString())
+        }
+        return images.isEmpty ? nil : images
     }
 
     /// The repository with origin `repoUrl` here: a configured project, or
