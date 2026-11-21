@@ -489,6 +489,7 @@ extension MasterEngine {
             info.launchImages = launch.images.isEmpty
                 ? Self.remoteImages(atPaths: link.promptImagePaths ?? [])
                 : launch.images.map { RemoteImage(mediaType: RemotePromptImages.mimeType(of: $0), data: $0.base64EncodedString()) }
+            KanbanCodeLog.info("handover", "Serving card=\(cardId.prefix(12)) first prompt with \(info.launchImages?.count ?? 0) image(s)")
         }
         if let remote = link.remote, link.isRemote,
            let target = store.state.links[cardId]?.ownerMachine,
@@ -711,9 +712,7 @@ extension MasterEngine {
             } catch {
                 KanbanCodeLog.warn("handover", "Images of card=\(cardId.prefix(12)) left out: \(error.localizedDescription)")
             }
-            if !imagePaths.isEmpty {
-                KanbanCodeLog.info("handover", "Launching card=\(cardId.prefix(12)) with \(imagePaths.count) image(s)")
-            }
+            KanbanCodeLog.info("handover", "Launching card=\(cardId.prefix(12)) with \(imagePaths.count) of \(info.launchImages?.count ?? 0) image(s)")
             launch(
                 cardId: cardId,
                 prompt: prompt,

@@ -757,7 +757,8 @@ struct MasterHandoverTests {
         try await sh(["git", "clone", "-q", origin, repoA], in: root)
         try await sh(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], in: repoA)
         try await sh(["git", "push", "-q", "origin", "HEAD"], in: repoA)
-        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 1, 2, 3])
+        // As big as a Retina screenshot.
+        let png = Data([0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) + Data((0..<3_000_000).map { UInt8($0 % 251) })
         let imagePath = "\(root)/shot.png"
         try png.write(to: URL(fileURLWithPath: imagePath))
 
@@ -788,6 +789,9 @@ struct MasterHandoverTests {
                           runRemotely: true, images: [ImageAttachment(data: png)], machineChoice: .existing("box"))
         let dialogInfo = try await mac.engine.handoverInfo(cardId: "card_dialog")
         #expect(dialogInfo.launchImages?.first?.bytes == png)
+        let overHTTP = try #require(await box.engine.peerClient(machineId: mac.identity.id))
+        let fetched = try await overHTTP.handover(cardId: "card_dialog")
+        #expect(fetched.launchImages?.first?.bytes == png)
     }
 
     @Test("a card of a project with no remote says whether the project has commits to bring")

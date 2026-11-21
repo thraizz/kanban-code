@@ -11,7 +11,10 @@ CONFIG ?= release
 # The machine's architecture, not the shell's: a shell under Rosetta reports
 # x86_64 on Apple Silicon and would build an Intel app.
 ARCH := $(shell [ "$$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ] && echo arm64 || uname -m)
-BUILD_DIR = .build/$(ARCH)-apple-macosx/$(CONFIG)
+# Where SwiftPM puts the products. Asked, not assumed: Swift 6.4's default
+# build system (swiftbuild) writes to .build/out/Products/<Config>, and the old
+# folder keeps the last binaries the native build system made.
+BUILD_DIR = $(shell swift build -c $(CONFIG) --arch $(ARCH) --show-bin-path)
 PNPM ?= corepack pnpm
 CODESIGN_IDENTITY ?= $(shell security find-identity -v -p codesigning 2>/dev/null | sed -n 's/.*"\(Apple Development:[^"]*\)".*/\1/p' | head -n 1)
 ifeq ($(strip $(CODESIGN_IDENTITY)),)
