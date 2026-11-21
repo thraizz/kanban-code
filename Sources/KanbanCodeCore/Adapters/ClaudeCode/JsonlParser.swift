@@ -385,7 +385,7 @@ public enum JsonlParser {
                 let lineEnd = nl.map { base.distance(to: UnsafeRawPointer($0)) } ?? end
                 let length = lineEnd - start
                 let matches = needles.allSatisfy { needle in
-                    needle.withUnsafeBytes { memmem(base + start, length, $0.baseAddress, needle.count) != nil }
+                    needle.withUnsafeBytes { memmem(base + start, length, $0.baseAddress!, needle.count) != nil }
                 }
                 if matches {
                     lines.append(String(decoding: UnsafeRawBufferPointer(rebasing: raw[start..<lineEnd]), as: UTF8.self))
