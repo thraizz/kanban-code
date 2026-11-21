@@ -9,6 +9,8 @@ import KanbanCodeRemoteKit
 struct PeerLaunch: Sendable {
     var prompt: String
     var worktree: String?
+    /// The prompt's images, in the order of its `[Image #N]` markers.
+    var images: [Data] = []
 }
 
 public enum MasterPeerError: Error, LocalizedError, Equatable {
@@ -406,7 +408,7 @@ extension MasterEngine {
     }
 
     /// Hands a card that never ran to a peer, which launches it there.
-    func launchOnPeer(cardId: String, prompt: String, worktree: String?, peer: MachineIdentity) {
+    func launchOnPeer(cardId: String, prompt: String, worktree: String?, peer: MachineIdentity, images: [ImageAttachment] = []) {
         if let problem = peerReachBackProblem(peer.id) {
             // Released, the card would wait there for a pickup that never
             // comes; it stays here, not started, with the reason.
@@ -415,7 +417,12 @@ extension MasterEngine {
             return
         }
         store.dispatch(.cardStartReported(cardId: cardId, report: nil))
-        pendingPeerLaunches[cardId] = PeerLaunch(prompt: prompt, worktree: worktree)
+        // The images of the launch, else those the card keeps (a card
+        // started from the backlog or by the remote API).
+        let imageData = images.isEmpty
+            ? (store.state.links[cardId]?.promptImagePaths ?? []).compactMap { FileManager.default.contents(atPath: $0) }
+            : images.map(\.data)
+        pendingPeerLaunches[cardId] = PeerLaunch(prompt: prompt, worktree: worktree, images: imageData)
         KanbanCodeLog.info("handover", "Launching card=\(cardId.prefix(12)) on \(peer.name)")
         if store.state.links[cardId]?.column == .backlog {
             store.dispatch(.moveCard(cardId: cardId, to: .inProgress))
@@ -479,7 +486,9 @@ extension MasterEngine {
         if let launch {
             info.launchPrompt = launch.prompt
             info.launchWorktree = launch.worktree
-            info.launchImages = Self.remoteImages(atPaths: link.promptImagePaths ?? [])
+            info.launchImages = launch.images.isEmpty
+                ? Self.remoteImages(atPaths: link.promptImagePaths ?? [])
+                : launch.images.map { RemoteImage(mediaType: RemotePromptImages.mimeType(of: $0), data: $0.base64EncodedString()) }
         }
         if let remote = link.remote, link.isRemote,
            let target = store.state.links[cardId]?.ownerMachine,

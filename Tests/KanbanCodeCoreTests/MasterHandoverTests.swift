@@ -780,6 +780,14 @@ struct MasterHandoverTests {
         #expect(info.launchImages?.count == 1)
         #expect(info.launchImages?.first?.bytes == png)
         #expect(info.launchImages?.first?.mediaType == "image/png")
+
+        // The New Task dialog passes its images to the launch; the card keeps none.
+        mac.store.dispatch(.createManualTask(Link(id: "card_dialog", name: "Look", projectPath: repoA, column: .backlog,
+                                                  promptBody: "why? [Image #1]")))
+        mac.engine.launch(cardId: "card_dialog", prompt: "why? [Image #1]", projectPath: repoA, worktreeName: nil,
+                          runRemotely: true, images: [ImageAttachment(data: png)], machineChoice: .existing("box"))
+        let dialogInfo = try await mac.engine.handoverInfo(cardId: "card_dialog")
+        #expect(dialogInfo.launchImages?.first?.bytes == png)
     }
 
     @Test("a card of a project with no remote says whether the project has commits to bring")

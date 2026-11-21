@@ -147,7 +147,7 @@ public final class MasterEngine {
         if runRemotely, let name = machineChoice?.machineName, let peer = peerMachine(named: name) {
             // Another master runs it: the card moves there and starts there.
             if !keepSelection { store.dispatch(.selectCard(cardId: cardId)) }
-            launchOnPeer(cardId: cardId, prompt: prompt, worktree: worktreeName, peer: peer)
+            launchOnPeer(cardId: cardId, prompt: prompt, worktree: worktreeName, peer: peer, images: images)
             completion?(nil)
             return
         }
