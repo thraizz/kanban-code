@@ -201,6 +201,11 @@ final class AppComposition {
             let peers = Self.readPeers()
             Task { await peerSync.setPeers(peers) }
         }
+        NotificationCenter.default.addObserver(forName: .kanbanCodeProjectRelocated, object: nil, queue: .main) { [weak boardStore] note in
+            guard let oldPath = note.userInfo?["oldPath"] as? String,
+                  let newPath = note.userInfo?["newPath"] as? String else { return }
+            MainActor.assumeIsolated { boardStore?.dispatch(.projectRelocated(oldPath: oldPath, newPath: newPath)) }
+        }
         let agentSync = AgentSyncEngine(identity: identity) { [peerSync] in await peerSync.syncPeers() }
         Task.detached { await agentSync.run() }
         let vault = VaultService(

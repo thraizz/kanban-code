@@ -1681,11 +1681,25 @@ struct ProjectsSettingsView: View {
                 ),
                 isNew: isEditingNew,
                 onSave: { updated in
+                    let oldPath = project.path
                     Task {
-                        if isEditingNew {
-                            try? await settingsStore.addProject(updated)
-                        } else {
-                            try? await settingsStore.updateProject(updated)
+                        do {
+                            if updated.path != oldPath {
+                                try await settingsStore.relocateProject(from: oldPath, to: updated.path)
+                                NotificationCenter.default.post(
+                                    name: .kanbanCodeProjectRelocated,
+                                    object: nil,
+                                    userInfo: ["oldPath": oldPath, "newPath": updated.path]
+                                )
+                            }
+                            if isEditingNew {
+                                try await settingsStore.addProject(updated)
+                            } else {
+                                try await settingsStore.updateProject(updated)
+                            }
+                            error = nil
+                        } catch {
+                            self.error = error.localizedDescription
                         }
                         await loadSettings()
                         NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil)
@@ -1821,6 +1835,12 @@ struct ProjectsSettingsView: View {
     }
 }
 
+extension Notification.Name {
+    /// userInfo: `oldPath`, `newPath`. Settings are already rewritten; the
+    /// board moves its cards.
+    static let kanbanCodeProjectRelocated = Notification.Name("kanbanCodeProjectRelocated")
+}
+
 // MARK: - Project Edit Sheet
 
 struct ProjectEditSheet: View {
@@ -1831,9 +1851,9 @@ struct ProjectEditSheet: View {
     @State private var color: ProjectColor?
     @State private var testResultCount: Int?
     @State private var testRunning = false
+    @State private var path: String
     let original: Project
     let automaticColor: ProjectColor
-    let path: String
     let isNew: Bool
     let onSave: (Project) -> Void
     let onCancel: () -> Void
@@ -1847,7 +1867,7 @@ struct ProjectEditSheet: View {
     ) {
         self.original = project
         self.automaticColor = automaticColor
-        self.path = project.path
+        self._path = State(initialValue: project.path)
         self.isNew = isNew
         self._name = State(initialValue: project.name)
         self._repoRoot = State(initialValue: project.repoRoot ?? "")
@@ -1867,9 +1887,19 @@ struct ProjectEditSheet: View {
             Form {
                 Section {
                     TextField("Name", text: $name)
-                    Text(path)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
+                    HStack {
+                        Text(path)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Change…", action: choosePath)
+                            .controlSize(.small)
+                    }
+                    if path != original.path {
+                        Text("Moves this project and its cards from \(original.path). Move the folder itself first; stopped cards take their Claude transcripts along.")
+                            .font(.caption)
+                            .foregroundStyle(.orange)
+                    }
                     TextField("Repo root (if different from path)", text: $repoRoot)
                         .font(.caption)
                     Toggle("Visible in project selector", isOn: $visible)
@@ -1921,7 +1951,9 @@ struct ProjectEditSheet: View {
                 Button("Cancel") { onCancel() }
                     .keyboardShortcut(.cancelAction)
                 Button(isNew ? "Add" : "Save") {
-                    var project = original
+                    var project = path == original.path
+                        ? original
+                        : ProjectRelocation.relocate(original, to: path)
                     project.name = name
                     project.repoRoot = repoRoot.isEmpty ? nil : repoRoot
                     project.visible = visible
@@ -1935,6 +1967,21 @@ struct ProjectEditSheet: View {
         }
         .padding(20)
         .frame(width: 460)
+    }
+
+    private func choosePath() {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.allowsMultipleSelection = false
+        panel.message = "Select the project's new folder"
+        panel.prompt = "Choose"
+        panel.directoryURL = URL(fileURLWithPath: (original.path as NSString).deletingLastPathComponent)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        path = url.path
+        if repoRoot == original.repoRoot ?? "", let root = original.repoRoot {
+            repoRoot = ProjectRelocation.relocate(root, from: original.path, to: path) ?? root
+        }
     }
 
     private func colorOption(_ title: String, _ color: ProjectColor) -> some View {

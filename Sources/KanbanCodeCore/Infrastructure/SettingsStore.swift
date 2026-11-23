@@ -656,6 +656,23 @@ public actor SettingsStore {
         try write(settings)
     }
 
+    /// Point a project at the folder it moved to, keeping its other settings
+    /// and its place in the list.
+    @discardableResult
+    public func relocateProject(from oldPath: String, to newPath: String) throws -> Project {
+        var settings = try read()
+        guard let index = settings.projects.firstIndex(where: { $0.path == oldPath }) else {
+            throw SettingsError.projectNotFound(oldPath)
+        }
+        let moved = ProjectRelocation.relocate(settings.projects[index], to: newPath)
+        guard !settings.projects.contains(where: { $0.path == moved.path }) else {
+            throw SettingsError.duplicateProject(moved.path)
+        }
+        settings.projects[index] = moved
+        try write(settings)
+        return moved
+    }
+
     /// Remove a project by path.
     public func removeProject(path: String) throws {
         var settings = try read()

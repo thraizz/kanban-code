@@ -791,6 +791,9 @@ public enum Action: Sendable {
     case setNotice(String?, kind: NoticeKind)
     case setRateLimitedRepos(Set<String>)
     case setSelectedProject(String?)
+    /// A project's folder moved: cards, the selected project and transcripts
+    /// filed under the old folder follow it. Settings are already rewritten.
+    case projectRelocated(oldPath: String, newPath: String)
     case setLoading(Bool)
     case setIsRefreshingBacklog(Bool)
 
@@ -2683,6 +2686,35 @@ public enum Reducer {
         case .setSelectedProject(let path):
             state.selectedProjectPath = path
             return []
+
+        case .projectRelocated(let oldPath, let newPath):
+            state.configuredProjects = state.configuredProjects.map {
+                $0.path == oldPath ? ProjectRelocation.relocate($0, to: newPath) : $0
+            }
+            if let selected = state.selectedProjectPath,
+               let moved = ProjectRelocation.relocate(selected, from: oldPath, to: newPath) {
+                state.selectedProjectPath = moved
+            }
+            var effects: [Effect] = []
+            for (id, link) in state.links {
+                guard var moved = ProjectRelocation.relocate(link, from: oldPath, to: newPath) else { continue }
+                moved.updatedAt = .now
+                state.links[id] = moved
+                effects.append(.upsertLink(moved))
+                // A running session still writes to its old transcript, so
+                // only stopped cards take theirs along.
+                if moved.tmuxLink == nil,
+                   moved.worktreeLink == nil,
+                   let sessionId = moved.sessionLink?.sessionId,
+                   let sessionPath = moved.sessionLink?.sessionPath,
+                   ProjectRelocation.transcriptNeedsMove(moved, from: oldPath) {
+                    effects.append(.moveSessionFile(
+                        cardId: id, sessionId: sessionId, oldPath: sessionPath, newProjectPath: newPath
+                    ))
+                }
+            }
+            KanbanCodeLog.info("store", "ProjectRelocated: \(oldPath) → \(newPath), \(effects.count) effects")
+            return effects
 
         case .setLoading(let loading):
             state.isLoading = loading
