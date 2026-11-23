@@ -357,6 +357,11 @@ final class AppComposition {
             return last.flatMap { ContentView.loadEnabledAssistants().contains($0) ? $0 : nil } ?? .claude
         }
         platform.skipPermissions = { ContentView.remoteSkipPermissions }
+        platform.revealCard = { cardId in
+            NotificationCenter.default.post(name: .kanbanCodeSelectCard, object: nil, userInfo: ["cardId": cardId])
+            NSApp.activate(ignoringOtherApps: true)
+            NSApp.windows.first(where: { $0.canBecomeMain })?.makeKeyAndOrderFront(nil)
+        }
         platform.terminalCommand = { session in AppServices.terminalCommand(forSession: session) }
         platform.peerTerminalCommand = { machineId, cardId, session in
             AppServices.peerTerminalCommand(machineId: machineId, cardId: cardId, session: session)

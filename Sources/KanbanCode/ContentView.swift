@@ -102,6 +102,7 @@ struct ContentView: View {
     @AppStorage("detailExpanded") var detailExpandedPersisted = false
     @AppStorage("selectedCardId") var selectedCardIdPersisted = ""
     @State var showAddFromPath = false
+    @State var showImportSession = false
     @State var isDroppingFolder = false
     @State var isDroppingImage = false
     @State var addFromPathText = ""
@@ -855,6 +856,11 @@ struct ContentView: View {
             .sheet(isPresented: $showAddFromPath) {
                 addFromPathSheet
             }
+            .sheet(isPresented: $showImportSession) {
+                ImportSessionDialog(isPresented: $showImportSession) { text in
+                    await importClaudeSession(text)
+                }
+            }
             .sheet(item: $launchConfig) { config in
                 LaunchConfirmationDialog(
                     cardId: config.cardId,
@@ -1459,6 +1465,9 @@ struct ContentView: View {
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeNewTask).receive(on: RunLoop.main)) { _ in
                 presentNewTask()
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeImportSession).receive(on: RunLoop.main)) { _ in
+                showImportSession = true
             }
             .onReceive(NotificationCenter.default.publisher(for: .kanbanCodeHookEvent).receive(on: RunLoop.main)) { _ in
                 Task {
@@ -2249,6 +2258,9 @@ struct ContentView: View {
             CommandItem("New Task", icon: "plus", shortcut: AppShortcut.newTask.displayString) { [self] in
                 presentNewTask()
             },
+            CommandItem("Import Claude Code Session…", icon: "square.and.arrow.down") { [self] in
+                showImportSession = true
+            },
         ]
 
         // Card actions, so they only appear with a card open.
@@ -2814,6 +2826,22 @@ struct ContentView: View {
         case .auto: NSApp.appearance = nil
         case .light: NSApp.appearance = NSAppearance(named: .aqua)
         case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
+    }
+
+    /// File › Import Claude Code Session: the card of the session comes onto
+    /// the board, in view, and the session continues here. Returns why it
+    /// failed, or nil.
+    private func importClaudeSession(_ text: String) async -> String? {
+        do {
+            let imported = try await engine.importClaudeSession(text)
+            if let card = store.state.cards.first(where: { $0.id == imported.cardId }) {
+                switchToProjectIfNeeded(for: card)
+            }
+            if imported.outcome == .resumed { shouldFocusTerminal = true }
+            return nil
+        } catch {
+            return error.localizedDescription
         }
     }
 

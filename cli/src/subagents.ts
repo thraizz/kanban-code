@@ -37,7 +37,8 @@ export type SubagentOperation =
   | "relinkSession"
   | "archiveCard"
   | "setModel"
-  | "setContextThreshold";
+  | "setContextThreshold"
+  | "importSession";
 
 export interface SubagentCommandRequest {
   id: string;
@@ -69,6 +70,8 @@ export interface SubagentCommandResponse {
   ok: boolean;
   cardId?: string;
   error?: string;
+  /** What an import did: "resumed", "waiting" or "running". */
+  status?: string;
 }
 
 export const depthLimitError = (maximumDepth: number): string =>

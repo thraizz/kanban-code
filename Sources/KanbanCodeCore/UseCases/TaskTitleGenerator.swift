@@ -40,6 +40,15 @@ public enum TaskTitleGenerator {
         no quotes, no markdown, no trailing period.
         """
 
+    static let conversationInstructions = """
+        You write titles for cards on a kanban board of coding work. Given excerpts \
+        of a conversation between a developer and a coding agent (the developer's \
+        first request and their latest ones), reply with a short, specific title of \
+        3 to 7 words in English, in sentence case, naming the work it is about. \
+        Always write the title in English, even when the conversation is in another \
+        language. Reply with the title only: no quotes, no markdown, no trailing period.
+        """
+
     /// The name a card gets when it is created without a title: the first
     /// line of its prompt.
     public static func placeholderName(for prompt: String) -> String {
@@ -59,16 +68,26 @@ public enum TaskTitleGenerator {
     }
 
     public static func generate(prompt: String) async throws -> String {
-        let task = String(InjectedPromptText.strip(prompt)
+        try await generate(text: InjectedPromptText.strip(prompt), instructions: instructions)
+    }
+
+    /// A title for a conversation that started outside Kanban Code, from a
+    /// digest of it (`ConversationTitle.digest`).
+    public static func generate(conversation digest: String) async throws -> String {
+        try await generate(text: digest, instructions: conversationInstructions)
+    }
+
+    private static func generate(text: String, instructions: String) async throws -> String {
+        let task = String(text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .prefix(maxPromptCharacters))
         guard !task.isEmpty else { throw GenerationError.emptyPrompt }
 
         let raw: String
         if let key = openRouterKey() {
-            raw = try await askOpenRouter(task: task, key: key)
+            raw = try await askOpenRouter(task: task, instructions: instructions, key: key)
         } else if let claude = ShellCommand.findExecutable(CodingAssistant.claude.cliCommand) {
-            raw = try await askClaude(task: task, executable: claude)
+            raw = try await askClaude(task: task, instructions: instructions, executable: claude)
         } else {
             throw GenerationError.noBackend
         }
@@ -110,7 +129,7 @@ public enum TaskTitleGenerator {
         return key
     }
 
-    private static func askOpenRouter(task: String, key: String) async throws -> String {
+    private static func askOpenRouter(task: String, instructions: String, key: String) async throws -> String {
         guard let url = URL(string: "https://openrouter.ai/api/v1/chat/completions") else {
             throw GenerationError.request("bad URL")
         }
@@ -148,7 +167,7 @@ public enum TaskTitleGenerator {
 
     // MARK: - Claude CLI
 
-    private static func askClaude(task: String, executable: String) async throws -> String {
+    private static func askClaude(task: String, instructions: String, executable: String) async throws -> String {
         // Same environment as a side chat: no API key, and marked so the
         // hook leaves this run out of the board's events.
         let env = ClaudeSideChatRunner.environment(base: ShellCommand.loginEnvironment, configDirectory: nil)

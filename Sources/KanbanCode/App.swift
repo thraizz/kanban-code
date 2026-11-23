@@ -28,6 +28,11 @@ struct KanbanCodeApp: App {
                     NotificationCenter.default.post(name: .kanbanCodeNewTask, object: nil)
                 }
                 .keyboardShortcut("n", modifiers: .command)
+
+                Button("Import Claude Code Session…") {
+                    UsageLog.record("menu", "import-session")
+                    NotificationCenter.default.post(name: .kanbanCodeImportSession, object: nil)
+                }
             }
 
             CommandGroup(replacing: .undoRedo) {
@@ -713,6 +718,7 @@ enum AppearanceMode: String, CaseIterable {
 
 extension Notification.Name {
     static let kanbanCodeNewTask = Notification.Name("kanbanCodeNewTask")
+    static let kanbanCodeImportSession = Notification.Name("kanbanCodeImportSession")
     static let kanbanCodeToggleSearch = Notification.Name("kanbanCodeToggleSearch")
     static let kanbanCodeHookEvent = Notification.Name("kanbanCodeHookEvent")
     static let kanbanCodeHistoryChanged = Notification.Name("kanbanCodeHistoryChanged")

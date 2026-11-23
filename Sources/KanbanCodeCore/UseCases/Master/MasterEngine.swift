@@ -21,6 +21,9 @@ public final class MasterEngine {
     /// Cards with a resume in flight. A resume is long (machine creation,
     /// a transcript push); a second one for the same card must not start.
     var resumingCards: Set<String> = []
+    /// Imported sessions, by session id, that still run in a terminal outside
+    /// Kanban Code and resume here once that process exits.
+    var importsWaitingForExit: Set<String> = []
 
     /// Self-compact bookkeeping, by session id.
     var selfCompactTriggeredThresholds: [String: Set<Int>] = [:]

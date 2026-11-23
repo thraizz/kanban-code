@@ -72,6 +72,14 @@ public struct MasterPlatform: Sendable {
     public var defaultAssistant: @MainActor @Sendable () -> CodingAssistant = { .claude }
     /// The "Skip permissions" choice for launches the remote API starts.
     public var skipPermissions: @MainActor @Sendable () -> Bool = { true }
+    /// Brings the window to the front on a card; nothing where no window
+    /// shows (the server).
+    public var revealCard: @MainActor @Sendable (String) -> Void = { _ in }
+    /// Writes a card title from a digest of a conversation
+    /// (`ConversationTitle.digest`), for an imported session's card.
+    public var titleConversation: @Sendable (String) async throws -> String = {
+        try await TaskTitleGenerator.generate(conversation: $0)
+    }
     /// The command a remote terminal viewer runs for a session, when the
     /// platform has its own; nil for `rush open <id>` or
     /// `tmux attach`.

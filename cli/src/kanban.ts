@@ -36,6 +36,7 @@ import {
 } from "./format.js";
 import { agentIdentity } from "./agents/identity.js";
 import { runVaultAlias } from "./vault-alias.js";
+import { importMessage, ownClaudeSessionId, sessionIdIn } from "./import-session.js";
 import { ensureAgentSession } from "./agents/launch.js";
 import { loadAgentsConfig, isAgentHost } from "./agents/config.js";
 import { reconcileAll } from "./agents/reconcile.js";
@@ -411,6 +412,46 @@ program
       if (!response.ok) throw new Error(response.error ?? "unknown error");
       if (opts.json) output({ cardId: card.id, sessionId, sessionPath }, { json: true });
       else console.log(`Relinked ${card.name ?? card.id} to ${sessionId}`);
+    } catch (error) {
+      console.error(String(error instanceof Error ? error.message : error));
+      process.exit(1);
+    }
+  });
+
+// ── kanban import [session] ──────────────────────────────────────────
+
+program
+  .command("import")
+  .description(
+    "Move a Claude Code session from another terminal onto the board; it continues in Kanban Code (once quit there)"
+  )
+  .argument(
+    "[session]",
+    "Session id, a `claude --resume <id>` line or a transcript path (defaults to the Claude Code session this runs in)"
+  )
+  .option("-j, --json", "Output as JSON")
+  .action(async (sessionArg: string | undefined, opts) => {
+    try {
+      const sessionId = sessionArg !== undefined ? sessionIdIn(sessionArg) : ownClaudeSessionId();
+      if (!sessionId) {
+        throw new Error(
+          sessionArg !== undefined
+            ? `'${sessionArg}' holds no Claude Code session id (like 854054b6-24ff-45e2-bdb9-8feb1f70caf1)`
+            : "No Claude Code session runs above this shell. Pass its id: kanban import <session-id>"
+        );
+      }
+      if (!findSessionJsonl(sessionId)) {
+        throw new Error(`There is no Claude Code session ${sessionId} on this machine`);
+      }
+      // The app owns links.json and starts the session; the request wakes it
+      // when it is not running.
+      const response = await submitSubagentRequest(makeSubagentRequest("importSession", "", { sessionId }));
+      if (!response.ok || !response.cardId) throw new Error(response.error ?? "unknown error");
+      if (opts.json) {
+        output({ cardId: response.cardId, sessionId, status: response.status ?? "resumed" }, { json: true });
+      } else {
+        console.log(importMessage(response.status, sessionId, response.cardId));
+      }
     } catch (error) {
       console.error(String(error instanceof Error ? error.message : error));
       process.exit(1);

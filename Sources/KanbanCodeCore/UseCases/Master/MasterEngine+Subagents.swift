@@ -47,6 +47,17 @@ extension MasterEngine {
         }
 
         do {
+            if request.operation == .importSession {
+                // The only command whose answer says more than the card.
+                guard !Self.subagentRequestIsExpired(request.createdAt) else {
+                    throw SubagentCommandExecutionError.expiredRequest
+                }
+                let imported = try await importClaudeSession(request.sessionId ?? "")
+                try await subagentCommands.respond(SubagentCommandResponse(
+                    id: request.id, ok: true, cardId: imported.cardId,
+                    status: imported.outcome.commandStatus))
+                return
+            }
             let cardId = try await executeSubagentCommand(request)
             try await subagentCommands.respond(
                 SubagentCommandResponse(id: request.id, ok: true, cardId: cardId)
@@ -105,6 +116,9 @@ extension MasterEngine {
             return try await relinkCardSession(request)
         case .archiveCard:
             return try await archiveAnyCard(request)
+        case .importSession:
+            // Answered in `processSubagentCommand`, with what the import did.
+            return try await importClaudeSession(request.sessionId ?? "").cardId
         case .setContextThreshold:
             let child = try ownedSubagent(from: parent.id, targetId: request.cardId)
             // The child's own assistant decides this, not whatever the parent runs.

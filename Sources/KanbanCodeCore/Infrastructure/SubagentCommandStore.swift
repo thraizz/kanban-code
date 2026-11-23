@@ -19,6 +19,10 @@ public enum SubagentCommandOperation: String, Codable, Sendable {
     /// Retune a card's compaction schedule when the work turns out bigger or
     /// smaller than the goal it was spawned with.
     case setContextThreshold
+    /// Bring a Claude Code session started in another terminal onto the
+    /// board and continue it in Kanban Code (`kanban import`). It has no
+    /// card to come from, so `parentCardId` is empty.
+    case importSession
 }
 
 /// Resolves the worktree a spawn asked for.
@@ -112,12 +116,17 @@ public struct SubagentCommandResponse: Codable, Sendable, Equatable {
     public let ok: Bool
     public let cardId: String?
     public let error: String?
+    /// What an import did: "resumed", "waiting" (the session still runs in
+    /// another terminal and resumes once it exits) or "running" (it already
+    /// runs in Kanban Code). Nil for the other operations.
+    public let status: String?
 
-    public init(id: String, ok: Bool, cardId: String? = nil, error: String? = nil) {
+    public init(id: String, ok: Bool, cardId: String? = nil, error: String? = nil, status: String? = nil) {
         self.id = id
         self.ok = ok
         self.cardId = cardId
         self.error = error
+        self.status = status
     }
 }
 
