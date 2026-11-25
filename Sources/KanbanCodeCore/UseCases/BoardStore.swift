@@ -1016,6 +1016,22 @@ public enum Reducer {
         reduce(state: state, action: action)
     }
 
+    /// Whether a queued prompt can go out at once instead of waiting for the
+    /// card's next Stop: it sends itself, nothing waits ahead of it, and the
+    /// card's assistant runs in a live session with no turn going.
+    static func shouldSendQueuedPromptNow(_ state: AppState, cardId: String, promptId: String) -> Bool {
+        guard let link = state.links[cardId],
+              link.isLaunching != true,
+              let first = link.queuedPrompts?.first, first.id == promptId, first.sendAutomatically,
+              let tmux = link.tmuxLink, tmux.isShellOnly != true, tmux.isPrimaryDead != true,
+              state.tmuxSessions.contains(tmux.sessionName),
+              let sessionId = link.sessionLink?.sessionId else { return false }
+        switch state.activityMap[sessionId] {
+        case .needsAttention, .idleWaiting: return true
+        default: return false
+        }
+    }
+
     /// Runs `action`, stamps what it changed for peer sync, then rebuilds
     /// the cards (a no-op when none of their inputs changed).
     public static func reduce(state: AppState, action: Action) -> [Effect] {
@@ -1703,6 +1719,17 @@ public enum Reducer {
                     .message(conversation, id: prompt.id, role: .human, text: prompt.body, at: prompt.humanWrittenAt ?? .now,
                          images: prompt.imagePaths)
                 ]))
+            }
+            // Queued prompts go out on Stop. An assistant that is already
+            // idle has no Stop coming, so the prompt goes out now, the way
+            // a Stop would send it.
+            if placement == .back, shouldSendQueuedPromptNow(state, cardId: cardId, promptId: prompt.id) {
+                if let sessionId = link.sessionLink?.sessionId {
+                    // Its turn starts now: a prompt queued right behind it
+                    // waits for that turn's Stop.
+                    state.activityMap[sessionId] = .activelyWorking
+                }
+                effects += reduceAction(state: state, action: .sendQueuedPrompt(cardId: cardId, promptId: prompt.id))
             }
             return effects
 
