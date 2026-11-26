@@ -196,6 +196,9 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
 
     // Card-level properties
     public var name: String?
+    /// How a model wrote this card's name, when it did. nil for a name the
+    /// user gave or no name at all.
+    public var titleSource: CardTitleSource?
     public var projectPath: String?
     public var column: KanbanCodeColumn
     public var createdAt: Date
@@ -430,6 +433,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     public init(
         id: String = KSUID.generate(prefix: "card"),
         name: String? = nil,
+        titleSource: CardTitleSource? = nil,
         projectPath: String? = nil,
         column: KanbanCodeColumn = .allSessions,
         createdAt: Date = .now,
@@ -475,6 +479,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
     ) {
         self.id = id
         self.name = name
+        self.titleSource = titleSource
         self.projectPath = projectPath
         self.column = column
         self.createdAt = createdAt
@@ -523,7 +528,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
 
     private enum CodingKeys: String, CodingKey {
         // Card-level
-        case id, name, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
+        case id, name, titleSource, projectPath, column, createdAt, updatedAt, lastActivity, lastOpenedAt
         case manualOverrides, manuallyArchived, source, promptBody, promptImagePaths, parentCardId, modelOverride, modelVariantOverride
         case selfCompactContextThresholdTokens
         case isRemote, remote, isLaunching, launchedAt, sortOrder, pinnedAt, pinnedSortOrder
@@ -542,6 +547,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
 
         id = try c.decode(String.self, forKey: .id)
         name = try c.decodeIfPresent(String.self, forKey: .name)
+        titleSource = try c.decodeIfPresent(CardTitleSource.self, forKey: .titleSource)
         projectPath = try c.decodeIfPresent(String.self, forKey: .projectPath)
         column = try c.decodeIfPresent(KanbanCodeColumn.self, forKey: .column) ?? .allSessions
         createdAt = try c.decodeIfPresent(Date.self, forKey: .createdAt) ?? .now
@@ -654,6 +660,7 @@ public struct Link: Identifiable, Codable, Sendable, Equatable {
 
         try c.encode(id, forKey: .id)
         try c.encodeIfPresent(name, forKey: .name)
+        try c.encodeIfPresent(titleSource, forKey: .titleSource)
         try c.encodeIfPresent(projectPath, forKey: .projectPath)
         try c.encode(column, forKey: .column)
         try c.encode(createdAt, forKey: .createdAt)
@@ -766,6 +773,14 @@ public struct ManualOverrides: Codable, Sendable, Equatable {
         dismissedPRs = try c.decodeIfPresent([Int].self, forKey: .dismissedPRs)
         branchWatermark = try c.decodeIfPresent(Int.self, forKey: .branchWatermark)
     }
+}
+
+/// How a model wrote a card's name, when it did: a fast title from the prompt
+/// (`generated`), or one from the prompt and the conversation (`refined`).
+/// nil means the user wrote it, or there is no name yet.
+public enum CardTitleSource: String, Codable, Sendable {
+    case generated
+    case refined
 }
 
 /// How a link was created.

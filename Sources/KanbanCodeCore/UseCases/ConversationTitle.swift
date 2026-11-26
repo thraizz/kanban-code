@@ -59,6 +59,61 @@ public enum ConversationTitle {
         return titles
     }
 
+    /// The digest the title model reads once a session has answered: the first
+    /// request, the agent's first reply, and the latest requests, for any
+    /// assistant. Nil until the session has an assistant turn, so a card is
+    /// only re-titled once there is a reply to read.
+    public static func refinementDigest(sessionPath path: String, assistant: CodingAssistant) async -> String? {
+        let store = ConversationExportCommand.sessionStore(for: assistant)
+        guard let turns = try? await store.readTranscript(sessionPath: path) else { return nil }
+        return refinementDigest(turns: turns, budget: TaskTitleGenerator.maxPromptCharacters)
+    }
+
+    static func refinementDigest(turns: [ConversationTurn], budget: Int) -> String? {
+        guard turns.contains(where: { $0.role == "assistant" }) else { return nil }
+        let users = turns.filter { $0.role == "user" && !$0.isQueued }
+        guard let firstUser = users.first else { return nil }
+        let first = stripped(firstUser.textPreview)
+        guard !first.isEmpty else { return nil }
+        let answer = turns.first { $0.role == "assistant" }.map { stripped($0.textPreview) }
+        let later = users.dropFirst()
+            .map { stripped($0.textPreview) }
+            .filter { !$0.isEmpty && !isSameStart($0, first) }
+        return refinementDigest(firstPrompt: first, answer: answer, laterPrompts: later, budget: budget)
+    }
+
+    /// The digest of the first request, the agent's first reply and the latest
+    /// requests, within `budget` characters.
+    static func refinementDigest(
+        firstPrompt: String, answer: String?, laterPrompts: [String], budget: Int
+    ) -> String? {
+        var parts: [String] = []
+        var used = 0
+        let head = "First request:\n" + String(firstPrompt.prefix(budget / 2))
+        parts.append(head)
+        used += head.count
+        if let answer, !answer.isEmpty {
+            let line = "First reply:\n" + flat(answer, limit: 800)
+            parts.append(line)
+            used += line.count
+        }
+        var latest: [String] = []
+        for prompt in laterPrompts.reversed() {
+            let line = "- " + flat(prompt, limit: 300)
+            if used + line.count + 1 > budget { break }
+            latest.insert(line, at: 0)
+            used += line.count + 1
+        }
+        if !latest.isEmpty {
+            parts.append("Latest requests:\n" + latest.joined(separator: "\n"))
+        }
+        return parts.joined(separator: "\n\n")
+    }
+
+    private static func stripped(_ text: String) -> String {
+        InjectedPromptText.strip(text).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// What the title model reads: the first prompt, which states the task,
     /// and the latest prompts, which say where it went. Nil when the human
     /// wrote nothing.

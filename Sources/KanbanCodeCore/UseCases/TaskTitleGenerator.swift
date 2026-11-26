@@ -49,6 +49,16 @@ public enum TaskTitleGenerator {
         language. Reply with the title only: no quotes, no markdown, no trailing period.
         """
 
+    static let refinementInstructions = """
+        You write titles for cards on a kanban board of coding work. Given a task's \
+        prompt and the first reply of the coding agent, reply with a short, specific \
+        title of 3 to 7 words in English, in sentence case, naming the work it is \
+        about. Use the reply to be more specific than the prompt alone: name what the \
+        agent is actually doing, not only what the prompt asked for. Always write the \
+        title in English, even when the prompt is in another language. Reply with the \
+        title only: no quotes, no markdown, no trailing period.
+        """
+
     /// The name a card gets when it is created without a title: the first
     /// line of its prompt.
     public static func placeholderName(for prompt: String) -> String {
@@ -67,6 +77,18 @@ public enum TaskTitleGenerator {
         return name.isEmpty || name == placeholderName(for: prompt)
     }
 
+    /// Whether the card's title should be rewritten from its conversation once
+    /// the session has answered. Only cards the user created: a name the user
+    /// gave is never touched, and a purely discovered transcript is left as it
+    /// is (naming it would claim it, pulling a headless run onto the board).
+    public static func needsRefinement(_ link: Link) -> Bool {
+        guard !link.manualOverrides.name, !link.isUnclaimedHeadless else { return false }
+        // A title the model already wrote from the prompt, of any source.
+        if link.titleSource == .generated { return true }
+        // A task the user created whose fast title never arrived.
+        return link.source == .manual && needsTitle(link)
+    }
+
     public static func generate(prompt: String) async throws -> String {
         try await generate(text: InjectedPromptText.strip(prompt), instructions: instructions)
     }
@@ -77,6 +99,12 @@ public enum TaskTitleGenerator {
         try await generate(text: digest, instructions: conversationInstructions)
     }
 
+    /// A better title for a card whose session has answered, from the prompt
+    /// and the first reply (`ConversationTitle.refinementDigest`).
+    public static func generate(refinement digest: String) async throws -> String {
+        try await generate(text: digest, instructions: refinementInstructions)
+    }
+
     private static func generate(text: String, instructions: String) async throws -> String {
         let task = String(text
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -85,7 +113,18 @@ public enum TaskTitleGenerator {
 
         let raw: String
         if let key = openRouterKey() {
-            raw = try await askOpenRouter(task: task, instructions: instructions, key: key)
+            do {
+                raw = try await askOpenRouter(task: task, instructions: instructions, key: key)
+            } catch {
+                // A key that is out of credits (or otherwise refused) must not
+                // leave the card untitled: the claude CLI bills the logged-in
+                // plan instead. Without the CLI the OpenRouter error stands.
+                guard let claude = ShellCommand.findExecutable(CodingAssistant.claude.cliCommand) else {
+                    throw error
+                }
+                KanbanCodeLog.warn("title", "OpenRouter failed (\(error.localizedDescription)); using the claude CLI")
+                raw = try await askClaude(task: task, instructions: instructions, executable: claude)
+            }
         } else if let claude = ShellCommand.findExecutable(CodingAssistant.claude.cliCommand) {
             raw = try await askClaude(task: task, instructions: instructions, executable: claude)
         } else {

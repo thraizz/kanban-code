@@ -634,6 +634,9 @@ public enum Action: Sendable {
     /// A model's title for a card created without one. Dropped when the card
     /// got a name of its own in the meantime.
     case titleGenerated(cardId: String, name: String)
+    /// A model's better title, written from the card's conversation once its
+    /// session answered. Replaces an auto title, never a name the user gave.
+    case titleRefined(cardId: String, name: String)
     case setCardPinned(cardId: String, isPinned: Bool)
     case setSelfCompactContextThreshold(cardId: String, thresholdTokens: Int?)
     case relinkSession(cardId: String, sessionLink: SessionLink)
@@ -900,6 +903,9 @@ public enum Effect: Sendable {
     case updateSessionIndex(sessionId: String, name: String)
     /// Asks a model for a title for the card's prompt.
     case generateTitle(cardId: String, prompt: String)
+    /// Asks a model for a better title from the card's conversation, once its
+    /// session has answered.
+    case refineTitle(cardId: String, sessionPath: String, assistant: CodingAssistant)
     case moveSessionFile(cardId: String, sessionId: String, oldPath: String, newProjectPath: String)
     /// `human` marks a prompt the human wrote himself, for a rush session
     /// that records it.
@@ -1073,6 +1079,40 @@ public enum Reducer {
             }
         }
         return changed
+    }
+
+    /// Writes a model's title onto the card, remembering where it came from
+    /// (so a later refinement may replace it, and a manual name may not be).
+    private static func applyGeneratedTitle(
+        state: AppState, cardId: String, name: String, source: CardTitleSource
+    ) -> [Effect] {
+        guard var link = state.links[cardId] else { return [] }
+        link.name = name
+        link.titleSource = source
+        link.updatedAt = .now
+        state.links[cardId] = link
+        var effects: [Effect] = [.upsertLink(link)]
+        if let sessionId = link.sessionLink?.sessionId {
+            effects.append(.updateSessionIndex(sessionId: sessionId, name: name))
+        }
+        return effects
+    }
+
+    /// Cards whose session just stopped working and whose title should be
+    /// rewritten from the conversation: the first turn that ends after the
+    /// card was titled from its prompt alone.
+    static func titleRefinementEffects(
+        state: AppState, previous: [String: ActivityState], updated: [String: ActivityState]
+    ) -> [Effect] {
+        var effects: [Effect] = []
+        for (sessionId, activity) in updated {
+            guard previous[sessionId] == .activelyWorking, activity != .activelyWorking else { continue }
+            guard let link = state.links.values.first(where: { $0.sessionLink?.sessionId == sessionId }),
+                  TaskTitleGenerator.needsRefinement(link),
+                  let path = link.sessionLink?.sessionPath else { continue }
+            effects.append(.refineTitle(cardId: link.id, sessionPath: path, assistant: link.effectiveAssistant))
+        }
+        return effects
     }
 
     /// Removes the links with `ids` and returns the cleanup of each: tmux
@@ -1290,11 +1330,18 @@ public enum Reducer {
 
         case .titleGenerated(let cardId, let name):
             guard let link = state.links[cardId], TaskTitleGenerator.needsTitle(link) else { return [] }
-            return reduceAction(state: state, action: .renameCard(cardId: cardId, name: name))
+            return applyGeneratedTitle(state: state, cardId: cardId, name: name, source: .generated)
+
+        case .titleRefined(let cardId, let name):
+            guard let link = state.links[cardId], TaskTitleGenerator.needsRefinement(link) else { return [] }
+            return applyGeneratedTitle(state: state, cardId: cardId, name: name, source: .refined)
 
         case .renameCard(let cardId, let name):
             guard var link = state.links[cardId] else { return [] }
             link.name = name
+            // A name the user gave is his: it is no longer an auto title and
+            // no refinement may replace it.
+            link.titleSource = nil
             link.manualOverrides.name = true
             link.updatedAt = .now
             state.links[cardId] = link
@@ -2468,20 +2515,28 @@ public enum Reducer {
 
         case .activityChanged(let activityMap):
             // Lightweight column update — no full reconciliation, just activity → column
+            let previousActivity = state.activityMap
             let changed = applyActivityToColumns(state, activityMap: activityMap, only: nil)
             if state.activityMap != activityMap { state.activityMap = activityMap }
-            return changed ? [.persistLinks(Array(state.links.values))] : []
+            var effects = titleRefinementEffects(
+                state: state, previous: previousActivity, updated: activityMap)
+            if changed { effects.append(.persistLinks(Array(state.links.values))) }
+            return effects
 
         case .sessionActivityChanged(let updates):
             // Same as .activityChanged, limited to the sessions in `updates`.
             guard !updates.isEmpty else { return [] }
+            let previousActivity = state.activityMap
             var merged = state.activityMap
             for (sessionId, activity) in updates {
                 if activity == .stale { merged[sessionId] = nil } else { merged[sessionId] = activity }
             }
             let changed = applyActivityToColumns(state, activityMap: merged, only: Set(updates.keys))
             if state.activityMap != merged { state.activityMap = merged }
-            return changed ? [.persistLinks(Array(state.links.values))] : []
+            var effects = titleRefinementEffects(
+                state: state, previous: previousActivity, updated: merged)
+            if changed { effects.append(.persistLinks(Array(state.links.values))) }
+            return effects
 
         // MARK: Busy State
 

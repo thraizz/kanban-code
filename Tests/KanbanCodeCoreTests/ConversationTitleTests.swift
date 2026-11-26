@@ -66,6 +66,24 @@ struct ConversationTitleTests {
         #expect(await ConversationTitle.name(transcriptPath: missing) { _ in "generated" } == nil)
     }
 
+    @Test("the refinement digest carries the first request, the first reply and the latest requests")
+    func refinementDigest() {
+        let turns = [
+            ConversationTurn(index: 0, lineNumber: 0, role: "user", textPreview: "add dark mode"),
+            ConversationTurn(index: 1, lineNumber: 1, role: "assistant",
+                            textPreview: "Added a theme toggle under Settings, defaulting to the system theme."),
+            ConversationTurn(index: 2, lineNumber: 2, role: "user", textPreview: "also remember the choice"),
+        ]
+        let digest = ConversationTitle.refinementDigest(turns: turns, budget: 4000)
+        #expect(digest?.contains("add dark mode") == true)
+        #expect(digest?.contains("theme toggle") == true)
+        #expect(digest?.contains("remember the choice") == true)
+
+        // No answer yet: the prompt alone is phase one's job, not a refinement.
+        let askedOnly = [ConversationTurn(index: 0, lineNumber: 0, role: "user", textPreview: "add dark mode")]
+        #expect(ConversationTitle.refinementDigest(turns: askedOnly, budget: 4000) == nil)
+    }
+
     @Test("the digest keeps the first request and as many of the latest ones as fit")
     func digestBudget() throws {
         let later = (1...50).map { "request number \($0)" }

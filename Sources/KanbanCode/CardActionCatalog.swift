@@ -83,7 +83,9 @@ struct CardActionEnvironment {
                     let store = AppComposition.shared.store
                     do {
                         let title = try await TaskTitleGenerator.generate(prompt: prompt)
-                        store.dispatch(.renameCard(cardId: cardId, name: title))
+                        // An auto title, not a manual one: a later refinement
+                        // from the conversation may still replace it.
+                        store.dispatch(.titleGenerated(cardId: cardId, name: title))
                     } catch {
                         KanbanCodeLog.warn("title", "card \(cardId): \(error.localizedDescription)")
                         store.dispatch(.setError(error.localizedDescription))

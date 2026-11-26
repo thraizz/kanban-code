@@ -39,6 +39,7 @@ public enum LinkSync {
 
     static let sharedFields: [SharedField] = [
         SharedField("name", \.name),
+        SharedField("titleSource", \.titleSource),
         SharedField("column", \.column),
         SharedField("manualOverrides", \.manualOverrides),
         SharedField("manuallyArchived", \.manuallyArchived),

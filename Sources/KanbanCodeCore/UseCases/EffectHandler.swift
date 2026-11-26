@@ -44,6 +44,8 @@ public actor EffectHandler {
 
     /// Writes a card title from a prompt.
     private let titleGenerator: @Sendable (String) async throws -> String
+    /// Writes a card title from a digest of its conversation.
+    private let conversationTitleGenerator: @Sendable (String) async throws -> String
 
     // MARK: - One prompt at a time per session
     //
@@ -80,11 +82,14 @@ public actor EffectHandler {
         remoteMachines: (any RemoteMachineControl)? = nil,
         humanMessageLog: HumanMessageLog? = nil,
         titleGenerator: (@Sendable (String) async throws -> String)? = nil,
+        conversationTitleGenerator: (@Sendable (String) async throws -> String)? = nil,
         conversationStore: ConversationStore? = nil,
         assistantStartWait: Duration = .seconds(20)
     ) {
         self.assistantStartWait = assistantStartWait
         self.titleGenerator = titleGenerator ?? { try await TaskTitleGenerator.generate(prompt: $0) }
+        self.conversationTitleGenerator = conversationTitleGenerator
+            ?? { try await TaskTitleGenerator.generate(refinement: $0) }
         self.coordinationStore = coordinationStore
         self.tmuxAdapter = tmuxAdapter
         self.setClipboardImage = setClipboardImage
@@ -228,6 +233,18 @@ public actor EffectHandler {
             } catch {
                 // The card keeps the first line of its prompt as its name.
                 KanbanCodeLog.warn("title", "card \(cardId.prefix(12)): \(error.localizedDescription)")
+            }
+
+        case .refineTitle(let cardId, let sessionPath, let assistant):
+            // No digest until the session has answered: the effect no-ops and
+            // the next turn end tries again.
+            guard let digest = await ConversationTitle.refinementDigest(
+                sessionPath: sessionPath, assistant: assistant) else { break }
+            do {
+                let title = try await conversationTitleGenerator(digest)
+                await dispatch(.titleRefined(cardId: cardId, name: title))
+            } catch {
+                KanbanCodeLog.warn("title", "refine card \(cardId.prefix(12)): \(error.localizedDescription)")
             }
 
         case .moveSessionFile(let cardId, let sessionId, let oldPath, let newProjectPath):
