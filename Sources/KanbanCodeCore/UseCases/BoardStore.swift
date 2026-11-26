@@ -3377,9 +3377,9 @@ public final class BoardStore: @unchecked Sendable {
                 let known = Set(state.links.values.compactMap { $0.sessionLink?.sessionId })
                 let waiting = state.links.values.compactMap { link -> (project: String, lower: Date, upper: Date)? in
                     guard state.isOwnedLocally(link), link.sessionLink == nil, link.tmuxLink != nil,
-                          let project = link.projectPath else { return nil }
+                          link.launchedAt != nil, let project = link.projectPath else { return nil }
                     return (project, link.launchAnchor.addingTimeInterval(-120),
-                            link.launchAnchor.addingTimeInterval(3600))
+                            link.launchAnchor.addingTimeInterval(120))
                 }
                 sessions = sessions.filter { session in
                     if known.contains(session.id) { return true }

@@ -824,13 +824,15 @@ public enum CardReconciler {
     }
 
     /// How long after its launch a card's session may be created and still
-    /// count as that launch's.
-    private static let launchLinkWindow: TimeInterval = 3600
+    /// count as that launch's. The session a launch starts is written within
+    /// seconds; a wider window would take a later session of the same project.
+    private static let launchLinkWindow: TimeInterval = 120
 
-    /// Links each card waiting for a session to the session created closest
-    /// after its own launch, in its project. Runs before the fuzzy rules so a
-    /// card a headless master failed to link at launch time gets its own
-    /// session, not the newest one of the project.
+    /// Links each card waiting for a session to the one its own launch
+    /// created, by creation time. Runs before the fuzzy rules so a card a
+    /// headless master failed to link at launch time gets its own session,
+    /// not the newest one of the project. Only a card with a real launch
+    /// stamp is matched: an `updatedAt` anchor is any edit, not a launch.
     private static func linkWaitingCardsByLaunch(
         linksById: inout [String: Link],
         sessions: [Session],
@@ -838,7 +840,8 @@ public enum CardReconciler {
         cardIdBySessionId: inout [String: String]
     ) {
         let waiting = linksById.values.filter {
-            $0.sessionLink == nil && $0.tmuxLink != nil && !$0.manuallyArchived && $0.projectPath != nil
+            $0.sessionLink == nil && $0.tmuxLink != nil && !$0.manuallyArchived
+                && $0.projectPath != nil && $0.launchedAt != nil
         }
         guard !waiting.isEmpty else { return }
         for link in waiting {
