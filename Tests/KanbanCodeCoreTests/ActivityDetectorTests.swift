@@ -175,6 +175,76 @@ struct ActivityDetectorTests {
         #expect(state == .needsAttention)
     }
 
+    /// What a compaction appends: a boundary line, then the summary as a
+    /// user entry marked `isCompactSummary`.
+    private static func compactionLines(at date: Date) -> [String] {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        let stamp = formatter.string(from: date)
+        return [
+            #"{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"auto"},"timestamp":"\#(stamp)"}"#,
+            #"{"type":"user","message":{"role":"user","content":"This session is being continued from a previous conversation."},"isCompactSummary":true,"isVisibleInTranscriptOnly":true,"timestamp":"\#(stamp)"}"#,
+        ]
+    }
+
+    @Test("Idle Notification + compaction since → needsAttention, not a resumed turn")
+    func notificationThenIdleCompaction() async {
+        // An idle session compacts on its own before its prompt cache
+        // expires, about an hour after its last turn. The summary is a user
+        // entry written after the Notification, but no turn is running.
+        let notified = Date.now.addingTimeInterval(-3300)
+        let detector = ClaudeCodeActivityDetector()
+        let t = Self.transcript(
+            [Self.entryLine(type: "assistant", at: notified.addingTimeInterval(-60))]
+                + Self.compactionLines(at: Date.now.addingTimeInterval(-2)),
+            age: 2)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "Notification", transcriptPath: t.path,
+            notificationType: "idle_prompt", timestamp: notified))
+        await detector.handleHookEvent(HookEvent(
+            sessionId: "s1", eventName: "SessionStart", transcriptPath: t.path,
+            source: "compact", timestamp: Date.now.addingTimeInterval(-2)))
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention)
+    }
+
+    @Test("Stop + compaction since → needsAttention, not a continuation")
+    func stopThenIdleCompaction() async {
+        let stopTime = Date.now.addingTimeInterval(-3300)
+        let detector = ClaudeCodeActivityDetector(stopDelay: 1)
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop", timestamp: stopTime))
+        let t = Self.transcript(
+            [Self.entryLine(type: "assistant", at: stopTime.addingTimeInterval(-0.5))]
+                + Self.compactionLines(at: Date.now.addingTimeInterval(-10)),
+            age: 10)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .needsAttention)
+    }
+
+    @Test("Stop + compaction + new assistant entry → activelyWorking")
+    func stopThenCompactionThenWork() async {
+        // A turn that compacts and carries on still writes its own entries.
+        let stopTime = Date.now.addingTimeInterval(-60)
+        let detector = ClaudeCodeActivityDetector(stopDelay: 1)
+        await detector.handleHookEvent(HookEvent(sessionId: "s1", eventName: "Stop", timestamp: stopTime))
+        let t = Self.transcript(
+            [Self.entryLine(type: "assistant", at: stopTime.addingTimeInterval(-0.5))]
+                + Self.compactionLines(at: Date.now.addingTimeInterval(-20))
+                + [Self.entryLine(type: "assistant", at: Date.now.addingTimeInterval(-10))],
+            age: 10)
+        defer { try? FileManager.default.removeItem(atPath: t.dir) }
+        let _ = await detector.pollActivity(sessionPaths: ["s1": t.path])
+
+        let state = await detector.activityState(for: "s1")
+        #expect(state == .activelyWorking)
+    }
+
     @Test("Permission prompt + transcript only touched since → awaitingPermission")
     func permissionPromptWithTouchedTranscript() async {
         let prompted = Date.now.addingTimeInterval(-3600)

@@ -374,6 +374,12 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
     /// Timestamp of the transcript's last user or assistant entry.
     /// Bookkeeping and system lines (hook summaries, away summaries) are
     /// skipped: they are not work.
+    ///
+    /// So is a compaction's summary. It is a user entry, but Claude Code
+    /// writes it once the compaction is over, and an idle session compacts
+    /// on its own before its prompt cache expires. Counted, it read as a
+    /// turn running after the last Stop or Notification, and pulled a
+    /// finished card back into In Progress for five minutes.
     static func lastEntryDate(_ path: String) -> Date? {
         guard let handle = FileHandle(forReadingAtPath: path) else { return nil }
         defer { try? handle.close() }
@@ -389,6 +395,7 @@ public actor ClaudeCodeActivityDetector: ActivityDetector {
                   let lineData = line.data(using: .utf8),
                   let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any],
                   let type = obj["type"] as? String, type == "user" || type == "assistant",
+                  obj["isCompactSummary"] as? Bool != true,
                   let stamp = obj["timestamp"] as? String,
                   let date = formatter.date(from: stamp) else { continue }
             return date

@@ -56,6 +56,16 @@ Feature: Activity Detection
     Then the session should stay "actively_working"
     And both SubagentStop hooks are still expected before it goes idle
 
+  # An idle session compacts on its own before its prompt cache expires,
+  # about an hour after its last turn. The compaction writes its summary as
+  # a user entry, which is not a turn running.
+  Scenario: An idle compaction does not pull a finished card into In Progress
+    Given the Stop hook fired for session "abc-123" an hour ago
+    And the card's PR is merged
+    When the session compacts while idle
+    Then the session should stay "needs_attention"
+    And the card should stay in "Done"
+
   # A reconcile pass takes a snapshot of the board and works on it for a
   # while. The activity map must not be part of that snapshot: a session that
   # started working mid-pass would get its spinner turned off when the pass
