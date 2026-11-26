@@ -64,6 +64,10 @@ if linuxOnly {
     targets.append(.systemLibrary(name: "CZlib", path: "Sources/CZlib"))
     coreDependencies.append("CMalloc")
     targets.append(.systemLibrary(name: "CMalloc", path: "Sources/CMalloc"))
+    // The system SQLite on Linux (macOS has the SQLite3 module in its SDK):
+    // the headless master reads OpenCode's session database with it.
+    coreDependencies.append("SQLite3")
+    targets.append(.systemLibrary(name: "SQLite3", path: "Sources/SQLite3"))
 } else {
     products.insert(contentsOf: [
         .executable(name: "KanbanCode", targets: ["KanbanCode"]),

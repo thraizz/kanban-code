@@ -42,6 +42,9 @@ final class ServerMaster {
         if enabled.contains(.codex) {
             registry.register(.codex, discovery: CodexSessionDiscovery(), detector: CodexActivityDetector(), store: CodexSessionStore())
         }
+        if enabled.contains(.opencode) {
+            registry.register(.opencode, discovery: OpenCodeSessionDiscovery(), detector: OpenCodeActivityDetector(), store: OpenCodeSessionStore())
+        }
         let discovery = CompositeSessionDiscovery(registry: registry)
         let activityDetector = CompositeActivityDetector(registry: registry, defaultDetector: claudeDetector)
 
@@ -212,9 +215,10 @@ final class ServerMaster {
     /// The assistants' hooks drive the busy state, the queue and the
     /// notifications; the statusline feeds context usage.
     private func installHooks() {
-        // OpenCode sessions live in a SQLite database the Linux build does
-        // not read, so the server leaves OpenCode to the Mac master.
-        for assistant in CodingAssistant.allCases where assistant.supportsHooks && assistant != .opencode {
+        // OpenCode reports through a plugin that writes the same hook events,
+        // and its sessions are read from the SQLite database the Linux build
+        // links (see Package.swift). Pi through its extension file.
+        for assistant in CodingAssistant.allCases where assistant.supportsHooks {
             guard (try? FileManager.default.contentsOfDirectory(atPath: NSHomeDirectory() + "/" + assistant.configDirName)) != nil else { continue }
             if !HookManager.isInstalled(for: assistant) {
                 do {
