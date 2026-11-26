@@ -167,7 +167,7 @@ public final class OpenCodeSessionStore: SessionStore, @unchecked Sendable {
         for part in try database.parts(sessionId: sessionId) where part.data.contains("git") {
             guard let object = OpenCodeTranscript.jsonObject(part.data),
                   object["type"] as? String == "tool",
-                  object["tool"] as? String == "bash",
+                  (object["tool"] as? String ?? object["name"] as? String) == "bash",
                   let input = (object["state"] as? [String: Any])?["input"] as? [String: Any],
                   let command = input["command"] as? String else { continue }
             let repoPath = input["workdir"] as? String

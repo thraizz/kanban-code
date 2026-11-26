@@ -56,6 +56,11 @@ struct OpenCodePluginTests {
             #expect(source.contains("\"\(event)\""), "plugin emits \(event)")
         }
         #expect(source.contains("parentID"), "subagent sessions are skipped")
+        // OpenCode v2 loads a plugin's default export; the v1 named export is
+        // ignored, which left the board blind to OpenCode activity.
+        #expect(source.contains(#"export default { id: "kanban-code", server }"#),
+                "the v2 module shape OpenCode loads")
+        #expect(!source.contains("export const KanbanCode"))
     }
 
     @Test("The plugin goes to OpenCode's global plugins directory")

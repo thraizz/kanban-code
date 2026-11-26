@@ -59,8 +59,12 @@ public enum OpenCodePlugin {
     }
 
     /// The plugin source. Bump the version in the first line on any change.
+    ///
+    /// OpenCode v2 loads a plugin module's default export
+    /// (`{ id, server }`); the v1 shape (a named export that is the plugin
+    /// function) is ignored, which left the board blind to OpenCode activity.
     static let content = #"""
-    // kanban-code-opencode-plugin v1
+    // kanban-code-opencode-plugin v2
     // Reports OpenCode session activity to Kanban Code. Installed and kept up
     // to date by Kanban Code (Settings > Hooks); local edits are overwritten.
     import { appendFileSync, mkdirSync } from "node:fs"
@@ -92,35 +96,57 @@ public enum OpenCodePlugin {
       } catch {}
     }
 
-    export const KanbanCode = async () => ({
-      event: async ({ event }) => {
-        const p = event.properties ?? {}
-        switch (event.type) {
-          case "session.created":
-            // Subagent runs are sessions too; they are never cards.
-            if (p.info?.parentID) childSessions.add(p.info.id)
-            else emit(p.info?.id, "SessionStart")
-            break
-          case "session.status":
-            if (p.status?.type === "busy") emit(p.sessionID, "UserPromptSubmit")
-            else if (p.status?.type === "idle") emit(p.sessionID, "Stop")
-            break
-          case "session.idle":
-          case "session.error":
-            emit(p.sessionID, "Stop")
-            break
-          case "permission.asked":
-            emit(p.sessionID, "Notification")
-            break
-          case "permission.replied":
-            emit(p.sessionID, "UserPromptSubmit")
-            break
-          case "session.deleted":
-            emit(p.info?.id, "SessionEnd")
-            break
-        }
-      },
+    function handle(type, p) {
+      p = p || {}
+      const sid = p.sessionID || p.info?.sessionID || p.form?.sessionID
+      switch (type) {
+        case "session.created":
+          // Subagent runs are sessions too; they are never cards.
+          if (p.info?.parentID) childSessions.add(p.info.id)
+          else emit(p.info?.id, "SessionStart")
+          break
+        case "session.status":
+          if (p.status?.type === "busy") emit(sid, "UserPromptSubmit")
+          else if (p.status?.type === "idle") emit(sid, "Stop")
+          break
+        // v2 runs a turn as an execution; the started/finished pair is the
+        // UserPromptSubmit/Stop pair the board reads.
+        case "session.execution.started":
+          emit(sid, "UserPromptSubmit")
+          break
+        case "session.execution.succeeded":
+        case "session.execution.failed":
+        case "session.execution.interrupted":
+        case "session.idle":
+        case "session.error":
+          emit(sid, "Stop")
+          break
+        // A permission or a question waits on the human: needs attention.
+        // The clear lets a second prompt emit even if the last line was one.
+        case "permission.asked":
+        case "form.created":
+        case "question.asked":
+          lastEvent.delete(sid)
+          emit(sid, "Notification")
+          break
+        case "permission.replied":
+        case "form.replied":
+        case "form.cancelled":
+        case "question.replied":
+        case "question.rejected":
+          emit(sid, "UserPromptSubmit")
+          break
+        case "session.deleted":
+          emit(p.info?.id || sid, "SessionEnd")
+          break
+      }
+    }
+
+    const server = async () => ({
+      event: async ({ event }) => handle(event?.type, event?.properties),
     })
+
+    export default { id: "kanban-code", server }
 
     """#
 }

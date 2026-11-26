@@ -87,12 +87,29 @@ public struct OpenCodeDatabase: Sendable {
 
     // MARK: - Queries
 
+    /// OpenCode v2 renamed the tables — `session_v2`, `session_message`,
+    /// `session_part` — and moved a message's content inline into
+    /// `session_message.data`. Reads fall back to the v1 tables for a database
+    /// that has no `session_v2`, so an older OpenCode still reads.
+    var isV2: Bool { tableExists("session_v2") }
+    private var sessionTable: String { isV2 ? "session_v2" : "session" }
+    private var messageTable: String { isV2 ? "session_message" : "message" }
+
+    /// Whether a table exists in the database (a missing database reads as
+    /// no tables).
+    func tableExists(_ name: String) -> Bool {
+        !((try? query(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+            [.text(name)]
+        ) { _ in true }) ?? []).isEmpty
+    }
+
     /// Top-level sessions that are not archived, newest first. Sessions with
     /// a parent are the subagent runs of another session and never cards.
     public func sessions(updatedAfter: Date? = nil) throws -> [SessionRow] {
         var sql = """
             SELECT id, directory, title, parent_id, time_created, time_updated, time_archived
-            FROM session WHERE parent_id IS NULL AND time_archived IS NULL
+            FROM \(sessionTable) WHERE parent_id IS NULL AND time_archived IS NULL
             """
         var bindings: [Binding] = []
         if let updatedAfter {
@@ -107,14 +124,14 @@ public struct OpenCodeDatabase: Sendable {
     public func session(id: String) throws -> SessionRow? {
         try query("""
             SELECT id, directory, title, parent_id, time_created, time_updated, time_archived
-            FROM session WHERE id = ?
+            FROM \(sessionTable) WHERE id = ?
             """, [.text(id)], Self.sessionRow).first
     }
 
     /// Ids of the top-level sessions whose working directory is `directory`.
     public func sessionIds(directory: String) throws -> Set<String> {
         Set(try query(
-            "SELECT id FROM session WHERE directory = ? AND parent_id IS NULL",
+            "SELECT id FROM \(sessionTable) WHERE directory = ? AND parent_id IS NULL",
             [.text(directory)]
         ) { Self.text($0, 0) ?? "" })
     }
@@ -125,7 +142,7 @@ public struct OpenCodeDatabase: Sendable {
     public func newSessionId(directory: String, createdSince date: Date) -> String? {
         let wanted = Self.canonicalPath(directory)
         let rows = (try? query("""
-            SELECT id, directory FROM session
+            SELECT id, directory FROM \(sessionTable)
             WHERE parent_id IS NULL AND time_created >= ?
             ORDER BY time_created DESC
             """, [.int(Self.millis(date) - 1000)]) { (Self.text($0, 0) ?? "", Self.text($0, 1) ?? "") }) ?? []
@@ -137,32 +154,68 @@ public struct OpenCodeDatabase: Sendable {
     }
 
     public func messages(sessionId: String) throws -> [MessageRow] {
-        try query("""
-            SELECT id, session_id, time_created, data FROM message
-            WHERE session_id = ? ORDER BY time_created, id
+        guard isV2 else {
+            return try query("""
+                SELECT id, session_id, time_created, data FROM message
+                WHERE session_id = ? ORDER BY time_created, id
+                """, [.text(sessionId)]) { stmt in
+                MessageRow(
+                    id: Self.text(stmt, 0) ?? "",
+                    sessionId: Self.text(stmt, 1) ?? "",
+                    created: Self.date(stmt, 2) ?? .distantPast,
+                    data: Self.text(stmt, 3) ?? "{}"
+                )
+            }
+        }
+        // v2: the message's role is its `type`; the row's JSON has none.
+        return try query("""
+            SELECT id, session_id, time_created, type, data FROM session_message
+            WHERE session_id = ? ORDER BY seq, id
             """, [.text(sessionId)]) { stmt in
-            MessageRow(
+            var info = OpenCodeTranscript.jsonObject(Self.text(stmt, 4) ?? "{}") ?? [:]
+            info["role"] = Self.text(stmt, 3) ?? ""
+            return MessageRow(
                 id: Self.text(stmt, 0) ?? "",
                 sessionId: Self.text(stmt, 1) ?? "",
                 created: Self.date(stmt, 2) ?? .distantPast,
-                data: Self.text(stmt, 3) ?? "{}"
+                data: Self.jsonString(info) ?? "{}"
             )
         }
     }
 
     public func parts(sessionId: String) throws -> [PartRow] {
-        try query("""
-            SELECT id, message_id, time_created, time_updated, data FROM part
-            WHERE session_id = ? ORDER BY time_created, id
-            """, [.text(sessionId)]) { stmt in
-            PartRow(
-                id: Self.text(stmt, 0) ?? "",
-                messageId: Self.text(stmt, 1) ?? "",
-                created: Self.date(stmt, 2) ?? .distantPast,
-                updated: Self.date(stmt, 3) ?? .distantPast,
-                data: Self.text(stmt, 4) ?? "{}"
-            )
+        guard isV2 else {
+            return try query("""
+                SELECT id, message_id, time_created, time_updated, data FROM part
+                WHERE session_id = ? ORDER BY time_created, id
+                """, [.text(sessionId)]) { stmt in
+                PartRow(
+                    id: Self.text(stmt, 0) ?? "",
+                    messageId: Self.text(stmt, 1) ?? "",
+                    created: Self.date(stmt, 2) ?? .distantPast,
+                    updated: Self.date(stmt, 3) ?? .distantPast,
+                    data: Self.text(stmt, 4) ?? "{}"
+                )
+            }
         }
+        // v2 keeps a message's content blocks inline in its `data`; the
+        // transcript reader wants them as parts.
+        let rows = try query("""
+            SELECT id, time_created, time_updated, data FROM session_message
+            WHERE session_id = ? ORDER BY seq, id
+            """, [.text(sessionId)]) { stmt in
+            (Self.text(stmt, 0) ?? "", Self.date(stmt, 1) ?? .distantPast,
+             Self.date(stmt, 2) ?? .distantPast, Self.text(stmt, 3) ?? "{}")
+        }
+        var parts: [PartRow] = []
+        for (messageId, created, updated, data) in rows {
+            for (ordinal, block) in Self.contentBlocks(of: data).enumerated() {
+                guard let json = Self.jsonString(block) else { continue }
+                parts.append(PartRow(id: "\(messageId):\(ordinal)", messageId: messageId,
+                                     created: created, updated: updated, data: json))
+            }
+        }
+        return parts
     }
 
     /// Number of messages of each given session.
@@ -171,7 +224,7 @@ public struct OpenCodeDatabase: Sendable {
         for chunk in Self.chunks(sessionIds) {
             let marks = Array(repeating: "?", count: chunk.count).joined(separator: ",")
             for (id, count) in try query(
-                "SELECT session_id, count(*) FROM message WHERE session_id IN (\(marks)) GROUP BY session_id",
+                "SELECT session_id, count(*) FROM \(messageTable) WHERE session_id IN (\(marks)) GROUP BY session_id",
                 chunk.map { .text($0) },
                 { (Self.text($0, 0) ?? "", Int(Self.int($0, 1) ?? 0)) }
             ) {
@@ -187,7 +240,27 @@ public struct OpenCodeDatabase: Sendable {
         var prompts: [String: String] = [:]
         for chunk in Self.chunks(sessionIds) {
             let marks = Array(repeating: "?", count: chunk.count).joined(separator: ",")
-            // Only the parts of each session's first user message: a filter
+            if isV2 {
+                // v2: the first user message's `data.text` is the prompt.
+                let rows = try query("""
+                    SELECT m.session_id, m.data FROM session_message m
+                    WHERE m.id IN (
+                        SELECT (SELECT m2.id FROM session_message m2
+                                WHERE m2.session_id = s.id AND m2.type = 'user'
+                                ORDER BY m2.seq, m2.id LIMIT 1)
+                        FROM session_v2 s WHERE s.id IN (\(marks)))
+                    ORDER BY m.seq, m.id
+                    """, chunk.map { .text($0) }) { (Self.text($0, 0) ?? "", Self.text($0, 1) ?? "") }
+                for (id, data) in rows where prompts[id] == nil {
+                    guard let info = OpenCodeTranscript.jsonObject(data),
+                          info["synthetic"] as? Bool != true,
+                          let text = (info["text"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+                          !text.isEmpty else { continue }
+                    prompts[id] = text
+                }
+                continue
+            }
+            // v1: only the parts of each session's first user message: a filter
             // over all parts reads every transcript (hundreds of MB).
             let rows = try query("""
                 SELECT m.session_id, p.data FROM part p JOIN message m ON m.id = p.message_id
@@ -217,14 +290,23 @@ public struct OpenCodeDatabase: Sendable {
         var result: [String: Date] = [:]
         for chunk in Self.chunks(sessionIds) {
             let marks = Array(repeating: "?", count: chunk.count).joined(separator: ",")
-            let rows = try query("""
-                SELECT s.id, max(s.time_updated, coalesce(m.time_updated, 0),
-                    coalesce((SELECT max(p.time_updated) FROM part p WHERE p.message_id = m.id), 0))
-                FROM session s
-                LEFT JOIN message m ON m.id = (
-                    SELECT id FROM message WHERE session_id = s.id ORDER BY time_created DESC, id DESC LIMIT 1)
-                WHERE s.id IN (\(marks))
-                """, chunk.map { .text($0) }) { (Self.text($0, 0) ?? "", Self.date($0, 1)) }
+            let sql = isV2
+                ? """
+                  SELECT s.id, max(s.time_updated, coalesce(m.time_updated, 0))
+                  FROM session_v2 s
+                  LEFT JOIN session_message m ON m.id = (
+                      SELECT id FROM session_message WHERE session_id = s.id ORDER BY seq DESC, id DESC LIMIT 1)
+                  WHERE s.id IN (\(marks))
+                  """
+                : """
+                  SELECT s.id, max(s.time_updated, coalesce(m.time_updated, 0),
+                      coalesce((SELECT max(p.time_updated) FROM part p WHERE p.message_id = m.id), 0))
+                  FROM session s
+                  LEFT JOIN message m ON m.id = (
+                      SELECT id FROM message WHERE session_id = s.id ORDER BY time_created DESC, id DESC LIMIT 1)
+                  WHERE s.id IN (\(marks))
+                  """
+            let rows = try query(sql, chunk.map { .text($0) }) { (Self.text($0, 0) ?? "", Self.date($0, 1)) }
             for (id, date) in rows { if let date { result[id] = date } }
         }
         return result
@@ -251,6 +333,17 @@ public struct OpenCodeDatabase: Sendable {
             .replacingOccurrences(of: "\\", with: "\\\\")
             .replacingOccurrences(of: "%", with: "\\%")
             .replacingOccurrences(of: "_", with: "\\_")
+        if isV2 {
+            // v2 content is inline in `session_message.data`: a matching
+            // message is split into its content blocks, as v1's parts were.
+            let rows = try query(
+                "SELECT session_id, data FROM session_message WHERE data LIKE ? ESCAPE '\\'",
+                [.text("%\(escaped)%")]
+            ) { (Self.text($0, 0) ?? "", Self.text($0, 1) ?? "{}") }
+            return rows.flatMap { sessionId, data in
+                Self.contentBlocks(of: data).map { Self.searchPart(sessionId: sessionId, block: $0) }
+            }
+        }
         return try query("""
             SELECT session_id, json_extract(data, '$.type'), json_extract(data, '$.text'),
                    coalesce(json_extract(data, '$.synthetic'), 0), json_extract(data, '$.tool'),
@@ -269,6 +362,22 @@ public struct OpenCodeDatabase: Sendable {
         }
     }
 
+    /// One v2 content block as a search part, reading the v2 field names
+    /// (`name`/`id` for a tool) as well as v1's (`tool`/`callID`).
+    static func searchPart(sessionId: String, block: [String: Any]) -> SearchPart {
+        let state = block["state"] as? [String: Any]
+        let output = (state?["output"] as? String).map { String($0.prefix(4000)) }
+        return SearchPart(
+            sessionId: sessionId,
+            type: block["type"] as? String ?? "",
+            text: block["text"] as? String,
+            synthetic: block["synthetic"] as? Bool ?? false,
+            tool: block["tool"] as? String ?? block["name"] as? String,
+            input: state?["input"].flatMap { jsonString($0) },
+            output: output
+        )
+    }
+
     /// Sessions with a part containing `needle`.
     public func sessionIds(containing needle: String) throws -> Set<String> {
         Set(try parts(containing: needle).map(\.sessionId))
@@ -277,6 +386,24 @@ public struct OpenCodeDatabase: Sendable {
     /// Splits ids into groups under SQLite's bound-parameter limit.
     static func chunks(_ ids: [String]) -> [[String]] {
         stride(from: 0, to: ids.count, by: 500).map { Array(ids[$0..<min($0 + 500, ids.count)]) }
+    }
+
+    /// The content blocks of a v2 message: its `content` array when it has
+    /// one (an assistant message), else a single text block from its `text`
+    /// (a user message). Empty for a message with neither.
+    static func contentBlocks(of data: String) -> [[String: Any]] {
+        guard let info = OpenCodeTranscript.jsonObject(data) else { return [] }
+        if let content = info["content"] as? [[String: Any]] { return content }
+        if let text = info["text"] as? String, !text.isEmpty { return [["type": "text", "text": text]] }
+        return []
+    }
+
+    static func jsonString(_ object: Any) -> String? {
+        guard JSONSerialization.isValidJSONObject(object),
+              let data = try? JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]) else {
+            return nil
+        }
+        return String(data: data, encoding: .utf8)
     }
 
     // MARK: - SQLite

@@ -107,5 +107,74 @@ struct OpenCodeDatabaseTests {
         #expect(OpenCodeDatabase.defaultPath(environment: ["OPENCODE_DB": "/data/oc.db"]) == "/data/oc.db")
         #expect(OpenCodeDatabase.defaultPath(environment: [:]).hasSuffix("/.local/share/opencode/opencode.db"))
     }
+
+    // MARK: - OpenCode v2's schema
+
+    @Test("v2 sessions leave out subagent runs and archived sessions")
+    func v2TopLevelOnly() throws {
+        let fixture = try OpenCodeFixture(v2: true)
+        try fixture.addSession(id: "ses_top")
+        try fixture.addSession(id: "ses_child", parentId: "ses_top")
+        try fixture.addSession(id: "ses_archived", archived: fixture.tick())
+
+        #expect(try fixture.database.sessions().map(\.id) == ["ses_top"])
+        #expect(try fixture.database.session(id: "ses_child")?.parentId == "ses_top")
+    }
+
+    @Test("v2 reads the first prompt from the message's inline text")
+    func v2FirstPrompt() throws {
+        let fixture = try OpenCodeFixture(v2: true)
+        try fixture.addSession(id: "ses_a")
+        try fixture.addV2Message(sessionId: "ses_a", type: "user", json: #"{"text":"Fix the login bug"}"#)
+        try fixture.addV2Message(sessionId: "ses_a", type: "assistant", json: #"{"content":[{"type":"text","text":"On it."}]}"#)
+
+        #expect(try fixture.database.firstUserPrompts(sessionIds: ["ses_a"]) == ["ses_a": "Fix the login bug"])
+    }
+
+    @Test("v2 last activity follows message writes")
+    func v2LastActivity() throws {
+        let fixture = try OpenCodeFixture(v2: true)
+        let rowTime = OpenCodeFixture.millis(ago: 600)
+        try fixture.addSession(id: "ses_a", created: rowTime, updated: rowTime)
+        try fixture.addV2Message(sessionId: "ses_a", type: "assistant", json: #"{"content":[]}"#,
+                                 time: OpenCodeFixture.millis(ago: 2))
+
+        let last = try #require(try fixture.database.lastActivity(sessionIds: ["ses_a"])["ses_a"])
+        #expect(Date.now.timeIntervalSince(last) < 10)
+    }
+
+    @Test("v2 messages carry their role, and parts are the inline content blocks")
+    func v2MessagesAndParts() throws {
+        let fixture = try OpenCodeFixture(v2: true)
+        try fixture.addSession(id: "ses_a")
+        try fixture.addV2Message(sessionId: "ses_a", type: "user", json: #"{"text":"Fix the login bug"}"#, seq: 0)
+        try fixture.addV2Message(
+            sessionId: "ses_a", type: "assistant",
+            json: #"{"content":[{"type":"text","text":"On it."},{"type":"tool","name":"bash","id":"c1","state":{"status":"completed","input":{"command":"git push origin fix"},"output":"ok"}}]}"#, seq: 1)
+
+        let messages = try fixture.database.messages(sessionId: "ses_a")
+        #expect(messages.map { OpenCodeTranscript.jsonObject($0.data)?["role"] as? String } == ["user", "assistant"])
+
+        let parts = try fixture.database.parts(sessionId: "ses_a")
+        let types = parts.compactMap { OpenCodeTranscript.jsonObject($0.data)?["type"] as? String }
+        #expect(types == ["text", "text", "tool"])
+    }
+
+    @Test("v2 text search matches inline message content")
+    func v2TextSearch() throws {
+        let fixture = try OpenCodeFixture(v2: true)
+        try fixture.addSession(id: "ses_a")
+        try fixture.addV2Message(sessionId: "ses_a", type: "user", json: #"{"text":"Migrate the Postgres schema"}"#)
+
+        #expect(try fixture.database.sessionIds(containing: "postgres") == ["ses_a"])
+    }
+
+    @Test("v2 finds the session a launch created")
+    func v2NewSessionAfterLaunch() throws {
+        let fixture = try OpenCodeFixture(v2: true)
+        try fixture.addSession(id: "ses_launched", directory: "/work/project",
+                               created: OpenCodeFixture.millis(ago: 0))
+        #expect(fixture.database.newSessionId(directory: "/work/project", createdSince: Date.now.addingTimeInterval(-60)) == "ses_launched")
+    }
 }
 #endif

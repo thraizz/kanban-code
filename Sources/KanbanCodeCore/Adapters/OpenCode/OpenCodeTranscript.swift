@@ -65,11 +65,12 @@ public enum OpenCodeTranscript {
 
     // MARK: - Tools
 
-    /// A tool part is the call and, once it ran, its result.
+    /// A tool part is the call and, once it ran, its result. v2 names the
+    /// tool `name` and its call `id`; v1 uses `tool` and `callID`.
     static func toolBlocks(_ part: [String: Any]) -> [ContentBlock] {
-        let rawName = part["tool"] as? String ?? "tool"
+        let rawName = part["tool"] as? String ?? part["name"] as? String ?? "tool"
         let name = displayToolName(rawName)
-        let callId = part["callID"] as? String
+        let callId = part["callID"] as? String ?? part["id"] as? String
         let state = part["state"] as? [String: Any] ?? [:]
         let rawInput = state["input"] as? [String: Any] ?? [:]
 
