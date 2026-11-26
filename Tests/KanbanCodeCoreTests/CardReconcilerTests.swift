@@ -19,6 +19,46 @@ struct CardReconcilerTests {
         #expect(result[0].column == .allSessions)
     }
 
+    @Test("A card waiting for its session links to the one its launch created, not the newest of the project")
+    func linksWaitingCardToLaunchSession() {
+        let launched = Date.now.addingTimeInterval(-3600)
+        let card = Link(
+            projectPath: "/repo",
+            column: .inProgress,
+            source: .manual,
+            promptBody: "do it",
+            tmuxLink: TmuxLink(sessionName: "repo-card_1"),
+            launchedAt: launched
+        )
+        let own = Session(id: "ses_own", projectPath: "/repo", messageCount: 2,
+                          modifiedTime: launched.addingTimeInterval(600),
+                          created: launched.addingTimeInterval(5))
+        let newer = Session(id: "ses_newer", projectPath: "/repo", messageCount: 9,
+                            modifiedTime: .now, created: launched.addingTimeInterval(1800))
+
+        let result = CardReconciler.reconcile(existing: [card], snapshot: .init(sessions: [newer, own]))
+        #expect(result.first { $0.id == card.id }?.sessionLink?.sessionId == "ses_own")
+    }
+
+    @Test("A master that does not invent cards still links a session to its own waiting card")
+    func doesNotCreateDiscoveredCards() {
+        let launched = Date.now.addingTimeInterval(-600)
+        let card = Link(
+            projectPath: "/repo", column: .inProgress, source: .manual, promptBody: "do it",
+            tmuxLink: TmuxLink(sessionName: "repo-card_1"), launchedAt: launched
+        )
+        let own = Session(id: "ses_own", projectPath: "/repo", messageCount: 2,
+                          modifiedTime: launched.addingTimeInterval(60), created: launched.addingTimeInterval(5))
+        let stranger = Session(id: "ses_stranger", projectPath: "/other", messageCount: 3,
+                               modifiedTime: .now, created: launched.addingTimeInterval(5))
+
+        let result = CardReconciler.reconcile(
+            existing: [card],
+            snapshot: .init(sessions: [stranger, own], createsDiscoveredCards: false))
+        #expect(result.count == 1)
+        #expect(result[0].sessionLink?.sessionId == "ses_own")
+    }
+
     @Test("An old session that lands on a card by project path does not age the card")
     func orphanSessionDoesNotAgeCard() {
         let today = Date.now

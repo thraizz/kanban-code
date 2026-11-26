@@ -28,6 +28,11 @@ public enum CardReconciler {
         /// since a card another master runs is that master's to change.
         /// Nil treats every card as local.
         public let localMachineId: String?
+        /// Whether an unmatched discovered session becomes a card of its own.
+        /// A headless master turns this off: it links a session to the card it
+        /// owns, but never invents cards for the sessions other masters run on
+        /// it.
+        public let createsDiscoveredCards: Bool
 
         public init(
             sessions: [Session] = [],
@@ -36,7 +41,8 @@ public enum CardReconciler {
             worktrees: [String: [Worktree]] = [:],
             pullRequests: [String: PullRequest] = [:],
             connectedRemoteMachines: Set<String> = [],
-            localMachineId: String? = nil
+            localMachineId: String? = nil,
+            createsDiscoveredCards: Bool = true
         ) {
             self.localMachineId = localMachineId
             self.sessions = sessions
@@ -45,6 +51,7 @@ public enum CardReconciler {
             self.worktrees = worktrees
             self.pullRequests = pullRequests
             self.connectedRemoteMachines = connectedRemoteMachines
+            self.createsDiscoveredCards = createsDiscoveredCards
         }
     }
 
@@ -165,6 +172,18 @@ public enum CardReconciler {
         // handful, looked up for every session instead of scanning every card.
         let tmuxCardIds = existing.filter { $0.tmuxLink != nil }.map(\.id)
 
+        // A0. Link a card waiting for its session to the one its own launch
+        // created, by creation time. A headless master may have missed it at
+        // launch time (the assistant's session store was unreadable then), and
+        // the fuzzy rules below would otherwise take the newest session of the
+        // project, not the card's.
+        linkWaitingCardsByLaunch(
+            linksById: &linksById,
+            sessions: snapshot.sessions,
+            matchedSessionIds: &matchedSessionIds,
+            cardIdBySessionId: &cardIdBySessionId
+        )
+
         // A. Match sessions to existing cards
         for session in snapshot.sessions {
             let cardId = findCardForSession(
@@ -262,6 +281,10 @@ public enum CardReconciler {
                     }
                 }
                 linksById[cardId] = link
+                matchedSessionIds.insert(session.id)
+            } else if !snapshot.createsDiscoveredCards {
+                // A master that does not invent cards for the sessions it did
+                // not launch: the session is left to the card's owner.
                 matchedSessionIds.insert(session.id)
             } else {
                 KanbanCodeLog.info("reconciler", "New session \(session.id.prefix(8)) → new card")
@@ -798,6 +821,45 @@ public enum CardReconciler {
     /// the launch, so anything older belongs to somebody else.
     private static func startedAfterLaunch(session: Session, link: Link) -> Bool {
         session.modifiedTime >= link.launchAnchor.addingTimeInterval(-launchMatchTolerance)
+    }
+
+    /// How long after its launch a card's session may be created and still
+    /// count as that launch's.
+    private static let launchLinkWindow: TimeInterval = 3600
+
+    /// Links each card waiting for a session to the session created closest
+    /// after its own launch, in its project. Runs before the fuzzy rules so a
+    /// card a headless master failed to link at launch time gets its own
+    /// session, not the newest one of the project.
+    private static func linkWaitingCardsByLaunch(
+        linksById: inout [String: Link],
+        sessions: [Session],
+        matchedSessionIds: inout Set<String>,
+        cardIdBySessionId: inout [String: String]
+    ) {
+        let waiting = linksById.values.filter {
+            $0.sessionLink == nil && $0.tmuxLink != nil && !$0.manuallyArchived && $0.projectPath != nil
+        }
+        guard !waiting.isEmpty else { return }
+        for link in waiting {
+            let lower = link.launchAnchor.addingTimeInterval(-launchMatchTolerance)
+            let upper = link.launchAnchor.addingTimeInterval(launchLinkWindow)
+            let candidate = sessions
+                .filter { session in
+                    guard !matchedSessionIds.contains(session.id),
+                          session.projectPath == link.projectPath,
+                          let created = session.created else { return false }
+                    return created >= lower && created <= upper
+                }
+                .min { ($0.created ?? .distantFuture) < ($1.created ?? .distantFuture) }
+            guard let session = candidate else { continue }
+            var updated = link
+            updated.sessionLink = SessionLink(sessionId: session.id, sessionPath: session.jsonlPath)
+            linksById[link.id] = updated
+            cardIdBySessionId[session.id] = link.id
+            matchedSessionIds.insert(session.id)
+            KanbanCodeLog.info("reconciler", "Linking launch session \(session.id.prefix(8)) to waiting card \(link.id.prefix(12))")
+        }
     }
 
     /// The most recently launched of several candidate cards.

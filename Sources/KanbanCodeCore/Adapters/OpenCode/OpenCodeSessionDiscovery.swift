@@ -40,6 +40,7 @@ public final class OpenCodeSessionDiscovery: SessionDiscovery, @unchecked Sendab
                 projectPath: row.directory.isEmpty ? nil : row.directory,
                 messageCount: counts[row.id] ?? 0,
                 modifiedTime: activity[row.id] ?? row.updated,
+                created: row.created,
                 jsonlPath: OpenCodeDatabase.virtualSessionPath(sessionId: row.id, home: home),
                 assistant: .opencode
             )

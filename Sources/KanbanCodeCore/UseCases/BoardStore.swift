@@ -3369,8 +3369,23 @@ public final class BoardStore: @unchecked Sendable {
                     && !($0.isHeadless && exclusion.matches($0.projectPath))
             }
             if !adoptsDiscoveredSessions {
+                // A headless master reads the sessions its cards already hold,
+                // and the session a locally-owned card is still waiting for
+                // (its launch may have missed it while the assistant's session
+                // store was unreadable). It never takes a session that belongs
+                // to another master's card.
                 let known = Set(state.links.values.compactMap { $0.sessionLink?.sessionId })
-                sessions = sessions.filter { known.contains($0.id) }
+                let waiting = state.links.values.compactMap { link -> (project: String, lower: Date, upper: Date)? in
+                    guard state.isOwnedLocally(link), link.sessionLink == nil, link.tmuxLink != nil,
+                          let project = link.projectPath else { return nil }
+                    return (project, link.launchAnchor.addingTimeInterval(-120),
+                            link.launchAnchor.addingTimeInterval(3600))
+                }
+                sessions = sessions.filter { session in
+                    if known.contains(session.id) { return true }
+                    guard let created = session.created, let project = session.projectPath else { return false }
+                    return waiting.contains { $0.project == project && created >= $0.lower && created <= $0.upper }
+                }
             }
             ph.end(t1, "discoverSessions", detail: "\(sessions.count) sessions")
 
@@ -3592,7 +3607,8 @@ public final class BoardStore: @unchecked Sendable {
                 worktrees: worktreesByRepo,
                 pullRequests: pullRequests,
                 connectedRemoteMachines: connectedMachines,
-                localMachineId: state.localMachineId
+                localMachineId: state.localMachineId,
+                createsDiscoveredCards: adoptsDiscoveredSessions
             )
             // Pure work over every card and session: keep it off the main thread.
             let reconcileInput = existingLinks

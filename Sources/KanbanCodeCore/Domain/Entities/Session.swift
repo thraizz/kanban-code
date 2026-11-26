@@ -9,6 +9,9 @@ public struct Session: Identifiable, Sendable, Equatable {
     public var gitBranch: String? // Git branch if in a worktree
     public var messageCount: Int
     public var modifiedTime: Date
+    /// When the session was created, when the source records it. Used to link
+    /// a card that waits for the session its own launch started, by time.
+    public var created: Date?
     public var jsonlPath: String? // Full path to the session file (.jsonl or .json)
     public var assistant: CodingAssistant // Which assistant this session belongs to
     /// How the assistant was started, as its transcript records it:
@@ -36,6 +39,7 @@ public struct Session: Identifiable, Sendable, Equatable {
         gitBranch: String? = nil,
         messageCount: Int = 0,
         modifiedTime: Date = .now,
+        created: Date? = nil,
         jsonlPath: String? = nil,
         assistant: CodingAssistant = .claude,
         entrypoint: String? = nil
@@ -47,6 +51,7 @@ public struct Session: Identifiable, Sendable, Equatable {
         self.gitBranch = gitBranch
         self.messageCount = messageCount
         self.modifiedTime = modifiedTime
+        self.created = created
         self.jsonlPath = jsonlPath
         self.assistant = assistant
         self.entrypoint = entrypoint
