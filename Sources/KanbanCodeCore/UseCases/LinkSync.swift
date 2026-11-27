@@ -400,15 +400,15 @@ extension AppState {
     }
 
     /// The page a peer gets from `GET /v1/links?since=&epoch=`: every served
-    /// card and tombstone when the epoch differs (or none was sent), else
-    /// those changed after `since`. Cards this machine owns go out with its
+    /// card and tombstone, and every card in `leftBoard`, when the epoch
+    /// differs (or none was sent), else those changed after `since`. Cards this machine owns go out with its
     /// id as `ownerMachine`.
     public func linksPage(machine: MachineIdentity, since: Int?, epoch: String?) -> LinksPage {
         let full = since == nil || epoch != syncEpoch
         let threshold = full ? Int.min : since!
         var out: [Link] = []
         func add(_ link: Link) {
-            guard LinkSync.isServed(link) else { return }
+            guard LinkSync.isServed(link) || leftBoard.contains(link.id) else { return }
             if !full, (linkSeqs[link.id] ?? 0) <= threshold { return }
             var copy = link
             if copy.ownerMachine == nil { copy.ownerMachine = machine.id }
@@ -490,6 +490,10 @@ extension Reducer {
             }
             if ownedChanged { link.ownerRev = state.nextSyncStamp() }
             if sharedChanged || ownedChanged { state.markSyncChanged(id) }
+            if owned, let old, LinkSync.isServed(old), !LinkSync.isServed(link) {
+                // Off the board here: the peers still show it until they get this version.
+                state.leftBoard.insert(id)
+            }
             if link != after {
                 state.links[id] = link
                 linksRewritten = true
@@ -539,6 +543,15 @@ extension Reducer {
     /// that deletes a card this machine runs also stops its terminals and
     /// keeps the reconciler from bringing it back.
     static func reducePeerLinksMerged(state: AppState, peer: String, incoming: [Link]) -> [Effect] {
+        // A card this master runs and took off its board, which the peer
+        // still shows on its own: it missed the version that took it off
+        // (pages leave out cards off the board), so that version goes out again.
+        for link in incoming where !link.isTombstone && LinkSync.isServed(link) {
+            guard let local = state.links[link.id], state.isOwnedLocally(local),
+                  !LinkSync.isServed(local), !state.leftBoard.contains(link.id) else { continue }
+            state.leftBoard.insert(link.id)
+            state.markSyncChanged(link.id)
+        }
         let outcome = LinkSync.mergePage(
             incoming, from: peer,
             links: state.links, tombstones: state.tombstones,

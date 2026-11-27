@@ -272,6 +272,12 @@ public final class AppState: @unchecked Sendable {
     @ObservationIgnored public var syncEpoch: String = KSUID.generate(prefix: "epoch")
     /// `syncSeq` of the last change of each card or tombstone.
     @ObservationIgnored public var linkSeqs: [String: Int] = [:]
+    /// Cards this master runs that are off its board (`LinkSync.isServed` is
+    /// false) but still go out to peers: they left the board since this
+    /// master started, or a peer's page still shows them on its board. The
+    /// version that takes a card off the board must reach the peers, or
+    /// their copy stays on their board for good.
+    @ObservationIgnored public var leftBoard: Set<String> = []
 
     // MARK: - Legacy selected* accessors (shim over `openDrawer`)
     // This preserves the original API so existing views/tests keep working while
@@ -957,10 +963,17 @@ public enum Reducer {
         return score
     }
 
-    private static func deduplicatePrimaryTmuxLinks(_ links: inout [String: Link], liveTmuxNames: Set<String>) {
+    /// Two cards this master runs that name one tmux session: the one that
+    /// fits it best keeps it. A card another master runs names a session on
+    /// that machine, so it is never compared with the sessions here (and
+    /// its owner fields are its owner's to change).
+    private static func deduplicatePrimaryTmuxLinks(
+        _ links: inout [String: Link], liveTmuxNames: Set<String>, localMachine: String
+    ) {
         var idsBySession: [String: [String]] = [:]
         for (id, link) in links {
-            guard let sessionName = link.tmuxLink?.sessionName else { continue }
+            guard let sessionName = link.tmuxLink?.sessionName,
+                  LinkSync.isOwnedLocally(link, localMachine: localMachine) else { continue }
             idsBySession[sessionName, default: []].append(id)
         }
 
@@ -2437,7 +2450,7 @@ public enum Reducer {
             // Preserved cards have stale tmux/activity data — skip them until
             // the next reconciliation cycle picks up their current state.
             let liveTmuxNames = result.tmuxSessions
-            deduplicatePrimaryTmuxLinks(&mergedLinks, liveTmuxNames: liveTmuxNames)
+            deduplicatePrimaryTmuxLinks(&mergedLinks, liveTmuxNames: liveTmuxNames, localMachine: state.localMachineId)
 
             for (id, var link) in mergedLinks
             where link.isLaunching != true && !preservedIds.contains(id) && state.isOwnedLocally(link) {
