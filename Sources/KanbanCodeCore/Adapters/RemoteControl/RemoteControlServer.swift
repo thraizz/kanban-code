@@ -160,11 +160,19 @@ public final class RemoteControlServer: Sendable {
             throw error
         }
         await reconcileAddresses()
-        // The control connections announce where this server listens.
+        // The control connections announce where this server listens, and
+        // the streams this master dials back for them are served here.
         peerServer?.serverListening { [weak self] in
             guard let self, self.isRunning else { return nil }
             return (self.listeningAddresses, self.port)
         }
+        peerServer?.serverTunnels(PeerTunnelAcceptor { [weak self] stream in
+            guard let self else {
+                stream.cancel()
+                return
+            }
+            self.accept(stream)
+        })
 
         #if canImport(Network)
         let monitor = NWPathMonitor()
@@ -332,6 +340,9 @@ public final class RemoteControlServer: Sendable {
             case .peerControl(let device, let peerServer):
                 await servePeerControl(conn, request: request, device: device, peerServer: peerServer)
                 return
+            case .peerStream(let device, let peerServer, let id):
+                await servePeerStream(conn, request: request, device: device, peerServer: peerServer, id: id)
+                return
             }
         }
     }
@@ -343,6 +354,7 @@ public final class RemoteControlServer: Sendable {
         case events(RemoteDevice)
         case terminal(RemoteDevice, argv: [String], session: String, cols: Int, rows: Int)
         case peerControl(RemoteDevice, any PeerLinksServing)
+        case peerStream(RemoteDevice, any PeerLinksServing, id: Int)
     }
 
     private func token(from request: RemoteHTTPRequest) -> String? {
@@ -654,9 +666,23 @@ public final class RemoteControlServer: Sendable {
                 guard device.scope.actsForOwner else {
                     return .response(.error(403, "the \(device.scope.rawValue) scope cannot open a peer control connection"))
                 }
+                guard peer?.isTunnel != true else { return .response(.error(403, "not through a control connection")) }
                 guard let peerServer else { return .response(.error(404, "this server does not sync with peers")) }
                 guard request.wantsWebSocket else { return .response(.error(426, "WebSocket upgrade required")) }
                 return .peerControl(device, peerServer)
+
+            case ("GET", "peer/stream"):
+                // The dialer of a control connection, answering an `open`.
+                guard device.scope.actsForOwner else {
+                    return .response(.error(403, "the \(device.scope.rawValue) scope cannot open a peer stream"))
+                }
+                guard peer?.isTunnel != true else { return .response(.error(403, "not through a control connection")) }
+                guard let peerServer else { return .response(.error(404, "this server does not sync with peers")) }
+                guard let id = Int(request.query["id"] ?? ""), id > 0 else {
+                    return .response(.error(400, "query must be ?id=<stream id>"))
+                }
+                guard request.wantsWebSocket else { return .response(.error(426, "WebSocket upgrade required")) }
+                return .peerStream(device, peerServer, id: id)
 
             case ("GET", "cards/*/terminal"):
                 guard device.scope == .full || device.scope == .terminal else {
@@ -741,7 +767,7 @@ public final class RemoteControlServer: Sendable {
         "cards/*/worktree/remove", "cards/*/discover", "cards/*/side-chat", "cards/*/side-chat/*",
         "cards/*/slash-commands", "cards/*/pasted-image", "cards/*/files",
         "cards/*/conversations", "cards/*/conversations/*", "cards/*/conversations-raw", "cards/*/conversations/*/images",
-        "peer/control",
+        "peer/control", "peer/stream",
     ]
 
     static func response(for error: Error) -> RemoteHTTPResponse {
@@ -885,6 +911,31 @@ public final class RemoteControlServer: Sendable {
         await peerServer.servePeerControl(PeerControlSocket(ws), device: device)
         // A refusal's reason goes out in the close frame: give it time to
         // leave before the connection is dropped.
+        ws.close()
+        for _ in 0..<50 where !conn.closed {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
+    /// `GET /v1/peer/stream?id=`: the stream a peer master dialed back for
+    /// a local connection to this master's forward port, piped to it until
+    /// either end closes (`docs/peer-connections.md`, "Reverse streams").
+    private func servePeerStream(
+        _ conn: RemoteConnection, request: RemoteHTTPRequest, device: RemoteDevice,
+        peerServer: any PeerLinksServing, id: Int
+    ) async {
+        guard let handshake = RemoteWebSocketHandshake.response(for: request) else {
+            try? await conn.send(RemoteHTTPResponse.error(400, "bad WebSocket upgrade").serialized(keepAlive: false))
+            return
+        }
+        do { try await conn.send(handshake) } catch { return }
+        let ws = RemoteWebSocket(connection: conn)
+        guard let socketId = register(device.id, close: { ws.close(code: $0, reason: $1) }) else {
+            ws.close(code: 1001, reason: "server stopping")
+            return
+        }
+        defer { unregister(socketId) }
+        await peerServer.servePeerStream(PeerStreamSocket(ws), id: id, device: device)
         ws.close()
         for _ in 0..<50 where !conn.closed {
             try? await Task.sleep(for: .milliseconds(20))

@@ -1,6 +1,6 @@
 # Peer connections
 
-Status: **in progress**, steps 1 and 2 done (2026-11-27). Replaces how two masters reach each other
+Status: **in progress**, steps 1 to 3 done (2026-11-27). Replaces how two masters reach each other
 (the Mac app and `kanban-code-server`, see [Several masters](remote-control.md#several-masters)).
 No overlay network (Tailscale and the like), no mDNS and no DHCP reservation:
 the design works on a plain LAN where addresses change.
@@ -161,7 +161,8 @@ instead of `[PeerConfig]`. The base URL is:
 
 - the loopback forward port when the peer dialed this master;
 - the hint that the control connection was dialed to, when this master dialed;
-- nil when not connected (callers already handle a nil client).
+- nil when not connected (callers already handle a nil client). As built
+  in step 3 it is the first hint until step 5; see "As built in step 3".
 
 Every reader of `peer.url` goes through it (inventory below). After that,
 nothing outside `PeerEndpoints` and the dialer reads an address.
@@ -263,6 +264,52 @@ Where the code differs from the plan above, and why:
   lines are `[peer]`: every connect and every close with its cause, dial
   failures when the reason changes (else every 10 minutes).
 
+### As built in step 3
+
+Where the code differs from the plan above, and why:
+
+- **Not connected is the first hint, not nil.** A peer without a control
+  connection (an older build, or none dialed yet) is still pulled at the
+  address on file, as step 2 kept the 5 s timer for it. Step 5 makes it nil
+  together with deleting that timer.
+- **A real address apart from the URL called.** `PeerEndpoint.address` is
+  the hint a connection was dialed to, else where an accepted connection
+  came from at the port its hello announced, else the first hint. It, never
+  the forward port, is `PeerStatus.url` (the same-host check, outage text),
+  `GET /v1/peers`, and the URL written to the OptMem home config; a home
+  reached through a forward port says so in Settings › Sync.
+- **Readers of `online`** read `PeerStatus.reachable`: `connected`, and
+  while the control connections have said nothing about the peer yet (no
+  dial finished and none came in, or a sync whose control loop does not
+  run), the pulls. Besides `isPeerOnline`, `peerOutage` (its reason is
+  `controlError`, else the pull's) and the board's offline marks, the other
+  "can I call it" readers switched too: the machine picker, the search
+  fan-out, the attention and transcript mirrors, the agent sync.
+  `ownerWait` holds the terminal of a card whose known owner is not
+  reachable: its attach command takes the owner's URL when it starts.
+- **The forward port belongs to the peer, not to one connection.** A
+  connection that replaces another keeps it, and a reconnect after a gap
+  binds the same port again when it is free, so an attach command that
+  holds the URL keeps working (see Risks).
+- **Refusing a stream.** The dialer answers an `open` it cannot serve (its
+  Remote Control server does not run, the dial back failed) with
+  `{"refused": {"id", "reason"}}`; the local connection fails at once
+  instead of after 10 s.
+- **Streams end with their control connection**, on both ends: a stream has
+  no pings of its own, and one to a Mac that went to sleep would otherwise
+  hang until TCP gives up.
+- **No routes through a tunnel.** `GET /v1/peer/control` and
+  `GET /v1/peer/stream` answer 403 to a request that came through one; the
+  learned-address stopgap of `b4503edf` is skipped for a connected peer.
+- **Masking.** Every byte the dialer sends on a stream is a masked client
+  frame; the mask is applied eight bytes at a time.
+- **Code.** `PeerControl` holds the forward listeners, the waiting and open
+  streams and the pipe; `PeerTunnelStream`, `PeerStreamSocket` and
+  `PeerTunnelAcceptor` are in `PeerControlSocket.swift`; the server takes
+  tunnelled streams through `PeerLinksServing.serverTunnels`.
+  `RemotePeerAddress.tunnel(machineId)` is the marker; `isLoopback` and
+  `PeerAddress.usableHost` refuse it.
+
 ## Call sites that read a peer address today
 
 | Where | What |
@@ -285,9 +332,9 @@ Since step 1 each row resolves its URL through `PeerEndpoints` per use;
 the line numbers above are from before it. The learned-address stopgap
 puts the new address first among the hints and keeps the old one behind it
 (`PeerConfig.promoteHint`, `SettingsStore.promotePeerAddress`) instead of
-replacing the URL. The last row must keep showing a real address once
-step 3 returns a loopback forward URL: the same-host check would never
-match `127.0.0.1`.
+replacing the URL. The last row shows a real address since step 3
+(`PeerEndpoint.address`): the same-host check would never match
+`127.0.0.1`.
 
 ## Steps
 

@@ -65,13 +65,13 @@ public enum MachineDirectory {
             if let peer = known.first(where: { !used.contains($0.peerId) && isSameMachine(ssh, $0) }) {
                 used.insert(peer.peerId)
                 choice.master = peer.machine
-                choice.masterOnline = peer.online
+                choice.masterOnline = peer.reachable
             }
             out.append(choice)
         }
         for peer in known where !used.contains(peer.peerId) {
             guard let machine = peer.machine else { continue }
-            out.append(MachineChoice(name: machine.name, master: machine, masterOnline: peer.online))
+            out.append(MachineChoice(name: machine.name, master: machine, masterOnline: peer.reachable))
         }
         return out
     }

@@ -594,8 +594,11 @@ public actor AgentSyncEngine {
         try? FileManager.default.removeItem(atPath: path)
     }
 
+    /// memo, outside this app, reads the home's address from this file: it
+    /// gets a real one, never a forward port that works only here and only
+    /// while the home is connected.
     private func writeHomeConfig(_ rootPath: String, entry: SyncEntry, peer: SyncPeer) {
-        let wanted = HomeConfig(machine: peer.machine.name, url: peer.baseURL.absoluteString, token: peer.token,
+        let wanted = HomeConfig(machine: peer.machine.name, url: peer.address.absoluteString, token: peer.token,
                                 ssh: entry.ssh.flatMap { $0.isEmpty ? nil : $0 })
         let path = Self.homeConfigPath(rootPath)
         if let data = FileManager.default.contents(atPath: path),
@@ -631,7 +634,12 @@ public actor AgentSyncEngine {
         } else {
             let queued = OptmemSpool(optmemRoot: rootPath).pending().count
             if queued == 0 {
-                let note = applied > 0 ? "following \(peer.machine.name), took \(applied) file\(applied == 1 ? "" : "s")" : "following \(peer.machine.name)"
+                var note = applied > 0 ? "following \(peer.machine.name), took \(applied) file\(applied == 1 ? "" : "s")" : "following \(peer.machine.name)"
+                if peer.baseURL != peer.address {
+                    // This master calls the home through the home's own
+                    // connection; memo can only use an address of it.
+                    note += "; memo calls it at \(peer.address.absoluteString), its last known address"
+                }
                 setStatus(entry, .ok, note, count: theirs / 320, synced: true)
             }
         }

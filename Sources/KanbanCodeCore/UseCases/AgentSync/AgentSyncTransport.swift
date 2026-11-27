@@ -7,14 +7,19 @@ import KanbanCodeRemoteKit
 /// A peer master as the agent sync sees it.
 public struct SyncPeer: Sendable, Equatable {
     public var machine: MachineIdentity
-    /// Where the peer answers, from `PeerEndpoints` when the round began.
+    /// Where the peer answers, from `PeerEndpoints` when the round began:
+    /// a loopback forward port while the peer dialed this master.
     public var baseURL: URL
+    /// A real address of the peer (`PeerEndpoint.address`), for what other
+    /// programs read: the OptMem home config.
+    public var address: URL
     public var token: String
     public var online: Bool
 
-    public init(machine: MachineIdentity, baseURL: URL, token: String, online: Bool) {
+    public init(machine: MachineIdentity, baseURL: URL, address: URL? = nil, token: String, online: Bool) {
         self.machine = machine
         self.baseURL = baseURL
+        self.address = address ?? baseURL
         self.token = token
         self.online = online
     }
@@ -144,7 +149,8 @@ extension PeerSync {
             guard peer.enabled, let status = status(of: peer.id), let machine = status.machine,
                   let endpoint = endpoints.endpoint(forPeer: peer.id)
             else { return nil }
-            return SyncPeer(machine: machine, baseURL: endpoint.baseURL, token: endpoint.token, online: status.online)
+            return SyncPeer(machine: machine, baseURL: endpoint.baseURL, address: endpoint.address,
+                            token: endpoint.token, online: status.reachable)
         }
     }
 }

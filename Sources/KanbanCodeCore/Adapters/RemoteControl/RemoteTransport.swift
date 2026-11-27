@@ -29,11 +29,26 @@ public struct RemotePeerAddress: Sendable, Equatable {
         self.port = port
     }
 
-    /// 127.0.0.0/8 or ::1 (also as an IPv4-mapped address).
+    /// 127.0.0.0/8 or ::1 (also as an IPv4-mapped address). Never a tunnel:
+    /// a stream through a peer's control connection must not get what this
+    /// server grants loopback callers (tokenless vault and scrub routes).
     public var isLoopback: Bool {
+        guard !isTunnel else { return false }
         let h = host.split(separator: "%").first.map(String.init) ?? host
         return h.hasPrefix("127.") || h == "::1" || h.hasPrefix("::ffff:127.") || h == "localhost"
     }
+
+    static let tunnelPrefix = "tunnel:"
+
+    /// A stream that came through this master's control connection to the
+    /// peer master `machineId` (`docs/peer-connections.md`, "Reverse
+    /// streams"). Not loopback, and no address: it is never learned as one.
+    public static func tunnel(_ machineId: String) -> RemotePeerAddress {
+        RemotePeerAddress(host: tunnelPrefix + machineId, port: 0)
+    }
+
+    /// Whether this is the marker of a stream through a control connection.
+    public var isTunnel: Bool { host.hasPrefix(Self.tunnelPrefix) }
 }
 
 /// A bound TCP listener.

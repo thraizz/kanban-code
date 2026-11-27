@@ -196,6 +196,20 @@ public struct PeerStatus: Codable, Sendable, Equatable {
     /// Why the last control connection ended, or why no dial got through.
     public var controlError: String?
 
+    /// Whether this master can call the peer now: its control connection
+    /// is up, and every call goes through it (`docs/peer-connections.md`,
+    /// step 3). While the control connections have said nothing about the
+    /// peer yet (no dial finished and none came in, or a sync that runs no
+    /// control loop), its pulls say.
+    public var reachable: Bool {
+        connected || (controlError == nil && online)
+    }
+
+    /// Why this master cannot call the peer, while it cannot.
+    public var unreachableReason: String? {
+        reachable ? nil : (controlError ?? lastError)
+    }
+
     public init(
         peerId: String,
         machine: MachineIdentity? = nil,

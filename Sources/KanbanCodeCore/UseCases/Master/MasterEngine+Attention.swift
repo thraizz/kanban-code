@@ -389,7 +389,7 @@ extension MasterEngine {
         attentionPeerPoke = poke
         while !Task.isCancelled {
             let peers = store.state.peerStatuses.values.compactMap { status -> String? in
-                guard status.online, let id = status.machine?.id, id != store.state.localMachineId else { return nil }
+                guard status.reachable, let id = status.machine?.id, id != store.state.localMachineId else { return nil }
                 return id
             }
             let sendPresence = presence != nil && Date().timeIntervalSince(lastPresenceSent) >= 15

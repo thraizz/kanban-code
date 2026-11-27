@@ -394,7 +394,7 @@ public final class AppState: @unchecked Sendable {
         }
         var machines: [String: (name: String, online: Bool)] = [:]
         for status in peerStatuses.values {
-            if let machine = status.machine { machines[machine.id] = (machine.name, status.online) }
+            if let machine = status.machine { machines[machine.id] = (machine.name, status.reachable) }
         }
         var outages: [String: PeerOutage?] = [:]
         let newCards = links.values.map { original in

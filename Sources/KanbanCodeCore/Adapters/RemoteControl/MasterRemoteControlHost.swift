@@ -70,7 +70,7 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
              machine: store.state.localMachineIdentity, names: store.state.peerMachineNames,
              display: store.state.remoteDisplay,
              peers: request.local ? [] : store.state.peerStatuses.values.compactMap { status in
-                 status.machine.map { (machine: $0, online: status.online) }
+                 status.machine.map { (machine: $0, online: status.reachable) }
              })
         }
         let local = Self.search(snapshot.cards, request, index: searchIndex) { card in

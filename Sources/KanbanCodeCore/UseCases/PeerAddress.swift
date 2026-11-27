@@ -6,10 +6,12 @@ import Foundation
 /// fetching from them, though, and its requests come from the new address.
 public enum PeerAddress {
     /// The host of a request's source, as a URL host can name it; nil for
-    /// one that names no other machine (loopback, a tunnel through ssh) or
-    /// that a URL cannot carry (a link-local address with its zone).
+    /// one that names no other machine (loopback, a tunnel through ssh, a
+    /// stream through a control connection) or that a URL cannot carry (a
+    /// link-local address with its zone).
     public static func usableHost(_ raw: String) -> String? {
         var host = raw.trimmingCharacters(in: .whitespaces)
+        guard !host.hasPrefix(RemotePeerAddress.tunnelPrefix) else { return nil }
         if host.hasPrefix("[") && host.hasSuffix("]") { host = String(host.dropFirst().dropLast()) }
         // An IPv4 client of a dual-stack socket.
         if host.lowercased().hasPrefix("::ffff:"), host.dropFirst(7).contains(".") {

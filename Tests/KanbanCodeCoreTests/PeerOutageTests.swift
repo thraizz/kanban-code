@@ -30,11 +30,30 @@ struct PeerOutageTests {
     func knownPeer() {
         var s = state(peers: [PeerStatus(peerId: "peer_osaka", machine: osaka, online: false, lastError: "offline", url: url)])
         #expect(s.peerOutage(ownerMachine: "machine_osaka")?.name == "osaka")
-        // Its machine id is known, so the terminal starts and its attach loop retries.
-        #expect(s.ownerWait(ownerMachine: "machine_osaka") == .none)
+        // The terminal waits until it can be called: its attach command keeps
+        // the URL it starts with, and there is no working one yet.
+        #expect(s.ownerWait(ownerMachine: "machine_osaka") == .peerSilent)
         s.peerStatuses["peer_osaka"]?.online = true
         #expect(s.peerOutage(ownerMachine: "machine_osaka") == nil)
         #expect(s.peerOutage(sshMachine: "osaka") == nil)
+        #expect(s.ownerWait(ownerMachine: "machine_osaka") == .none)
+    }
+
+    @Test("a peer is up by its control connection once there is one, whatever its last pull said")
+    func reachableByConnection() {
+        var s = state(peers: [PeerStatus(peerId: "peer_osaka", machine: osaka, online: true, url: url,
+                                         controlError: "no answer for 30 s")])
+        let outage = s.peerOutage(ownerMachine: "machine_osaka")
+        #expect(outage?.error == "no answer for 30 s")
+        #expect(s.ownerWait(ownerMachine: "machine_osaka") == .peerSilent)
+        s.links["card_1"] = Link(id: "card_1", name: "remote card", ownerMachine: "machine_osaka")
+        s.rebuildCards()
+        #expect(s.cards.first { $0.id == "card_1" }?.owner?.online == false)
+
+        s.peerStatuses["peer_osaka"] = PeerStatus(peerId: "peer_osaka", machine: osaka, online: false,
+                                                  lastError: "timed out", url: url, connected: true, connectedVia: .accepted)
+        #expect(s.peerOutage(ownerMachine: "machine_osaka") == nil)
+        #expect(s.ownerWait(ownerMachine: "machine_osaka") == .none)
     }
 
     @Test("nothing to say for this master's own cards or before the peers were tried")

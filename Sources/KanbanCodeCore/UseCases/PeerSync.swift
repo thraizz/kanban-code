@@ -266,7 +266,10 @@ public actor PeerSync {
             try await accept(page, from: endpoint)
             return true
         } catch {
-            if (error as? PeerSyncError) != .selfPeer, let endpoint, await relocate(endpoint, cursor: cursor) {
+            // A connected peer is called through its connection; an address
+            // learned from its requests says nothing about that.
+            if (error as? PeerSyncError) != .selfPeer, controlStates[peer.id]?.connected != true,
+               let endpoint, !endpoint.isForwarded, await relocate(endpoint, cursor: cursor) {
                 return true
             }
             var reach = reachability[peer.id] ?? RemoteReachability(grace: offlineGrace)
@@ -275,7 +278,7 @@ public actor PeerSync {
             var status = statuses[peer.id] ?? PeerStatus(peerId: peer.id)
             status.online = status.online && !reach.isOffline()
             status.lastError = error.localizedDescription
-            status.url = endpoint?.baseURL.absoluteString
+            status.url = endpoint?.address.absoluteString
             await report(status)
             return false
         }
@@ -299,8 +302,9 @@ public actor PeerSync {
         }
         cursors[peer.id] = Cursor(epoch: page.epoch, seq: page.seq)
         reachability[peer.id] = nil
+        // The address shown is a real one, never a forward port.
         await report(PeerStatus(peerId: peer.id, machine: page.machine, online: true, lastSeen: .now,
-                                url: peer.baseURL.absoluteString))
+                                url: peer.address.absoluteString))
     }
 
     /// Tries `peer`, which did not answer at its address, at the one it

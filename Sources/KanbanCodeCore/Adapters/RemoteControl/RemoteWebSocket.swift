@@ -107,6 +107,31 @@ final class RemoteWebSocket: @unchecked Sendable {
         (0..<4).map { _ in UInt8.random(in: 0...255) }
     }
 
+    /// XORs `data` with the 4-byte `mask`, eight bytes at a time: a peer's
+    /// streams carry whole transcripts through masked client frames.
+    static func applyMask(_ mask: [UInt8], to data: inout Data) {
+        guard mask.count == 4 else { return }
+        data.withUnsafeMutableBytes { raw in
+            guard let base = raw.baseAddress else { return }
+            let count = raw.count
+            var word: UInt64 = 0
+            withUnsafeMutableBytes(of: &word) { w in
+                for i in 0..<8 { w[i] = mask[i & 3] }
+            }
+            var i = 0
+            while i + 8 <= count {
+                let value = (base + i).loadUnaligned(as: UInt64.self)
+                (base + i).storeBytes(of: value ^ word, as: UInt64.self)
+                i += 8
+            }
+            let bytes = raw.bindMemory(to: UInt8.self)
+            while i < count {
+                bytes[i] ^= mask[i & 3]
+                i += 1
+            }
+        }
+    }
+
     static func frame(fin: Bool, opcode: Opcode, payload: Data, mask: [UInt8]? = nil) -> Data {
         var out = Data()
         out.append((fin ? 0x80 : 0) | opcode.rawValue)
@@ -127,10 +152,7 @@ final class RemoteWebSocket: @unchecked Sendable {
         if let mask {
             out.append(contentsOf: mask)
             var masked = Data(payload)
-            masked.withUnsafeMutableBytes { raw in
-                let bytes = raw.bindMemory(to: UInt8.self)
-                for i in 0..<bytes.count { bytes[i] ^= mask[i & 3] }
-            }
+            applyMask(mask, to: &masked)
             out.append(masked)
         } else {
             out.append(payload)
@@ -163,12 +185,7 @@ final class RemoteWebSocket: @unchecked Sendable {
             guard masked || role == .client else { throw RemoteHTTPError.malformed("client frames must be masked") }
             let mask = masked ? [UInt8](try await connection.read(exactly: 4)) : nil
             var payload = try await connection.read(exactly: Int(length))
-            if let mask {
-                payload.withUnsafeMutableBytes { raw in
-                    let bytes = raw.bindMemory(to: UInt8.self)
-                    for i in 0..<bytes.count { bytes[i] ^= mask[i & 3] }
-                }
-            }
+            if let mask { Self.applyMask(mask, to: &payload) }
 
             switch opcode {
             case .ping:

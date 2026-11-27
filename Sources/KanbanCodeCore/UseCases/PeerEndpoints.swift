@@ -6,13 +6,25 @@ import Synchronization
 /// answers can change while this master runs.
 public struct PeerEndpoint: Sendable, Equatable {
     public let peer: PeerConfig
-    /// The peer's Remote Control server, without a trailing slash.
+    /// The peer's Remote Control server, without a trailing slash. While
+    /// the peer dialed this master it is the loopback forward port of that
+    /// connection (`docs/peer-connections.md`, "Reverse streams").
     public let baseURL: URL
+    /// A real address of the peer, never a forward port: to show, to tell
+    /// an ssh machine on the same host, and to write into files other
+    /// programs read. The hint a connection was dialed to, else where the
+    /// peer's connection came from, else its first hint.
+    public let address: URL
 
-    public init(peer: PeerConfig, baseURL: URL) {
+    public init(peer: PeerConfig, baseURL: URL, address: URL? = nil) {
         self.peer = peer
         self.baseURL = baseURL
+        self.address = address ?? baseURL
     }
+
+    /// Whether calls reach the peer through its control connection rather
+    /// than at an address of its own.
+    public var isForwarded: Bool { baseURL != address }
 
     public var id: String { peer.id }
     public var name: String { peer.name }
@@ -31,9 +43,12 @@ public struct PeerEndpoint: Sendable, Equatable {
 /// Everything that calls a peer asks here, per call, instead of reading an
 /// address from its `PeerConfig`.
 ///
-/// For now the answer is the entry's first address hint (the URL from
-/// Settings › Peers). `PeerSync` keeps the entries and the machine id each
-/// peer answered as up to date here.
+/// While a control connection to the peer is up, `PeerControl` sets the
+/// route: the hint it dialed, or the loopback forward port when the peer
+/// dialed this master. Without one the answer is the entry's first address
+/// hint, for a peer that has no control connection (an older build) until
+/// step 5. `PeerSync` keeps the entries and the machine id each peer
+/// answered as up to date here.
 ///
 /// A lock, not an actor: the terminal of a card on a peer builds its attach
 /// command synchronously on the main actor.
@@ -42,6 +57,13 @@ public final class PeerEndpoints: Sendable {
         var peers: [PeerConfig] = []
         /// The machine id each peer answered as, by peer id.
         var machines: [String: String] = [:]
+        /// Where each peer with a control connection is called, by peer id.
+        var routes: [String: Route] = [:]
+    }
+
+    private struct Route {
+        var base: URL
+        var address: URL?
     }
 
     private let state: Mutex<State>
@@ -50,13 +72,28 @@ public final class PeerEndpoints: Sendable {
         state = Mutex(State(peers: peers))
     }
 
-    /// Replaces the peer entries. A removed peer's machine id goes with it.
+    /// Replaces the peer entries. A removed peer's machine id and route go
+    /// with it.
     public func setPeers(_ peers: [PeerConfig]) {
         state.withLock { state in
             state.peers = peers
             let ids = Set(peers.map(\.id))
             state.machines = state.machines.filter { ids.contains($0.key) }
+            state.routes = state.routes.filter { ids.contains($0.key) }
         }
+    }
+
+    /// Calls to the peer `peerId` go to `base` while its control connection
+    /// is up (nil: it went down). `address` is a real address of it.
+    func setRoute(_ base: URL?, address: URL?, forPeer peerId: String) {
+        state.withLock { state in
+            state.routes[peerId] = base.map { Route(base: $0, address: address) }
+        }
+    }
+
+    /// The base URL of a loopback forward port.
+    static func forwardURL(port: Int) -> URL {
+        URL(string: "http://127.0.0.1:\(port)")!
     }
 
     /// The peer `peerId` answered as the machine `machineId`.
@@ -68,14 +105,14 @@ public final class PeerEndpoints: Sendable {
     /// disabled ones included.
     public func all() -> [PeerEndpoint] {
         state.withLock { state in
-            state.peers.compactMap { peer in Self.configuredURL(peer).map { PeerEndpoint(peer: peer, baseURL: $0) } }
+            state.peers.compactMap { Self.endpoint($0, in: state) }
         }
     }
 
     public func endpoint(forPeer peerId: String) -> PeerEndpoint? {
         state.withLock { state in
             guard let peer = state.peers.first(where: { $0.id == peerId }) else { return nil }
-            return Self.configuredURL(peer).map { PeerEndpoint(peer: peer, baseURL: $0) }
+            return Self.endpoint(peer, in: state)
         }
     }
 
@@ -86,7 +123,7 @@ public final class PeerEndpoints: Sendable {
         return state.withLock { state in
             guard let peer = state.peers.first(where: { (state.machines[$0.id] ?? $0.machineId) == machineId })
             else { return nil }
-            return Self.configuredURL(peer).map { PeerEndpoint(peer: peer, baseURL: $0) }
+            return Self.endpoint(peer, in: state)
         }
     }
 
@@ -122,6 +159,16 @@ public final class PeerEndpoints: Sendable {
         state.withLock { state in
             state.machines[peerId] ?? state.peers.first { $0.id == peerId }?.machineId
         }
+    }
+
+    /// The entry's route while it has a control connection, else its first
+    /// address hint.
+    private static func endpoint(_ peer: PeerConfig, in state: State) -> PeerEndpoint? {
+        let hint = configuredURL(peer)
+        if let route = state.routes[peer.id] {
+            return PeerEndpoint(peer: peer, baseURL: route.base, address: route.address ?? hint)
+        }
+        return hint.map { PeerEndpoint(peer: peer, baseURL: $0) }
     }
 
     /// The entry's first address hint as a base URL: trimmed, without a

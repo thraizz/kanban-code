@@ -104,7 +104,7 @@ private final class TestMaster {
     /// connections included, when `control`; else from no sync at all.
     private var latePeerServer: LatePeerLinksServer?
 
-    func serve(control: Bool = false) async throws {
+    func serve(control: Bool = false, vault: VaultService? = nil, scrubber: SecretScrubber? = nil) async throws {
         let peerServer: any PeerLinksServing
         if control {
             let late = LatePeerLinksServer(store: store)
@@ -118,7 +118,9 @@ private final class TestMaster {
             host: MasterRemoteControlHost(engine: engine), devices: devices, port: 0,
             bindAddresses: { [RemoteNetworkAddresses.loopback] },
             options: .init(appVersion: "test", hostName: identity.name),
-            peerServer: peerServer
+            peerServer: peerServer,
+            vault: vault,
+            scrubber: scrubber
         )
         try await server.start()
     }
@@ -133,6 +135,7 @@ private final class LatePeerLinksServer: PeerLinksServing, @unchecked Sendable {
     private let lock = NSLock()
     private var _peerSync: PeerSync?
     private var listening: (@Sendable () -> (addresses: [String], port: Int)?)?
+    private var tunnels: PeerTunnelAcceptor?
 
     init(store: BoardStore) {
         self.store = store
@@ -141,11 +144,12 @@ private final class LatePeerLinksServer: PeerLinksServing, @unchecked Sendable {
     var peerSync: PeerSync? {
         get { lock.withLock { _peerSync } }
         set {
-            let provider = lock.withLock { () -> (@Sendable () -> (addresses: [String], port: Int)?)? in
+            let (provider, acceptor) = lock.withLock { () -> ((@Sendable () -> (addresses: [String], port: Int)?)?, PeerTunnelAcceptor?) in
                 _peerSync = newValue
-                return listening
+                return (listening, tunnels)
             }
             if let provider { newValue?.control.setListening(provider) }
+            if let acceptor { newValue?.control.setTunnels(acceptor) }
         }
     }
 
@@ -163,6 +167,13 @@ private final class LatePeerLinksServer: PeerLinksServing, @unchecked Sendable {
     func serverListening(_ provider: @escaping @Sendable () -> (addresses: [String], port: Int)?) {
         lock.withLock { listening = provider }
         peerSync?.control.setListening(provider)
+    }
+    func servePeerStream(_ socket: PeerStreamSocket, id: Int, device: RemoteDevice) async {
+        await inner.servePeerStream(socket, id: id, device: device)
+    }
+    func serverTunnels(_ acceptor: PeerTunnelAcceptor) {
+        lock.withLock { tunnels = acceptor }
+        peerSync?.control.setTunnels(acceptor)
     }
 }
 
@@ -1808,6 +1819,39 @@ struct PeerControlWireTests {
         #expect(bounded.first == "http://a:1")
     }
 
+    @Test("a stream through a control connection is neither loopback nor an address")
+    func tunnelMarker() {
+        let tunnel = RemotePeerAddress.tunnel("machine_mac")
+        #expect(tunnel.isTunnel)
+        #expect(!tunnel.isLoopback)
+        #expect(PeerAddress.usableHost(tunnel.host) == nil)
+        #expect(!RemotePeerAddress(host: "127.0.0.1", port: 5).isTunnel)
+        let open = try? JSONEncoder.remote.encode(PeerControlMessage(open: 7))
+        #expect(open.map { String(decoding: $0, as: UTF8.self) } == #"{"open":7}"#)
+    }
+
+    @Test("a status reads as reachable by its control connection once the control loop said anything about it")
+    func reachable() {
+        #expect(PeerStatus(peerId: "p", online: true).reachable)
+        #expect(!PeerStatus(peerId: "p", online: true, controlError: "connection refused").reachable)
+        #expect(PeerStatus(peerId: "p", online: false, connected: true).reachable)
+        #expect(PeerStatus(peerId: "p", online: true, controlError: "refused").unreachableReason == "refused")
+        #expect(PeerStatus(peerId: "p", online: false, lastError: "timed out").unreachableReason == "timed out")
+    }
+
+    @Test("a mask applied twice gives the payload back, at every length")
+    func masking() {
+        let mask: [UInt8] = [0x12, 0x34, 0x56, 0x78]
+        for length in [0, 1, 3, 7, 8, 9, 15, 16, 17, 1000] {
+            let payload = Data((0..<length).map { UInt8(truncatingIfNeeded: $0 &* 31) })
+            var data = payload
+            RemoteWebSocket.applyMask(mask, to: &data)
+            #expect(data == Data(payload.enumerated().map { $0.element ^ mask[$0.offset & 3] }))
+            RemoteWebSocket.applyMask(mask, to: &data)
+            #expect(data == payload)
+        }
+    }
+
     @Test("a hello announces the addresses the server listens on, every interface's for a wildcard")
     func advertised() {
         let fixed = PeerControl.advertised((addresses: ["127.0.0.1", "192.168.178.230"], port: 7780))
@@ -1817,5 +1861,400 @@ struct PeerControlWireTests {
         #expect(!wild.addresses.contains("0.0.0.0"))
         #expect(!wild.addresses.contains("127.0.0.1"))
         #expect(PeerControl.advertised(nil).addresses.isEmpty)
+    }
+}
+
+// MARK: - Reverse streams
+
+/// The status of `method url`, with the bearer `token` when given.
+private func httpStatus(_ method: String, _ url: URL, token: String? = nil, body: Data? = nil) async throws -> Int {
+    var request = URLRequest(url: url, timeoutInterval: 10)
+    request.httpMethod = method
+    if let token { request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization") }
+    request.httpBody = body
+    let (_, response) = try await URLSession(configuration: .ephemeral).data(for: request)
+    return (response as? HTTPURLResponse)?.statusCode ?? 0
+}
+
+/// Bytes counted from any thread.
+private final class ByteCount: @unchecked Sendable {
+    private let lock = NSLock()
+    private var total = 0
+    func add(_ n: Int) { lock.withLock { total += n } }
+    var value: Int { lock.withLock { total } }
+}
+
+/// The Mac and the box, the Mac dialing; the box's entry for the Mac names
+/// a dead port. `peerToken` and `terminalToken` are what the Mac issued to
+/// the box.
+private struct StreamPair {
+    let mac: TestMaster
+    let box: TestMaster
+    let peerToken: String
+    let terminalToken: String
+}
+
+@Suite("Peer reverse streams", .serialized)
+@MainActor
+struct PeerReverseStreamTests {
+    static let dead = "http://127.0.0.1:1"
+
+    /// Pings slow enough that a 50 MB copy in a debug build never starves
+    /// the connection; a stream not answered fails after 3 s.
+    static let options = PeerControl.Options(
+        pingInterval: .seconds(1), timeout: .seconds(10), helloTimeout: .seconds(2), dialTimeout: 2,
+        firstRetry: .milliseconds(100), maxRetry: .milliseconds(400), streamTimeout: .seconds(3))
+
+    private func root(_ name: String) -> String {
+        (NSTemporaryDirectory() as NSString).appendingPathComponent("\(name)-\(UUID().uuidString)")
+    }
+
+    private func pair(_ root: String, vault: VaultService? = nil, scrubber: SecretScrubber? = nil) async throws -> StreamPair {
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve(control: true, vault: vault, scrubber: scrubber)
+        try await box.serve(control: true)
+        let boxToken = try box.devices.add(name: "mac", scope: .peer).token
+        let peerToken = try mac.devices.add(name: "box", scope: .peer).token
+        let terminalToken = try mac.devices.add(name: "box terminals", scope: .terminal).token
+        try await mac.start(peers: [PeerConfig(id: "peer_box", name: "box", url: box.url, token: boxToken)],
+                            control: Self.options)
+        try await box.start(peers: [PeerConfig(id: "peer_mac", name: "mac", url: Self.dead, token: peerToken,
+                                               terminalToken: terminalToken)],
+                            control: Self.options)
+        return StreamPair(mac: mac, box: box, peerToken: peerToken, terminalToken: terminalToken)
+    }
+
+    /// Runs both syncs, with the plain pull timer out of the way, until the
+    /// box holds the connection the Mac dialed.
+    private func connect(_ pair: StreamPair) async -> [Task<Void, Never>] {
+        let syncs = [pair.mac.peerSync!, pair.box.peerSync!]
+        let tasks = syncs.map { sync in
+            Task.detached { await sync.run(interval: .seconds(60), offlineInterval: .seconds(60), connectedInterval: .seconds(60)) }
+        }
+        #expect(await eventually {
+            pair.box.store.state.peerStatuses["peer_mac"]?.connectedVia == .accepted
+                && pair.mac.store.state.peerStatuses["peer_box"]?.connectedVia == .dialed
+        })
+        return tasks
+    }
+
+    private func forwardURL(_ box: TestMaster) async throws -> URL {
+        let port = try #require(await box.peerSync.control.links().first?.forwardPort)
+        return try #require(URL(string: "http://127.0.0.1:\(port)"))
+    }
+
+    @Test("with its address for the Mac dead, the box gets the Mac's cards through the Mac's connection")
+    func links() async throws {
+        let dir = root("streams-links")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let p = try await pair(dir)
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+
+        let forward = try await forwardURL(p.box)
+        #expect(p.box.peerSync.endpoints.baseURL(forPeer: "peer_mac") == forward)
+        #expect(p.mac.peerSync.endpoints.baseURL(forPeer: "peer_box")?.absoluteString == p.box.url)
+
+        // The Mac says so on the connection, as its ownership loop does; the
+        // box pulls through it.
+        p.mac.store.dispatch(.createManualTask(Link(id: "card_mac", name: "On the Mac", projectPath: "/tmp/p", column: .backlog)))
+        await p.mac.peerSync.notifyPeers()
+        #expect(await eventually { p.box.store.state.links["card_mac"] != nil })
+        let status = try #require(p.box.store.state.peerStatuses["peer_mac"])
+        #expect(status.online && status.reachable)
+        #expect(p.box.engine.isPeerOnline(p.mac.identity.id))
+        // What the box shows as the Mac's address is a real one, never the forward port.
+        #expect(status.url == Self.dead)
+        let overview = await BoardPeerLinksServer(store: p.box.store, peerSync: p.box.peerSync).peersOverview()
+        #expect(overview.peers.first?.url == Self.dead)
+        // The box's requests reach the Mac from the tunnel: nothing about it is an address.
+        let hints = await p.mac.peerSync.configuredPeers().flatMap(\.addressHints)
+        #expect(!hints.contains { $0.contains("tunnel") })
+    }
+
+    @Test("a prompt typed on the box for a card the Mac runs reaches the Mac through the Mac's connection")
+    func forwardedPrompt() async throws {
+        let dir = root("streams-prompt")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let p = try await pair(dir)
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+
+        p.mac.store.dispatch(.createManualTask(Link(
+            id: "card_mac", name: "On the Mac", projectPath: "/tmp/acme", column: .waiting,
+            sessionLink: SessionLink(sessionId: "sid-mac"), tmuxLink: TmuxLink(sessionName: "mac-session"))))
+        p.mac.store.dispatch(.tmuxLivenessScanned(live: ["mac-session"]))
+        #expect(await p.box.peerSync.pull(peerId: "peer_mac"))
+        #expect(p.box.engine.isForeign("card_mac"))
+
+        p.box.store.dispatch(.addQueuedPrompt(cardId: "card_mac", prompt: QueuedPrompt(body: "from the box"), placement: .back))
+        #expect(p.box.store.state.links["card_mac"]?.queuedPrompts == nil)
+        #expect(await eventually {
+            p.mac.tmux.pasted.contains("from the box")
+                || p.mac.store.state.links["card_mac"]?.queuedPrompts?.contains { $0.body == "from the box" } == true
+        })
+    }
+
+    @Test("a card the Mac hands to the box is adopted through the Mac's connection: handover info and transcript")
+    func handover() async throws {
+        let dir = root("streams-handover")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let p = try await pair(dir)
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+
+        let sessionId = "0f1e2d3c-aaaa-bbbb-cccc-000000000031"
+        let transcript = "\(dir)/mac-transcript.jsonl"
+        let lines = (0..<500).map { #"{"type":"user","cwd":"\#(dir)","message":{"role":"user","content":"line \#($0)"}}"# }
+        try (lines.joined(separator: "\n") + "\n").write(toFile: transcript, atomically: true, encoding: .utf8)
+        p.mac.store.dispatch(.createManualTask(Link(
+            id: "card_move", name: "Move me", projectPath: dir, column: .waiting,
+            sessionLink: SessionLink(sessionId: sessionId, sessionPath: transcript))))
+        await p.box.peerSync.pull(peerId: "peer_mac")
+        #expect(p.box.store.state.links["card_move"] != nil)
+
+        try await p.mac.engine.moveCard("card_move", to: "box")
+        #expect(p.mac.store.state.links["card_move"]?.ownerMachine == p.box.identity.id)
+        #expect(await eventually {
+            p.box.store.state.links["card_move"]?.ownerMachine == p.box.identity.id
+                && p.box.store.state.links["card_move"]?.migrating == true
+        })
+
+        try await p.box.engine.adopt(cardId: "card_move")
+        let adopted = try #require(p.box.store.state.links["card_move"])
+        #expect(adopted.migrating == nil)
+        let copied = try #require(adopted.sessionLink?.sessionPath)
+        #expect(copied == p.box.engine.transcriptPath(cwd: dir, sessionId: sessionId))
+        #expect(try Data(contentsOf: URL(fileURLWithPath: copied)) == Data(contentsOf: URL(fileURLWithPath: transcript)))
+    }
+
+    @Test("the Mac's attention requests reach the box through the Mac's connection")
+    func attention() async throws {
+        let dir = root("streams-attention")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let p = try await pair(dir)
+        var tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+
+        p.mac.store.dispatch(.attentionRaised(AttentionRequest(id: "att_mac", cardId: nil, kind: .question, title: "Q", body: "?")))
+        tasks.append(Task { await p.box.engine.runAttentionPeerSync(interval: .seconds(60)) })
+        #expect(await eventually {
+            p.box.store.state.openAttentionRequests.contains { $0.id == "att_mac" && $0.machineId == p.mac.identity.id }
+        })
+    }
+
+    @Test("a terminal of a card the Mac runs opens from the box through the Mac's connection, with a terminal token only")
+    func terminal() async throws {
+        let dir = root("streams-terminal")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let p = try await pair(dir)
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+
+        p.mac.engine.platform.terminalCommand = { _ in ["/bin/sh", "-c", "printf ready; cat"] }
+        p.mac.store.dispatch(.createManualTask(Link(
+            id: "card_term", name: "Terminal", projectPath: dir, column: .waiting, tmuxLink: TmuxLink(sessionName: "term-1"))))
+        p.mac.store.dispatch(.tmuxLivenessScanned(live: ["term-1"]))
+        let forward = try await forwardURL(p.box)
+        let path = "/v1/cards/card_term/terminal"
+        let query = [URLQueryItem(name: "session", value: "term-1")]
+
+        let ws = try await RemoteWebSocketClient.connect(baseURL: forward, path: path, query: query, token: p.terminalToken)
+        defer { ws.close() }
+        func read(until marker: String) async throws -> String {
+            var text = ""
+            while !text.contains(marker) {
+                guard let message = try await ws.receive() else { break }
+                if case .binary(let data) = message { text += String(decoding: data, as: UTF8.self) }
+            }
+            return text
+        }
+        #expect(try await read(until: "ready").contains("ready"))
+        try await ws.sendBinary(Data("through the tunnel\n".utf8))
+        #expect(try await read(until: "through the tunnel").contains("through the tunnel"))
+
+        // The peer scope opens no terminal, through the connection or not.
+        do {
+            _ = try await RemoteWebSocketClient.connect(baseURL: forward, path: path, query: query, token: p.peerToken)
+            Issue.record("a peer token opened a terminal through the tunnel")
+        } catch let error as RemoteWebSocketDialError {
+            guard case .refused(let status, _) = error else {
+                Issue.record("\(error)")
+                return
+            }
+            #expect(status == 403)
+        }
+    }
+
+    @Test("a request through the Mac's connection is not loopback: no token, no vault and no scrubber")
+    func tunnelIsNotLoopback() async throws {
+        let dir = root("streams-security")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let vault = VaultService(
+            kanbanHome: dir + "/vault", keys: MemoryVaultKeyProvider(), machine: "mac", approvals: nil,
+            cardTitle: { _ in nil }, cardSessions: { [:] }, peers: nil)
+        try await vault.store.upsert(VaultSecret(name: "OPEN", value: "open-value", tier: .open))
+        let scrubber = SecretScrubber(vault: vault, home: dir + "/scrub-home", machine: "mac")
+        let p = try await pair(dir, vault: vault, scrubber: scrubber)
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+
+        let forward = try await forwardURL(p.box)
+        let mac = try #require(URL(string: p.mac.url))
+        let release = try JSONEncoder().encode(VaultReleaseRequest(mode: "run", names: ["OPEN"], cardId: "card_fake"))
+        // Straight on the Mac's loopback, these answer a card's process without a token.
+        #expect(try await httpStatus("GET", mac.appendingPathComponent("v1/vault/secrets")) == 200)
+        #expect(try await httpStatus("GET", mac.appendingPathComponent("v1/scrub/status")) == 200)
+        #expect(try await httpStatus("POST", mac.appendingPathComponent("v1/vault/release"), body: release) == 200)
+        // From the box's forward port, through the Mac's connection, they do not.
+        #expect(try await httpStatus("GET", forward.appendingPathComponent("v1/vault/secrets")) == 401)
+        #expect(try await httpStatus("GET", forward.appendingPathComponent("v1/scrub/status")) == 401)
+        #expect(try await httpStatus("POST", forward.appendingPathComponent("v1/vault/release"), body: release) == 401)
+        #expect(try await httpStatus("GET", forward.appendingPathComponent("v1/board")) == 401)
+        // A token works as it would at the Mac's address.
+        #expect(try await httpStatus("GET", forward.appendingPathComponent("v1/me"), token: p.peerToken) == 200)
+        // A control connection or a stream is never opened through one.
+        let stream = try #require(URL(string: forward.absoluteString + "/v1/peer/stream?id=1"))
+        #expect(try await httpStatus("GET", stream, token: p.peerToken) == 403)
+        let control = try #require(URL(string: forward.absoluteString + "/v1/peer/control"))
+        #expect(try await httpStatus("GET", control, token: p.peerToken) == 403)
+    }
+
+    @Test("a 50 MB transcript copy and a sync pull run at once, and the pull does not wait for the copy")
+    func copyDoesNotStarveSync() async throws {
+        let dir = root("streams-big")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let p = try await pair(dir)
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+
+        // Random text, so it does not compress away on the wire.
+        var generator = SystemRandomNumberGenerator()
+        var random = Data(count: 768 << 10)
+        random.withUnsafeMutableBytes { raw in
+            let words = raw.bindMemory(to: UInt64.self)
+            for i in 0..<words.count { words[i] = generator.next() }
+        }
+        let block = Data((random.base64EncodedString(options: .lineLength76Characters) + "\n").utf8)
+        var blob = Data()
+        blob.reserveCapacity(51 << 20)
+        while blob.count < 50 << 20 { blob.append(block) }
+        let big = "\(dir)/big.jsonl"
+        try blob.write(to: URL(fileURLWithPath: big))
+        p.mac.store.dispatch(.createManualTask(Link(
+            id: "card_big", name: "Big", projectPath: dir, column: .waiting,
+            sessionLink: SessionLink(sessionId: "sid-big", sessionPath: big))))
+        await p.box.peerSync.pull(peerId: "peer_mac")
+        #expect(p.box.store.state.links["card_big"] != nil)
+        let client = try #require(await p.box.engine.peerClient(machineId: p.mac.identity.id))
+
+        let total = blob.count
+        let copied = ByteCount()
+        let clock = ContinuousClock()
+        let copyStart = clock.now
+        let copy = Task.detached { () throws -> Data in
+            var out = Data()
+            out.reserveCapacity(total)
+            while out.count < total {
+                let slice = try await client.rawTranscript(cardId: "card_big", offset: out.count)
+                if slice.data.isEmpty { break }
+                out.append(slice.data)
+                copied.add(slice.data.count)
+            }
+            return out
+        }
+        #expect(await eventually(within: .seconds(30)) { copied.value > 0 })
+
+        p.mac.store.dispatch(.createManualTask(Link(id: "card_during", name: "During the copy", projectPath: dir, column: .backlog)))
+        let pullStart = clock.now
+        #expect(await p.box.peerSync.pull(peerId: "peer_mac"))
+        let pullTook = clock.now - pullStart
+        let copiedThen = copied.value
+        #expect(p.box.store.state.links["card_during"] != nil)
+
+        let data = try await copy.value
+        let copyTook = clock.now - copyStart
+        #expect(data == blob)
+        #expect(pullTook < .seconds(1), "the pull took \(pullTook); the copy \(copyTook)")
+        #expect(copiedThen < total, "the copy (\(copyTook)) ended before the pull did")
+    }
+
+    @Test("a local connection the Mac does not serve fails at once with its reason, not after the wait")
+    func refusedStream() async throws {
+        let dir = root("streams-refused")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let p = try await pair(dir)
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+        let forward = try await forwardURL(p.box)
+        #expect(try await httpStatus("GET", forward.appendingPathComponent("v1/me"), token: p.peerToken) == 200)
+
+        // As a Mac whose Remote Control server does not run.
+        p.mac.peerSync.control.setTunnels(nil)
+        let took = try await Self.timeToClose(forward)
+        #expect(took < .seconds(1), "took \(took)")
+    }
+
+    /// Connects to the forward port, sends a request and waits until the
+    /// box drops the connection; how long that took.
+    private static func timeToClose(_ forward: URL) async throws -> Duration {
+        let port = try #require(forward.port)
+        let stream = try await RemoteTransport.connect(host: "127.0.0.1", port: port, timeout: 2)
+        let conn = RemoteConnection(stream)
+        conn.start()
+        defer { conn.cancel() }
+        let clock = ContinuousClock()
+        let start = clock.now
+        try await conn.send(Data("GET /v1/health HTTP/1.1\r\nHost: x\r\n\r\n".utf8))
+        do {
+            let response = try await conn.readResponse()
+            Issue.record("answered \(response.status)")
+        } catch {}
+        return clock.now - start
+    }
+
+    @Test("an open the Mac never answers fails after the stream timeout")
+    func unansweredStream() async throws {
+        let dir = root("streams-silent")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let p = try await pair(dir)
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+        let forward = try await forwardURL(p.box)
+
+        p.mac.peerSync.control.goSilentForTesting()
+        let took = try await Self.timeToClose(forward)
+        #expect(took >= Self.options.streamTimeout - .milliseconds(200) && took < Self.options.streamTimeout + .seconds(1), "took \(took)")
+    }
+
+    @Test("the forward port closes with the connection, and a reconnect gets the same port")
+    func forwardPortFollowsTheConnection() async throws {
+        let dir = root("streams-port")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let p = try await pair(dir)
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+        let forward = try await forwardURL(p.box)
+
+        let entry = try #require(await p.mac.peerSync.configuredPeers().first)
+        var off = entry
+        off.enabled = false
+        await p.mac.peerSync.setPeers([off])
+        #expect(await eventually { p.box.store.state.peerStatuses["peer_mac"]?.connected == false })
+        #expect(await p.box.peerSync.control.links().isEmpty)
+        // Calls fall back to the address on file, which is dead.
+        #expect(p.box.peerSync.endpoints.baseURL(forPeer: "peer_mac")?.absoluteString == Self.dead)
+        #expect(!p.box.store.state.peerStatuses["peer_mac"]!.reachable)
+        await #expect(throws: (any Error).self) {
+            _ = try await httpStatus("GET", forward.appendingPathComponent("v1/me"), token: p.peerToken)
+        }
+
+        await p.mac.peerSync.setPeers([entry])
+        #expect(await eventually { p.box.store.state.peerStatuses["peer_mac"]?.connectedVia == .accepted })
+        #expect(try await forwardURL(p.box) == forward)
+        #expect(try await httpStatus("GET", forward.appendingPathComponent("v1/me"), token: p.peerToken) == 200)
     }
 }

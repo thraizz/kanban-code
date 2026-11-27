@@ -29,7 +29,7 @@ enum RemoteScopePolicy {
     /// No terminal, and no vault route that asks for or edits a secret.
     static let peer: Set<String> = [
         "GET me", "GET board", "GET machines", "GET events", "GET peers", "GET links", "POST links/changed",
-        "GET peer/control",
+        "GET peer/control", "GET peer/stream",
         "GET sync/state", "GET sync/file", "POST sync/changed", "POST optmem/run",
         "GET attention", "POST attention/presence", "POST attention/*/resolve", "POST attention/*/note",
         "GET vault/replica", "POST vault/replica", "POST vault/card-token",

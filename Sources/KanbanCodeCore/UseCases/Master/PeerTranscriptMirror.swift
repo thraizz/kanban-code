@@ -51,7 +51,7 @@ public final class PeerTranscriptMirror {
                 known: state.peerTranscriptPaths, directory: directory)
             if !found.isEmpty { engine.store.dispatch(.peerTranscriptCopiesFound(paths: found)) }
         }
-        let online = Set(state.peerStatuses.values.compactMap { $0.online ? $0.machine?.id : nil })
+        let online = Set(state.peerStatuses.values.compactMap { $0.reachable ? $0.machine?.id : nil })
         guard !online.isEmpty else { return }
 
         if tick % 2 == 0 { await scanActivity(online: online) }

@@ -20,6 +20,12 @@ public protocol PeerLinksServing: AnyObject, Sendable {
     /// Where the Remote Control server listens now, while it runs: the
     /// control connections announce it.
     func serverListening(_ provider: @escaping @Sendable () -> (addresses: [String], port: Int)?)
+    /// `GET /v1/peer/stream?id=`: serves the stream `id` the dialer of a
+    /// control connection dialed back, until it ends.
+    func servePeerStream(_ socket: PeerStreamSocket, id: Int, device: RemoteDevice) async
+    /// Where the Remote Control server takes the streams this master dials
+    /// back for its control connections.
+    func serverTunnels(_ acceptor: PeerTunnelAcceptor)
 }
 
 extension PeerLinksServing {
@@ -28,6 +34,10 @@ extension PeerLinksServing {
         socket.close(reason: "this master does not sync with peers", code: 1008)
     }
     public func serverListening(_ provider: @escaping @Sendable () -> (addresses: [String], port: Int)?) {}
+    public func servePeerStream(_ socket: PeerStreamSocket, id: Int, device: RemoteDevice) async {
+        socket.ws.close(code: 1008, reason: "this master does not sync with peers")
+    }
+    public func serverTunnels(_ acceptor: PeerTunnelAcceptor) {}
 }
 
 /// Body of `GET /v1/peers`.
@@ -45,8 +55,8 @@ public struct PeersOverview: Codable, Sendable, Equatable {
 public struct PeerOverview: Codable, Sendable, Equatable {
     public var id: String
     public var name: String
-    /// Where this master reaches the peer now, from `PeerEndpoints`; empty
-    /// when it has no address.
+    /// A real address of the peer, from `PeerEndpoints` (never the forward
+    /// port its calls may go to); empty when it has no address.
     public var url: String
     public var enabled: Bool
     public var status: PeerStatus?
@@ -134,11 +144,23 @@ public final class BoardPeerLinksServer: PeerLinksServing {
             socket.close(reason: "this master does not sync with peers", code: 1008)
             return
         }
-        await peerSync.control.serveAccepted(socket, device: device.name)
+        await peerSync.control.serveAccepted(socket, device: device.name, deviceId: device.id)
     }
 
     public func serverListening(_ provider: @escaping @Sendable () -> (addresses: [String], port: Int)?) {
         peerSync?.control.setListening(provider)
+    }
+
+    public func servePeerStream(_ socket: PeerStreamSocket, id: Int, device: RemoteDevice) async {
+        guard let peerSync else {
+            socket.ws.close(code: 1008, reason: "this master does not sync with peers")
+            return
+        }
+        await peerSync.control.serveStream(socket, id: id, deviceId: device.id)
+    }
+
+    public func serverTunnels(_ acceptor: PeerTunnelAcceptor) {
+        peerSync?.control.setTunnels(acceptor)
     }
 
     public func peersOverview() async -> PeersOverview {
@@ -147,7 +169,8 @@ public final class BoardPeerLinksServer: PeerLinksServing {
         let peers = await peerSync.configuredPeers()
         var overview: [PeerOverview] = []
         for peer in peers {
-            overview.append(PeerOverview(peer: peer, baseURL: peerSync.endpoints.baseURL(forPeer: peer.id),
+            // A real address, never a forward port.
+            overview.append(PeerOverview(peer: peer, baseURL: peerSync.endpoints.endpoint(forPeer: peer.id)?.address,
                                          status: await peerSync.status(of: peer.id)))
         }
         return PeersOverview(machine: machine, peers: overview)

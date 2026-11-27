@@ -55,8 +55,8 @@ extension AppState {
     }
 
     private func outage(of status: PeerStatus) -> PeerOutage? {
-        guard !status.online else { return nil }
-        return PeerOutage(name: peerDisplayName(status), url: status.url, error: status.lastError)
+        guard !status.reachable else { return nil }
+        return PeerOutage(name: peerDisplayName(status), url: status.url, error: status.unreachableReason)
     }
 
     /// The peers that have not answered since this master started, so their
@@ -92,12 +92,17 @@ extension AppState {
         return outage(of: status)
     }
 
-    /// Whether the terminal of the card that owns `ownerMachine` waits.
+    /// Whether the terminal of the card that owns `ownerMachine` waits. A
+    /// known owner this master cannot call now holds it too: its attach
+    /// command takes the owner's address when it starts, and while the
+    /// owner is not connected there is none that works.
     public func ownerWait(ownerMachine owner: String?) -> OwnerWait {
         guard let owner else { return .none }
         if localMachineId.isEmpty { return .loading }
         if owner == localMachineId { return .none }
-        if peerStatuses.values.contains(where: { $0.machine?.id == owner }) { return .none }
+        if let status = peerStatuses.values.first(where: { $0.machine?.id == owner }) {
+            return status.reachable ? .none : .peerSilent
+        }
         if peerStatuses.isEmpty { return .loading }
         return silentPeers.isEmpty ? .none : .peerSilent
     }

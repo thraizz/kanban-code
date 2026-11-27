@@ -62,9 +62,10 @@ extension MasterEngine {
             || (!state.localMachineName.isEmpty && target.lowercased() == state.localMachineName.lowercased())
     }
 
-    /// Whether the peer with this machine id answered its last pull.
+    /// Whether this master can call the peer with this machine id now: its
+    /// control connection is up (`PeerStatus.reachable`).
     public func isPeerOnline(_ machineId: String) -> Bool {
-        store.state.peerStatuses.values.contains { $0.machine?.id == machineId && $0.online }
+        store.state.peerStatuses.values.contains { $0.machine?.id == machineId && $0.reachable }
     }
 
     /// A client of the peer master with this machine id, at the address
