@@ -745,6 +745,46 @@ struct MasterHandoverTests {
         #expect(box.tmux.created.count == 1)
     }
 
+    @Test("a first launch right after a start waits for the peer to fetch from here once, then hands the card over")
+    func launchOnPeerWaitsForFirstFetch() async throws {
+        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-wait-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(atPath: root) }
+        let repoA = "\(root)/mac/widgets"
+        try FileManager.default.createDirectory(atPath: repoA, withIntermediateDirectories: true)
+
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve()
+        try await box.serve()
+        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
+        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
+        defer { mac.server.stop(); box.server.stop() }
+        // The mac knows box, but box has not fetched from the mac yet, and
+        // the mac just started: whether box would pick a card up is not known.
+        await mac.peerSync.pullAll()
+
+        mac.store.dispatch(.createManualTask(Link(id: "card_new", name: "New work", projectPath: repoA, column: .backlog, promptBody: "do it")))
+        mac.engine.launch(cardId: "card_new", prompt: "do it now", projectPath: repoA, worktreeName: nil,
+                          runRemotely: true, machineChoice: .existing("box"))
+        #expect(mac.store.state.links["card_new"]?.ownerMachine != box.identity.id)
+        guard case .handingOver(let line) = mac.store.state.cardStarts["card_new"] else {
+            Issue.record("the card does not say what it waits for")
+            return
+        }
+        #expect(line.contains("box"))
+        // A second start while it waits hands nothing over twice.
+        mac.engine.launch(cardId: "card_new", prompt: "do it now", projectPath: repoA, worktreeName: nil,
+                          runRemotely: true, machineChoice: .existing("box"))
+        #expect(mac.store.state.links["card_new"]?.ownerMachine != box.identity.id)
+
+        await box.peerSync.pullAll()
+        for _ in 0..<40 where mac.store.state.links["card_new"]?.ownerMachine != box.identity.id {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        #expect(mac.store.state.links["card_new"]?.ownerMachine == box.identity.id)
+        #expect(mac.store.state.cardStarts["card_new"] == nil)
+    }
+
     @Test("a first launch on a peer hands the prompt's images to the peer")
     func launchOnPeerWithImages() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-img-\(UUID().uuidString)")

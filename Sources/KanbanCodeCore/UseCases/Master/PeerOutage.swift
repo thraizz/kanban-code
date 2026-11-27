@@ -114,19 +114,37 @@ public enum PeerReachBack {
     /// that cannot.
     public static let window: TimeInterval = 90
 
+    public enum Verdict: Sendable, Equatable {
+        /// It fetched lately, or a peer too old to say who it is did.
+        case reaches
+        /// This master started less than `window` ago and the peer has not
+        /// fetched yet: it is known by `until`.
+        case unknown(until: Date)
+        /// It does not fetch from here; the line says since when.
+        case problem(String)
+    }
+
+    /// Whether the peer `machineId` would pick up a card released to it.
+    public static func verdict(
+        machineId: String, name: String, pulls: [String: Date], since: Date, now: Date = .now
+    ) -> Verdict {
+        if let last = pulls[machineId], now.timeIntervalSince(last) < window { return .reaches }
+        if let anonymous = pulls[""], now.timeIntervalSince(anonymous) < window { return .reaches }
+        if now.timeIntervalSince(since) < window { return .unknown(until: since.addingTimeInterval(window)) }
+        let when = pulls[machineId].map { "since \(Self.clock(from: $0))" } ?? "since this app started"
+        return .problem("\(name) has not fetched cards from this machine \(when), so it cannot take one over. "
+            + "Check this machine's address in \(name)'s Settings › Peers, and its firewall.")
+    }
+
     /// Why the peer `machineId` would not pick up a card released to it;
-    /// nil when it fetched lately, or when that cannot be told: this master
-    /// started less than `window` ago, or a peer too old to say who it is
-    /// fetched lately.
+    /// nil when it would, or when that cannot be told yet.
     public static func problem(
         machineId: String, name: String, pulls: [String: Date], since: Date, now: Date = .now
     ) -> String? {
-        if let last = pulls[machineId], now.timeIntervalSince(last) < window { return nil }
-        if let anonymous = pulls[""], now.timeIntervalSince(anonymous) < window { return nil }
-        if now.timeIntervalSince(since) < window { return nil }
-        let when = pulls[machineId].map { "since \(Self.clock(from: $0))" } ?? "since this app started"
-        return "\(name) has not fetched cards from this machine \(when), so it cannot take one over. "
-            + "Check this machine's address in \(name)'s Settings › Peers, and its firewall."
+        if case .problem(let line) = verdict(machineId: machineId, name: name, pulls: pulls, since: since, now: now) {
+            return line
+        }
+        return nil
     }
 
     private static func clock(from date: Date) -> String {

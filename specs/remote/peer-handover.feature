@@ -41,3 +41,18 @@ Feature: A card started on another master
     When the adoption fails for a reason that may pass, such as the releasing master being offline
     Then the card stays released
     And the other master tries again
+
+  Scenario: The other master does not fetch from this one
+    Given another master that has not fetched this master's cards for 90 seconds
+    When a card is launched on it
+    Then the card is not released to it, and does not start
+    And the card shows that the other master has not fetched from here since when, and where to check its address
+
+  Scenario: A launch right after this master started
+    Given this master started less than 90 seconds ago
+    And the other master has not fetched from it since
+    When a card is launched on the other master
+    Then the card waits here and shows that it waits for the other master to answer
+    And it is released as soon as the other master fetches from here
+    And when 90 seconds pass without a fetch, it is not released and shows why
+    And a second start while it waits releases nothing twice

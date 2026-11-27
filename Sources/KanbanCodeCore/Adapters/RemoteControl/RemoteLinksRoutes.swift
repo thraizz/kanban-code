@@ -11,6 +11,13 @@ public protocol PeerLinksServing: AnyObject, Sendable {
     func peerLinksChanged(machineId: String?) async
     /// `GET /v1/peers`: this machine and the peers it syncs with.
     func peersOverview() async -> PeersOverview
+    /// The peer master `machineId` reached this one from `host`, on one of
+    /// the routes above.
+    func peerReached(machineId: String, host: String) async
+}
+
+extension PeerLinksServing {
+    public func peerReached(machineId: String, host: String) async {}
 }
 
 /// Body of `GET /v1/peers`.
@@ -45,13 +52,17 @@ public struct PeerOverview: Codable, Sendable, Equatable {
 /// the server calls after it authenticated the device.
 enum RemoteLinksRoutes {
     /// Answers `method` on `rest` (the path after `/v1/`), or nil when the
-    /// path is not a peer sync route.
+    /// path is not a peer sync route. `host` is where the request came from.
     static func handle(
         method: String,
         rest: [String],
         query: [String: String],
+        from host: String? = nil,
         server: any PeerLinksServing
     ) async -> RemoteHTTPResponse? {
+        if rest.first == "links", let host, let machine = query["machine"], !machine.isEmpty {
+            await server.peerReached(machineId: machine, host: host)
+        }
         switch rest {
         case ["links"]:
             guard method == "GET" else { return .error(405, "use GET") }
@@ -100,6 +111,10 @@ public final class BoardPeerLinksServer: PeerLinksServing {
 
     public func peerLinksChanged(machineId: String?) async {
         await peerSync?.poke(machineId: machineId)
+    }
+
+    public func peerReached(machineId: String, host: String) async {
+        await peerSync?.noteContact(machineId: machineId, host: host)
     }
 
     public func peersOverview() async -> PeersOverview {

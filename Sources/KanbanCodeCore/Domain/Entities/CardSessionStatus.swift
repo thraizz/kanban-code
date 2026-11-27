@@ -29,6 +29,8 @@ public struct HandoverProgress: Sendable, Equatable {
 public enum CardStartReport: Sendable, Equatable {
     case step(String)
     case moving(HandoverProgress)
+    /// A first launch on a peer waits to be handed over; the line says for what.
+    case handingOver(String)
     case failed(String)
 }
 
@@ -165,6 +167,7 @@ public enum CardSessionStatus: Sendable, Equatable {
         now: Date = .now
     ) -> CardSessionStatus {
         if let moving { return .moving(moving) }
+        if case .handingOver(let line) = report { return .moving(line) }
         let hasLiveSession = link.tmuxLink.map { $0.isShellOnly != true && $0.isPrimaryDead != true } ?? false
         if link.isLaunching == true, now.timeIntervalSince(link.updatedAt) <= staleLaunchAfter {
             if case .step(let step) = report, !step.isEmpty { return .starting(startingLine(step)) }

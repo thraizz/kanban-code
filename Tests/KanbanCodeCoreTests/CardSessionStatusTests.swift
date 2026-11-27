@@ -43,6 +43,12 @@ struct CardSessionStatusTests {
         #expect(status == .moving("Moving to box, copying the transcript (1 of 2 MB)"))
         #expect(!status.canResume)
         #expect(status.isWorking)
+
+        // A first launch waiting to be handed to a peer reads as the move it is about to be.
+        let waiting = CardSessionStatus.of(
+            link: link(), moving: nil, report: .handingOver("Waiting for box to answer before it starts there"), machineState: nil)
+        #expect(waiting == .moving("Waiting for box to answer before it starts there"))
+        #expect(!waiting.canResume)
     }
 
     @Test("a failed start says why and offers the resume; a live session hides it")

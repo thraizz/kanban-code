@@ -191,7 +191,15 @@ final class AppComposition {
         }
         engine.peerSync = peerSync
         engine.installForeignCardHandler()
-        Task.detached { await peerSync.run() }
+        Task.detached {
+            // A peer that moved to another address is saved there, so
+            // Settings › Peers and the next start know it.
+            await peerSync.onAddressLearned { peer in
+                guard (try? await SettingsStore().setPeerURL(peerId: peer.id, url: peer.url)) == true else { return }
+                await MainActor.run { NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil) }
+            }
+            await peerSync.run()
+        }
         Task { await engine.runOwnershipLoop() }
         let mirror = PeerTranscriptMirror(engine: engine)
         Task { await mirror.run() }

@@ -378,13 +378,20 @@ extension MasterEngine {
         return "\(line). It resumes by itself once it is here."
     }
 
-    /// Why the peer `machineId` would not pick up a card released to it
-    /// (`PeerReachBack`); nil when it would, or when that cannot be told.
-    func peerReachBackProblem(_ machineId: String) -> String? {
+    /// Whether the peer `machineId` would pick up a card released to it
+    /// (`PeerReachBack`).
+    func peerReachBack(_ machineId: String) -> PeerReachBack.Verdict {
         let name = store.state.peerStatuses.values.first { $0.machine?.id == machineId }
             .map { store.state.peerDisplayName($0) } ?? peerName(machineId)
-        return PeerReachBack.problem(
+        return PeerReachBack.verdict(
             machineId: machineId, name: name, pulls: store.peerPulls, since: store.peerPullsSince)
+    }
+
+    /// Why the peer `machineId` would not pick up a card released to it;
+    /// nil when it would, or when that cannot be told yet.
+    func peerReachBackProblem(_ machineId: String) -> String? {
+        if case .problem(let line) = peerReachBack(machineId) { return line }
+        return nil
     }
 
     /// Notes which peers have not fetched from here lately, for the line of
@@ -409,11 +416,33 @@ extension MasterEngine {
 
     /// Hands a card that never ran to a peer, which launches it there.
     func launchOnPeer(cardId: String, prompt: String, worktree: String?, peer: MachineIdentity, images: [ImageAttachment] = []) {
-        if let problem = peerReachBackProblem(peer.id) {
+        guard !peerLaunchesWaiting.contains(cardId) else { return }
+        switch peerReachBack(peer.id) {
+        case .reaches:
+            break
+        case .problem(let problem):
             // Released, the card would wait there for a pickup that never
             // comes; it stays here, not started, with the reason.
             KanbanCodeLog.warn("handover", "Not launching card=\(cardId.prefix(12)) on \(peer.name): \(problem)")
             store.dispatch(.cardStartReported(cardId: cardId, report: .failed("Could not start it on \(peer.name): \(problem)")))
+            return
+        case .unknown(let until):
+            // This master just started, and the peer has not fetched from
+            // it yet. Released now, a card to a peer that cannot fetch from
+            // here would wait there forever, so it waits here until the
+            // peer fetches once, or the window says it cannot.
+            KanbanCodeLog.info("handover", "Waiting for \(peer.name) to fetch from here before launching card=\(cardId.prefix(12)) there")
+            peerLaunchesWaiting.insert(cardId)
+            store.dispatch(.cardStartReported(cardId: cardId, report: .handingOver("Waiting for \(peer.name) to answer before it starts there")))
+            Task { [weak self] in
+                while Date() < until, let self, case .unknown = self.peerReachBack(peer.id) {
+                    try? await Task.sleep(for: .milliseconds(500))
+                }
+                guard let self else { return }
+                self.peerLaunchesWaiting.remove(cardId)
+                guard self.store.state.links[cardId] != nil else { return }
+                self.launchOnPeer(cardId: cardId, prompt: prompt, worktree: worktree, peer: peer, images: images)
+            }
             return
         }
         store.dispatch(.cardStartReported(cardId: cardId, report: nil))

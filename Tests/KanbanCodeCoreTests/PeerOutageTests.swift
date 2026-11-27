@@ -90,6 +90,8 @@ struct PeerReachBackTests {
     @Test("a peer that never fetched: no verdict while this master is new, then a refusal")
     func never() {
         #expect(PeerReachBack.problem(machineId: "m", name: "osaka", pulls: [:], since: start, now: start.addingTimeInterval(30)) == nil)
+        #expect(PeerReachBack.verdict(machineId: "m", name: "osaka", pulls: [:], since: start, now: start.addingTimeInterval(30))
+            == .unknown(until: start.addingTimeInterval(PeerReachBack.window)))
         let problem = PeerReachBack.problem(machineId: "m", name: "osaka", pulls: [:], since: start, now: start.addingTimeInterval(120))
         #expect(problem?.contains("since this app started") == true)
     }
@@ -120,10 +122,27 @@ struct PeerReachBackTests {
         _ = await RemoteLinksRoutes.handle(method: "GET", rest: ["links"], query: ["machine": "machine_mac"], server: server)
         _ = await RemoteLinksRoutes.handle(method: "GET", rest: ["links"], query: [:], server: server)
         #expect(server.machines == ["machine_mac", nil])
+        #expect(server.reached.isEmpty)
+    }
+
+    @Test("the routes pass on where a peer that says who it is reached this master from")
+    func reachedFrom() async {
+        let server = RecordingServer()
+        _ = await RemoteLinksRoutes.handle(
+            method: "GET", rest: ["links"], query: ["machine": "machine_mac"], from: "192.168.178.59", server: server)
+        _ = await RemoteLinksRoutes.handle(
+            method: "POST", rest: ["links", "changed"], query: ["machine": "machine_mac"], from: "192.168.178.60", server: server)
+        _ = await RemoteLinksRoutes.handle(method: "GET", rest: ["links"], query: [:], from: "192.168.178.61", server: server)
+        _ = await RemoteLinksRoutes.handle(
+            method: "GET", rest: ["peers"], query: ["machine": "machine_mac"], from: "192.168.178.62", server: server)
+        #expect(server.reached.map(\.host) == ["192.168.178.59", "192.168.178.60"])
+        #expect(server.reached.allSatisfy { $0.machine == "machine_mac" })
     }
 
     private final class RecordingServer: PeerLinksServing, @unchecked Sendable {
         var machines: [String?] = []
+        var reached: [(machine: String, host: String)] = []
+        func peerReached(machineId: String, host: String) async { reached.append((machineId, host)) }
         func linksPage(since: Int?, epoch: String?, machine: String?) async -> LinksPage {
             machines.append(machine)
             return LinksPage(machine: MachineIdentity(id: "m", name: "m"), epoch: "e", seq: 0, full: true, links: [])

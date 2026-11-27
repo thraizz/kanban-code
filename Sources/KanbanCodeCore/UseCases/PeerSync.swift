@@ -114,6 +114,21 @@ public actor PeerSync {
     /// offline only once they span `offlineGrace`.
     private var reachability: [String: RemoteReachability] = [:]
     private let offlineGrace: TimeInterval
+    /// Where each peer master last reached this one from, by machine id: a
+    /// peer that moved to another address keeps fetching from here, from
+    /// the new one (`PeerAddress`).
+    private var contacts: [String: (host: String, at: Date)] = [:]
+    /// When a pull last tried a peer at an address learned from its
+    /// requests, by peer id and URL, so a wrong one is not tried every tick.
+    private var relocationsTried: [String: Date] = [:]
+    /// Saves a peer's new address, so Settings › Peers shows it and the
+    /// next start reaches the peer at once.
+    private var addressLearned: (@Sendable (PeerConfig) async -> Void)?
+
+    /// A contact older than this says nothing about where the peer is now.
+    static let contactWindow: TimeInterval = 120
+    /// How long before a learned address that did not answer is tried again.
+    static let relocationRetry: TimeInterval = 30
 
     public init(
         identity: MachineIdentity,
@@ -159,30 +174,38 @@ public actor PeerSync {
         peers.first { statuses[$0.id]?.machine?.id == machineId }
     }
 
+    /// Sets what saves a peer's address once a pull learned a new one.
+    public func onAddressLearned(_ handler: @escaping @Sendable (PeerConfig) async -> Void) {
+        addressLearned = handler
+    }
+
+    /// Notes that the peer master `machineId` reached this one from `host`
+    /// (it fetched this master's cards, or said its own changed).
+    public func noteContact(machineId: String, host: String, at date: Date = .now) {
+        guard !machineId.isEmpty, machineId != identity.id, let host = PeerAddress.usableHost(host) else { return }
+        contacts[machineId] = (host, date)
+    }
+
     // MARK: - Pulling
 
     /// Pulls one peer now. Returns whether it answered. A peer that was
     /// online stays online through failed pulls until they span
     /// `offlineGrace`: a loaded host that answers late is not offline.
+    /// A peer that does not answer at its address but reached this master
+    /// lately from another one is tried there; when it answers there as the
+    /// same machine, that is its address from then on.
     @discardableResult
     public func pull(peerId: String) async -> Bool {
         guard let peer = peers.first(where: { $0.id == peerId }), peer.enabled else { return false }
         let cursor = cursors[peer.id]
         do {
             let page = try await transport.fetchLinks(peer: peer, since: cursor?.seq, epoch: cursor?.epoch, machineId: identity.id)
-            guard page.machine.id != identity.id else { throw PeerSyncError.selfPeer }
-            if !page.links.isEmpty {
-                await dispatch(.peerLinksMerged(peer: page.machine.id, links: page.links))
-            }
-            if let slugs = page.repoSlugs, slugs != repoSlugs[peer.id] {
-                repoSlugs[peer.id] = slugs
-                await dispatch(.peerRepoSlugsLoaded(peer: page.machine.id, slugs: slugs))
-            }
-            cursors[peer.id] = Cursor(epoch: page.epoch, seq: page.seq)
-            reachability[peer.id] = nil
-            await report(PeerStatus(peerId: peer.id, machine: page.machine, online: true, lastSeen: .now, url: peer.url))
+            try await accept(page, from: peer)
             return true
         } catch {
+            if (error as? PeerSyncError) != .selfPeer, await relocate(peer, cursor: cursor) {
+                return true
+            }
             var reach = reachability[peer.id] ?? RemoteReachability(grace: offlineGrace)
             reach.failed()
             reachability[peer.id] = reach
@@ -193,6 +216,60 @@ public actor PeerSync {
             await report(status)
             return false
         }
+    }
+
+    /// Takes in a page `peer` answered with.
+    private func accept(_ page: LinksPage, from peer: PeerConfig) async throws {
+        guard page.machine.id != identity.id else { throw PeerSyncError.selfPeer }
+        if !page.links.isEmpty {
+            await dispatch(.peerLinksMerged(peer: page.machine.id, links: page.links))
+        }
+        if let slugs = page.repoSlugs, slugs != repoSlugs[peer.id] {
+            repoSlugs[peer.id] = slugs
+            await dispatch(.peerRepoSlugsLoaded(peer: page.machine.id, slugs: slugs))
+        }
+        cursors[peer.id] = Cursor(epoch: page.epoch, seq: page.seq)
+        reachability[peer.id] = nil
+        await report(PeerStatus(peerId: peer.id, machine: page.machine, online: true, lastSeen: .now, url: peer.url))
+    }
+
+    /// Tries `peer`, which did not answer at its address, at the one it
+    /// reached this master from lately. The machine it is: the one it
+    /// answered as before, else one that reached this master and is no
+    /// other peer. It moves there only when it answers there, with its
+    /// token, as that machine. Whether it answered there.
+    private func relocate(_ peer: PeerConfig, cursor: Cursor?) async -> Bool {
+        let now = Date()
+        let known = statuses[peer.id]?.machine?.id
+        let others = Set(peers.filter { $0.id != peer.id }.compactMap { statuses[$0.id]?.machine?.id })
+        let candidates = contacts
+            .filter { id, contact in
+                now.timeIntervalSince(contact.at) < Self.contactWindow
+                    && (known.map { $0 == id } ?? !others.contains(id))
+            }
+            .sorted { $0.value.at > $1.value.at }
+        let oldHost = PeerAddress.host(of: peer.url)
+        for (machineId, contact) in candidates where contact.host != oldHost {
+            guard let url = PeerAddress.replacingHost(of: peer.url, with: contact.host) else { continue }
+            let key = peer.id + " " + url
+            if let last = relocationsTried[key], now.timeIntervalSince(last) < Self.relocationRetry { continue }
+            relocationsTried[key] = now
+            var moved = peer
+            moved.url = url
+            guard let page = try? await transport.fetchLinks(
+                      peer: moved, since: cursor?.seq, epoch: cursor?.epoch, machineId: identity.id),
+                  page.machine.id == machineId,
+                  // Settings › Peers may have changed it meanwhile.
+                  let index = peers.firstIndex(where: { $0.id == peer.id }), peers[index].url == peer.url
+            else { continue }
+            peers[index].url = url
+            relocationsTried[key] = nil
+            KanbanCodeLog.info("sync", "\(peer.name) moved from \(peer.url) to \(url): it reached this machine from \(contact.host)")
+            try? await accept(page, from: moved)
+            await addressLearned?(moved)
+            return true
+        }
+        return false
     }
 
     /// Pulls every enabled peer once, concurrently.

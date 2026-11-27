@@ -175,6 +175,12 @@ final class ServerMaster {
         await store.loadSettingsAndCache()
 
         let peerSync = self.peerSync
+        // A peer that moved to another address is saved there, so the
+        // settings and the next start know it.
+        let home = self.home
+        await peerSync.onAddressLearned { peer in
+            _ = try? await SettingsStore(basePath: home).setPeerURL(peerId: peer.id, url: peer.url)
+        }
         Task.detached { await peerSync.run() }
         let agentSync = self.agentSync
         Task.detached { await agentSync.run() }
