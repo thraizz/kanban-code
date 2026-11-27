@@ -457,6 +457,21 @@ Where the code differs from the plan above, and why:
   reconnecting in under 2 s with the same forward port, a new connection
   from the same Mac replacing a dead one at once, and the endpoint rules.
 
+- **"Done when", as checked on 2026-11-27.** osaka's entry for the Mac was
+  removed; the Mac's next connection paired it again within a second
+  (`"addressHints": []`, `"url": ""`; the terminal token of the old entry
+  copied into the new one by hand). Through the Mac's connection osaka
+  pulls the Mac's cards and attention, the agent sync state, the vault
+  replica and the audit mirror at their normal rates, fans card search out
+  to the Mac, and reads the Mac's board and a card's transcript through
+  the forward port with its peer and terminal tokens; the peer token gets
+  403 on the vault's secrets. A deploy of osaka and an install of the app
+  each left the connection back within 2 s, with no edit. The switch
+  between the Mac's two networks was not done live; the test "a Mac whose
+  address went away redials at once" reconnects in under 2 s, and the box
+  takes a new connection in place of a dead one at once ("a new connection
+  from the same Mac takes the place of one the box still holds").
+
 ## Call sites that read a peer address today
 
 | Where | What |
