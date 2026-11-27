@@ -181,6 +181,11 @@ public actor PeerControl {
     /// Every socket open now, connected or still in its hello, so a stop
     /// can close them from outside the actor.
     private nonisolated let open = Mutex<[ObjectIdentifier: PeerControlSocket]>([:])
+    /// Why this master closed every connection, once it stopped. From then
+    /// on it dials nothing and takes nothing: a stopping server that
+    /// redialed its peer would leave it a connection that dies with the
+    /// process a moment later.
+    private nonisolated let stopped = Mutex<String?>(nil)
     private nonisolated let listening = Mutex<(@Sendable () -> (addresses: [String], port: Int)?)?>(nil)
     /// Set by tests: this end goes silent (sends nothing, answers nothing)
     /// with its connections left open, as a machine that went to sleep.
@@ -312,7 +317,7 @@ public actor PeerControl {
             await withTaskGroup(of: Void.self) { group in
                 while !Task.isCancelled {
                     let now = ContinuousClock.now
-                    for peer in endpoints.peers() where !isSilent && peer.enabled && !peer.addressHints.isEmpty
+                    for peer in endpoints.peers() where !isSilent && !isStopping && peer.enabled && !peer.addressHints.isEmpty
                         && connections[peer.id] == nil && !dialing.contains(peer.id)
                         && (nextDial[peer.id] ?? now) <= now {
                         dialing.insert(peer.id)
@@ -326,11 +331,18 @@ public actor PeerControl {
         }
     }
 
-    /// Closes every connection, as a master that stops.
+    /// Closes every connection, as a master that stops, and dials or takes
+    /// none after that. Each connection ends with `reason` on both ends.
     public nonisolated func stop(reason: String = "stopping") {
+        stopped.withLock { if $0 == nil { $0 = reason } }
         let sockets = open.withLock { Array($0.values) }
         for socket in sockets { socket.close(reason: reason, code: 1001) }
     }
+
+    /// Whether this master stopped (`stop`): it is shutting down.
+    public nonisolated var isStopping: Bool { stopped.withLock { $0 != nil } }
+
+    private nonisolated var stopReason: String? { stopped.withLock { $0 } }
 
     /// Tries each hint of `peer` in order until one connects, then serves
     /// that connection until it ends.
@@ -432,6 +444,10 @@ public actor PeerControl {
     public func serveAccepted(_ socket: PeerControlSocket, device: String, deviceId: String? = nil) async {
         track(socket)
         defer { untrack(socket) }
+        if let reason = stopReason {
+            socket.close(reason: reason, code: 1001)
+            return
+        }
         let from = socket.remoteHost ?? "?"
         if acceptDelay > .zero { try? await Task.sleep(for: acceptDelay) }
         if isSilent {
@@ -519,6 +535,10 @@ public actor PeerControl {
     /// ends, the one the lower machine id dialed stays. False when this one
     /// lost and was closed.
     private func register(_ connection: Connection) -> Bool {
+        if let reason = stopReason {
+            connection.close(reason, code: 1001)
+            return false
+        }
         guard let peer = endpoints.peer(connection.peerId), peer.enabled else {
             connection.close("\(identity.name) has no enabled entry for this peer", code: 1008)
             return false
@@ -615,12 +635,16 @@ public actor PeerControl {
             do {
                 message = try await connection.socket.receive()
             } catch {
-                if let reason = connection.endReason { return reason }
+                // This end closed it (a stop included): its own reason, not
+                // how the socket ended.
+                if let reason = connection.endReason ?? stopReason { return reason }
                 connection.close("connection lost")
                 return "connection lost: \(Self.describe(error))"
             }
             guard let message else {
-                if let reason = connection.endReason { return reason }
+                // A stop's close frame comes back as the peer's answer; the
+                // peer did not close it.
+                if let reason = connection.endReason ?? stopReason { return reason }
                 return connection.socket.closeReason.map { "\(connection.machine.name) closed it: \($0)" }
                     ?? "\(connection.machine.name) closed it"
             }
@@ -808,6 +832,7 @@ public actor PeerControl {
         func refuse(_ reason: String) async {
             try? await connection.socket.send(PeerControlMessage(refused: PeerStreamRefusal(id: id, reason: reason)))
         }
+        if let reason = stopReason { return await refuse(reason) }
         guard let acceptor = tunnels.withLock({ $0 }) else {
             return await refuse("\(identity.name) runs no Remote Control server")
         }
@@ -939,8 +964,11 @@ public actor PeerControl {
         KanbanCodeLog.info("peer", "refused a control connection from \(hello.machine.name) (\(hello.machine.id)) at \(host): \(reason)")
     }
 
+    /// Notes an open socket, so a stop closes it; one opened after the stop
+    /// (a dial that was under way) closes at once.
     private func track(_ socket: PeerControlSocket) {
         open.withLock { $0[ObjectIdentifier(socket)] = socket }
+        if let reason = stopReason { socket.close(reason: reason, code: 1001) }
     }
 
     private func untrack(_ socket: PeerControlSocket) {

@@ -144,6 +144,10 @@ enum RemoteOpenAPI {
       "parameters": [{"$ref": "#/components/parameters/CardId"}],
       "get": {"summary": "What a master adopting the card needs: repository origin, branch, uncommitted changes, transcript size", "responses": {"200": {"description": "RemoteHandoverInfo"}, "404": {"$ref": "#/components/responses/Error"}}}
     },
+    "/v1/cards/{id}/offer": {
+      "parameters": [{"$ref": "#/components/parameters/CardId"}],
+      "post": {"summary": "Scope peer or full. Another master asks whether this one takes the card before it releases it. Body {\"from\": <its machine id>, \"handover\": RemoteHandoverInfo}. This master checks what it can without the card: it is not stopping, it reaches the master that offers, it has the assistant, it finds or may clone the project", "responses": {"202": {"description": "{\"accepted\": true}"}, "409": {"description": "{\"refused\": <why>}"}, "400": {"$ref": "#/components/responses/Error"}, "403": {"$ref": "#/components/responses/Error"}}}
+    },
     "/v1/cards/{id}/transcript/raw": {
       "parameters": [
         {"$ref": "#/components/parameters/CardId"},

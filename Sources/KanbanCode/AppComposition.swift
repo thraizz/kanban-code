@@ -213,6 +213,7 @@ final class AppComposition {
             peerSync.control.stop(reason: "\(machineName) quit")
             Thread.sleep(forTimeInterval: 0.2)
         }
+        Self.closeControlOnTerminateSignal(peerSync.control, reason: "\(machineName) quit")
         Task { await engine.runOwnershipLoop() }
         let mirror = PeerTranscriptMirror(engine: engine)
         Task { await mirror.run() }
@@ -358,6 +359,28 @@ final class AppComposition {
     }
 
     /// Settings > Peers, read straight from the file.
+    /// Keeps the SIGTERM source alive.
+    private nonisolated(unsafe) static var terminateSignal: (any DispatchSourceSignal)?
+
+    /// `pkill -TERM` (an install, launchd at shutdown) ends the app without
+    /// `willTerminate`: the peers saw "connection reset by peer", not a
+    /// quit. The control connections close with `reason` first, then the
+    /// signal ends the app as it always did. Off the main queue, so a hung
+    /// main thread does not keep the signal from ending the app.
+    private nonisolated static func closeControlOnTerminateSignal(_ control: PeerControl, reason: String) {
+        signal(SIGTERM, SIG_IGN)
+        let source = DispatchSource.makeSignalSource(signal: SIGTERM, queue: .global(qos: .userInitiated))
+        source.setEventHandler {
+            KanbanCodeLog.info("quit", "SIGTERM: closing the peer control connections")
+            control.stop(reason: reason)
+            Thread.sleep(forTimeInterval: 0.2)
+            signal(SIGTERM, SIG_DFL)
+            kill(getpid(), SIGTERM)
+        }
+        source.resume()
+        terminateSignal = source
+    }
+
     private static func readPeers() -> [PeerConfig] {
         let path = NSHomeDirectory() + "/.kanban-code/settings.json"
         let settings = FileManager.default.contents(atPath: path).flatMap { try? JSONDecoder().decode(Settings.self, from: $0) }

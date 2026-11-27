@@ -99,6 +99,39 @@ public struct RemoteHandoverInfo: Codable, Sendable, Equatable {
     }
 }
 
+/// Body of `POST /v1/cards/{id}/offer`: a master asks its peer whether it
+/// would take the card, before it releases it (`docs/peer-connections.md`,
+/// "Handover: offer, then release").
+public struct RemoteCardOffer: Codable, Sendable, Equatable {
+    /// Machine id of the master that offers the card: the peer must reach
+    /// it to fetch the card once it is released.
+    public var from: String
+    /// What the adoption fetches, as it is when the offer goes out: without
+    /// the uncommitted changes and the prompt's images, which the adoption
+    /// fetches once the session here has ended.
+    public var handover: RemoteHandoverInfo
+
+    public init(from: String, handover: RemoteHandoverInfo) {
+        self.from = from
+        self.handover = handover
+    }
+}
+
+/// Answer of `POST /v1/cards/{id}/offer`: 202 with `accepted`, or 409 with
+/// `refused`, the reason.
+public struct RemoteOfferAnswer: Codable, Sendable, Equatable {
+    public var accepted: Bool?
+    public var refused: String?
+
+    public init(accepted: Bool? = nil, refused: String? = nil) {
+        self.accepted = accepted
+        self.refused = refused
+    }
+
+    public static let yes = RemoteOfferAnswer(accepted: true)
+    public static func no(_ reason: String) -> RemoteOfferAnswer { RemoteOfferAnswer(refused: reason) }
+}
+
 /// A slice of a card's raw transcript file.
 public struct RemoteRawTranscript: Sendable, Equatable {
     public var data: Data
@@ -217,6 +250,27 @@ extension RemoteClient {
         let (data, status) = try await rawData(for: request)
         guard (200..<300).contains(status) else { throw RemoteClientError.from(status: status, body: data) }
         return try JSONDecoder.remote.decode(RemoteHandoverInfo.self, from: data)
+    }
+
+    /// POST /v1/cards/{id}/offer: whether the peer would take the card.
+    /// Throws when it does not answer within `timeout`, or answers with
+    /// anything but 202 or 409.
+    public func offer(cardId: String, _ offer: RemoteCardOffer, timeout: TimeInterval = 10) async throws -> RemoteOfferAnswer {
+        var request = makeRequest("POST", "v1/cards/\(Self.escape(cardId))/offer", body: offer)
+        request.timeoutInterval = timeout
+        let (data, status) = try await rawData(for: request)
+        switch status {
+        case 202:
+            return (try? JSONDecoder.remote.decode(RemoteOfferAnswer.self, from: data)) ?? .yes
+        case 409:
+            if let answer = try? JSONDecoder.remote.decode(RemoteOfferAnswer.self, from: data), answer.refused != nil {
+                return answer
+            }
+            if case .conflict(let message) = RemoteClientError.from(status: status, body: data) { return .no(message) }
+            return .no(String(decoding: data, as: UTF8.self))
+        default:
+            throw RemoteClientError.from(status: status, body: data)
+        }
     }
 
     /// GET /v1/cards/{id}/transcript/raw?offset=&limit=: up to `limit`

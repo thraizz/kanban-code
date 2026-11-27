@@ -98,6 +98,10 @@ public struct MasterPlatform: Sendable {
     /// adoption stops and asks for the project (the Mac).
     public var clonesMissingProjects = true
 
+    /// Whether the assistant's CLI is installed here: a peer's offer of a
+    /// card that runs one that is not is refused (`POST /v1/cards/{id}/offer`).
+    public var assistantInstalled: @Sendable (CodingAssistant) -> Bool = { ShellCommand.findExecutable($0.cliCommand) != nil }
+
     /// Environment every session this master starts gets (a root host sets
     /// `IS_SANDBOX=1` so Claude accepts skipped permissions).
     public var sessionEnvironment: [String: String] = [:]

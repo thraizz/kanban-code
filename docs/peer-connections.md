@@ -1,6 +1,6 @@
 # Peer connections
 
-Status: **in progress**, steps 1 to 3 done (2026-11-27). Replaces how two masters reach each other
+Status: **in progress**, steps 1 to 4 done (2026-11-27). Replaces how two masters reach each other
 (the Mac app and `kanban-code-server`, see [Several masters](remote-control.md#several-masters)).
 No overlay network (Tailscale and the like), no mDNS and no DHCP reservation:
 the design works on a plain LAN where addresses change.
@@ -309,6 +309,58 @@ Where the code differs from the plan above, and why:
   tunnelled streams through `PeerLinksServing.serverTunnels`.
   `RemotePeerAddress.tunnel(machineId)` is the marker; `isLoopback` and
   `PeerAddress.usableHost` refuse it.
+
+### As built in step 4
+
+Where the code differs from the plan above, and why, and what the logs
+since step 2 showed:
+
+- **"Not connected" is `PeerStatus.reachable`**, the reader step 3 gave
+  `isPeerOnline`: the control connection, or the pulls while the control
+  loop has said nothing about the peer. The refusal reads "osaka is not
+  connected: <reason>". The reason is why the last connection closed, kept
+  while redials fail ("osaka closed it: osaka is stopping; no new
+  connection: …"); before, the first failed redial replaced it with
+  "connection refused" within a second.
+- **The offer body** is `{"from": <machine id>, "handover":
+  RemoteHandoverInfo}` (`RemoteCardOffer`), the handover info without the
+  uncommitted changes and the prompt's images: a move offers before the
+  session here ends, so the patch is not final yet, and a refused offer
+  should not have carried megabytes. The adoption fetches both as before.
+  The answer is `RemoteOfferAnswer`, 202 `{"accepted": true}` or 409
+  `{"refused": reason}`. The route takes a peer or full token.
+- **What the peer checks** (`MasterEngine.offerProblem`): it is not
+  stopping (`PeerControl.isStopping`), it reaches the master that offers
+  (it must fetch the card from there once released), it knows and has the
+  assistant (`MasterPlatform.assistantInstalled`; only Claude
+  conversations move), and `repositoryPlan` finds the project or may clone
+  or start it, the same decision `localRepository` then carries out.
+- **Order.** A move offers first and only then ends the session, pushes
+  the branch and releases: a refusal leaves the session running. A launch
+  waits in its column with "Handing over to osaka…" and moves to In
+  Progress only once released. No answer within 10 s leaves the card here
+  with "osaka did not answer within 10 s". A peer without the route
+  (an older build) answers 403 or 404, which is shown as the reason; the
+  card is not released blind.
+- **`PeerReachBack` still runs** before the offer, as step 5 deletes it.
+- **Existing test changed.** "A card the peer cannot take comes back"
+  used a peer with no project; the offer now refuses that before any
+  release, so the test uses a failure only the adoption finds (the origin
+  is gone when the peer clones), which still hands the card back.
+- **Drops fixed first.** The `[peer]` lines on both machines since step 2
+  showed: the old osaka process redialed the Mac while it stopped (its run
+  loop kept going after `stop`), and that connection died 0.1 s later with
+  "the connection ended", failing a call through it; the stopping side
+  logged "connection lost: the connection ended" or "MacBook Pro M4 closed
+  it: going away" (the echo of its own close frame) instead of its own
+  reason; `server.stop()` cut the connections right after the control
+  close frames were queued, which can drop them; and the Mac app ended by
+  `pkill -TERM` (the install) never closed its connection, so osaka logged
+  "Connection reset by peer". Now `stop` keeps its reason, after it nothing
+  is dialed or taken, the server waits 200 ms for the close frames before
+  it stops, and the app closes its connections with "<name> quit" on
+  SIGTERM before the signal ends it. The other closes in the logs had
+  causes: a deploy, and the Mac's network going down ("no answer for 30 s").
 
 ## Call sites that read a peer address today
 

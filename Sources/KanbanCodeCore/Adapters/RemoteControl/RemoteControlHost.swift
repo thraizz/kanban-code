@@ -56,6 +56,10 @@ public protocol RemoteControlHost: AnyObject, Sendable {
     /// What a master adopting the card needs to continue it.
     func handoverInfo(cardId: String) async throws -> RemoteHandoverInfo
 
+    /// Whether this master takes the card another master offers it, before
+    /// that master releases it: `accepted`, or `refused` with the reason.
+    func offerCard(cardId: String, _ offer: RemoteCardOffer) async throws -> RemoteOfferAnswer
+
     /// Renames, moves or archives the card. These are shared edits: they
     /// apply here whichever master owns the card, and sync to the others.
     func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard
@@ -146,6 +150,10 @@ extension RemoteControlHost {
 
     public func handoverInfo(cardId: String) async throws -> RemoteHandoverInfo {
         throw RemoteHostError.notFound("this host does not hand cards over")
+    }
+
+    public func offerCard(cardId: String, _ offer: RemoteCardOffer) async throws -> RemoteOfferAnswer {
+        throw RemoteHostError.notFound("this host does not take cards")
     }
 
     public func moveCard(cardId: String, to target: String) async throws -> RemoteCard {

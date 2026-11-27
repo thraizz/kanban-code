@@ -158,6 +158,9 @@ public actor PeerSync {
         var via: PeerConnectionDirection?
         var machine: MachineIdentity?
         var error: String?
+        /// Why the last connection closed, kept while redials fail: "not
+        /// connected" says why it went, not only that a redial was refused.
+        var closedBecause: String?
     }
 
     /// How often a peer with a control connection is pulled without being
@@ -436,12 +439,13 @@ public actor PeerSync {
             await changeHandler?(machine.id, PeerChange(what: .sync))
             await changeHandler?(machine.id, PeerChange(what: .attention))
         case let .disconnected(peerId, reason):
-            controlStates[peerId] = ControlState(connected: false, machine: controlStates[peerId]?.machine, error: reason)
+            controlStates[peerId] = ControlState(connected: false, machine: controlStates[peerId]?.machine, error: reason,
+                                                 closedBecause: reason)
             await reportControl(peerId)
         case let .dialFailed(peerId, reason):
             guard controlStates[peerId]?.connected != true else { return }
             var state = controlStates[peerId] ?? ControlState()
-            state.error = reason
+            state.error = state.closedBecause.map { "\($0); no new connection: \(reason)" } ?? reason
             controlStates[peerId] = state
             await reportControl(peerId)
         case let .changed(peerId, machineId, change):

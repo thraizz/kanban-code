@@ -164,11 +164,13 @@ say("home \(options.home), devices \(devices.path), machine \(master.identity.na
 Task { await master.run() }
 
 let stop: @Sendable (Int32) -> Void = { [peerSync = master.peerSync, name = master.identity.name] _ in
-    // The peers see why the control connections closed; the close frames
-    // get a moment to leave before the process does.
+    // The peers see why the control connections closed: the close frames
+    // get a moment to leave before the server cuts its connections (which
+    // drops a frame still queued) and the process ends.
     peerSync.control.stop(reason: "\(name) is stopping")
-    server.stop()
     usleep(200_000)
+    server.stop()
+    usleep(50_000)
     exit(0)
 }
 var signalSources: [any DispatchSourceSignal] = []

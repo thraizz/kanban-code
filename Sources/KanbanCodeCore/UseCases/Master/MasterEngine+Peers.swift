@@ -18,6 +18,10 @@ public enum MasterPeerError: Error, LocalizedError, Equatable {
     case notOwner(String)
     case unknownPeer(String)
     case peerOffline(String)
+    /// This master cannot call the peer now; the line names it and says why.
+    case notConnected(String)
+    /// The peer said no to the card's offer; the line names it and says why.
+    case refused(String)
     case busy(String)
     case noProject(String)
     case notReady(String)
@@ -29,6 +33,7 @@ public enum MasterPeerError: Error, LocalizedError, Equatable {
         case .notOwner(let id): "card \(id) runs on another master"
         case .unknownPeer(let name): "no peer master \(name)"
         case .peerOffline(let name): "\(name) is offline"
+        case .notConnected(let line), .refused(let line): line
         case .busy(let id): "card \(id) is launching or moving already"
         case .noProject(let url): "no project with origin \(url) here; add it in Settings"
         case .notReady(let message): message
@@ -41,7 +46,7 @@ public enum MasterPeerError: Error, LocalizedError, Equatable {
     public var refusesAdoption: Bool {
         switch self {
         case .noProject, .failed: true
-        case .unknownCard, .notOwner, .unknownPeer, .peerOffline, .busy, .notReady: false
+        case .unknownCard, .notOwner, .unknownPeer, .peerOffline, .notConnected, .refused, .busy, .notReady: false
         }
     }
 }
@@ -319,21 +324,36 @@ extension MasterEngine {
         moveCardToMachine(cardId, to: target)
     }
 
-    /// Hands a card this master owns to a peer: its session here ends, the
-    /// worktree branch goes to origin, and the card is released with
-    /// `migrating` set. The peer adopts it once the release reaches it:
-    /// it pulls the transcript (and uncommitted changes) from here and
-    /// resumes the conversation.
+    /// Hands a card this master owns to a peer. The peer is offered the
+    /// card first (`offerCard`); only once it said yes does the session
+    /// here end, the worktree branch go to origin, and the card get
+    /// released with `migrating` set. The peer adopts it once the release
+    /// reaches it: it pulls the transcript (and uncommitted changes) from
+    /// here and resumes the conversation. A peer that is not connected, or
+    /// says no, leaves the card here as it was, and the error says why.
     public func handover(cardId: String, to machineId: String) async throws {
         guard let link = store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
         guard store.state.isOwnedLocally(link) else { throw MasterPeerError.notOwner(cardId) }
         guard link.isLaunching != true, !handoversInFlight.contains(cardId) else { throw MasterPeerError.busy(cardId) }
         guard await peerClient(machineId: machineId) != nil else { throw MasterPeerError.unknownPeer(machineId) }
-        guard isPeerOnline(machineId) else { throw MasterPeerError.peerOffline(peerName(machineId)) }
+        if let problem = peerNotConnected(machineId) { throw MasterPeerError.notConnected(problem) }
         if let problem = peerReachBackProblem(machineId) { throw MasterPeerError.failed(problem) }
         handoversInFlight.insert(cardId)
         defer { handoversInFlight.remove(cardId) }
-        KanbanCodeLog.info("handover", "Releasing card=\(cardId.prefix(12)) to \(peerName(machineId))")
+
+        // The peer says yes before anything here ends: refused, the card
+        // stays as it is, its session still running.
+        let name = peerName(machineId)
+        let offering = CardStartReport.handingOver("Handing over to \(name)…")
+        store.dispatch(.cardStartReported(cardId: cardId, report: offering))
+        defer {
+            if store.state.cardStarts[cardId] == offering { store.dispatch(.cardStartReported(cardId: cardId, report: nil)) }
+        }
+        if let refusal = await offerCard(cardId, to: machineId) { throw MasterPeerError.refused(refusal) }
+        guard let link = store.state.links[cardId], store.state.isOwnedLocally(link), link.isLaunching != true else {
+            throw MasterPeerError.busy(cardId)
+        }
+        KanbanCodeLog.info("handover", "Releasing card=\(cardId.prefix(12)) to \(name)")
 
         // A card on a machine this master drives comes back first, so its
         // transcript here is complete.
@@ -414,9 +434,18 @@ extension MasterEngine {
         store.state.peerStatuses.values.first { $0.machine?.id == machineId }?.machine?.name ?? machineId
     }
 
-    /// Hands a card that never ran to a peer, which launches it there.
+    /// Hands a card that never ran to a peer, which launches it there. The
+    /// peer is offered the card first; the card is released only once it
+    /// said yes. A peer that is not connected is refused at once, and one
+    /// that says no or does not answer leaves the card here, not started,
+    /// with the reason.
     func launchOnPeer(cardId: String, prompt: String, worktree: String?, peer: MachineIdentity, images: [ImageAttachment] = []) {
-        guard !peerLaunchesWaiting.contains(cardId) else { return }
+        guard !peerLaunchesWaiting.contains(cardId), !handoversInFlight.contains(cardId) else { return }
+        if let problem = peerNotConnected(peer.id) {
+            KanbanCodeLog.warn("handover", "Not launching card=\(cardId.prefix(12)) on \(peer.name): \(problem)")
+            store.dispatch(.cardStartReported(cardId: cardId, report: .failed("Could not start it on \(peer.name): \(problem)")))
+            return
+        }
         switch peerReachBack(peer.id) {
         case .reaches:
             break
@@ -445,26 +474,138 @@ extension MasterEngine {
             }
             return
         }
-        store.dispatch(.cardStartReported(cardId: cardId, report: nil))
         // The images of the launch, else those the card keeps (a card
         // started from the backlog or by the remote API).
         let imageData = images.isEmpty
             ? (store.state.links[cardId]?.promptImagePaths ?? []).compactMap { FileManager.default.contents(atPath: $0) }
             : images.map(\.data)
+        // The offer carries the prompt; the adoption fetches it with the images.
         pendingPeerLaunches[cardId] = PeerLaunch(prompt: prompt, worktree: worktree, images: imageData)
         KanbanCodeLog.info("handover", "Launching card=\(cardId.prefix(12)) on \(peer.name)")
-        if store.state.links[cardId]?.column == .backlog {
-            store.dispatch(.moveCard(cardId: cardId, to: .inProgress))
+        handoversInFlight.insert(cardId)
+        store.dispatch(.cardStartReported(cardId: cardId, report: .handingOver("Handing over to \(peer.name)…")))
+        Task {
+            defer { handoversInFlight.remove(cardId) }
+            let refusal = await offerCard(cardId, to: peer.id)
+            guard let link = store.state.links[cardId], store.state.isOwnedLocally(link), link.isLaunching != true,
+                  link.sessionLink == nil
+            else {
+                // Deleted, started here or handed elsewhere meanwhile.
+                pendingPeerLaunches[cardId] = nil
+                if case .handingOver = store.state.cardStarts[cardId] {
+                    store.dispatch(.cardStartReported(cardId: cardId, report: nil))
+                }
+                return
+            }
+            if let refusal {
+                pendingPeerLaunches[cardId] = nil
+                KanbanCodeLog.warn("handover", "Card=\(cardId.prefix(12)) stays here: \(refusal)")
+                store.dispatch(.cardStartReported(cardId: cardId, report: .failed("Could not start it on \(peer.name): \(refusal)")))
+                return
+            }
+            store.dispatch(.cardStartReported(cardId: cardId, report: nil))
+            if link.column == .backlog {
+                store.dispatch(.moveCard(cardId: cardId, to: .inProgress))
+            }
+            releasedCards[cardId] = store.state.links[cardId]
+            store.dispatch(.releaseCardOwnership(cardId: cardId, to: peer.id))
+            notifyPeers()
         }
-        releasedCards[cardId] = store.state.links[cardId]
-        store.dispatch(.releaseCardOwnership(cardId: cardId, to: peer.id))
-        notifyPeers()
+    }
+
+    /// Why this master cannot call the peer `machineId` now, e.g. "osaka is
+    /// not connected: osaka is stopping"; nil when it can.
+    func peerNotConnected(_ machineId: String) -> String? {
+        guard !isPeerOnline(machineId) else { return nil }
+        let status = store.state.peerStatuses.values.first { $0.machine?.id == machineId }
+        let name = status.map { store.state.peerDisplayName($0) } ?? peerName(machineId)
+        let reason = status?.unreachableReason?.trimmingCharacters(in: CharacterSet(charactersIn: ". \n"))
+        guard let reason, !reason.isEmpty else { return "\(name) is not connected" }
+        return "\(name) is not connected: \(reason)"
+    }
+
+    // MARK: Offers
+
+    /// How long a peer has to answer an offer.
+    static let offerTimeout: TimeInterval = 10
+
+    /// Offers the card to the peer `machineId` before this master releases
+    /// it (`POST /v1/cards/{id}/offer`): nil when the peer takes it, else
+    /// why not. Nothing here changes either way.
+    func offerCard(_ cardId: String, to machineId: String) async -> String? {
+        let name = peerName(machineId)
+        guard let client = await peerClient(machineId: machineId) else { return "\(name) is not a configured peer" }
+        let info: RemoteHandoverInfo
+        do {
+            info = try await handoverInfo(cardId: cardId, forOffer: true)
+        } catch {
+            return error.localizedDescription
+        }
+        let offer = RemoteCardOffer(from: store.state.localMachineId, handover: info)
+        do {
+            let answer = try await client.offer(cardId: cardId, offer, timeout: Self.offerTimeout)
+            if answer.accepted == true {
+                KanbanCodeLog.info("handover", "\(name) takes card=\(cardId.prefix(12))")
+                return nil
+            }
+            let reason = answer.refused.flatMap { $0.isEmpty ? nil : $0 } ?? "no reason given"
+            KanbanCodeLog.info("handover", "\(name) refused card=\(cardId.prefix(12)): \(reason)")
+            return "\(name) does not take it: \(reason)"
+        } catch {
+            let reason = (error as? URLError)?.code == .timedOut
+                ? "\(name) did not answer within \(Int(Self.offerTimeout)) s"
+                : "\(name) did not answer: \(error.localizedDescription)"
+            KanbanCodeLog.warn("handover", "Offer of card=\(cardId.prefix(12)): \(reason)")
+            return reason
+        }
+    }
+
+    /// Why this master would not take the card a peer offers it, nil when it
+    /// would. It checks what it can without the card: it is not stopping,
+    /// it reaches the master that offers it (to fetch the card once it is
+    /// released), it has the assistant, and it finds the project or may
+    /// clone it. What only the adoption finds (a clone that fails, a
+    /// transcript that is not there) still hands the card back.
+    public func offerProblem(cardId: String, _ offer: RemoteCardOffer) async -> String? {
+        let problem = await offerCheck(offer)
+        let from = peerName(offer.from)
+        if let problem {
+            KanbanCodeLog.info("handover", "Refusing card=\(cardId.prefix(12)) from \(from): \(problem)")
+        } else {
+            KanbanCodeLog.info("handover", "Taking card=\(cardId.prefix(12)) from \(from) once it is released")
+        }
+        return problem
+    }
+
+    private func offerCheck(_ offer: RemoteCardOffer) async -> String? {
+        let here = store.state.localMachineName.isEmpty ? "this master" : store.state.localMachineName
+        if peerSync?.control.isStopping == true { return "\(here) is shutting down" }
+        guard !offer.from.isEmpty, offer.from != store.state.localMachineId else {
+            return "the offer does not say which master it comes from"
+        }
+        guard isPeerOnline(offer.from) else {
+            return "\(here) cannot reach \(peerName(offer.from)) to fetch the card"
+        }
+        let info = offer.handover
+        guard let assistant = CodingAssistant(rawValue: info.assistant) else {
+            return "\(here) does not know the assistant \(info.assistant)"
+        }
+        if info.sessionId != nil, assistant != .claude { return "only Claude conversations move between masters" }
+        guard platform.assistantInstalled(assistant) else { return "\(assistant.displayName) is not installed on \(here)" }
+        do {
+            _ = try await repositoryPlan(repoUrl: info.repoUrl, fallback: info.projectPath, hasCommits: info.repoHasCommits ?? true)
+        } catch {
+            return error.localizedDescription
+        }
+        return nil
     }
 
     // MARK: Serving a handover
 
-    /// What a master adopting `cardId` needs from this one.
-    public func handoverInfo(cardId: String) async throws -> RemoteHandoverInfo {
+    /// What a master adopting `cardId` needs from this one. `forOffer`
+    /// leaves out what only the adoption needs and is not final while the
+    /// card still runs here: the uncommitted changes and the images.
+    public func handoverInfo(cardId: String, forOffer: Bool = false) async throws -> RemoteHandoverInfo {
         // The card as it was when this master released it: the new owner's
         // edits may already have landed here.
         guard let link = releasedCards[cardId] ?? store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
@@ -478,7 +619,7 @@ extension MasterEngine {
                 .flatMap { $0.succeeded ? $0.stdout.trimmingCharacters(in: .whitespacesAndNewlines) : nil }
         }
         var patch: String?
-        if let worktree {
+        if let worktree, !forOffer {
             if let diff = await Self.uncommittedDiff(in: worktree.path), diff.succeeded,
                !diff.stdout.isEmpty, diff.stdout.utf8.count < 20 << 20 {
                 // The command runner trims the last newline, which git apply needs.
@@ -486,7 +627,9 @@ extension MasterEngine {
                 patch = Data(text.utf8).base64EncodedString()
             }
         }
-        KanbanCodeLog.info("handover", "Serving card=\(cardId.prefix(12)) transcript=\(transcript ?? "none") (\(size) bytes)")
+        if !forOffer {
+            KanbanCodeLog.info("handover", "Serving card=\(cardId.prefix(12)) transcript=\(transcript ?? "none") (\(size) bytes)")
+        }
         var launch = pendingPeerLaunches[cardId]
         if launch == nil, link.sessionLink == nil, link.migrating == true,
            let prompt = link.promptBody ?? link.name, !prompt.isEmpty {
@@ -512,7 +655,10 @@ extension MasterEngine {
             info.repoHasCommits = await Self.git(["rev-parse", "--verify", "-q", "HEAD"], in: repoRoot)?.succeeded == true
         }
         info.refusal = refusedHandovers[cardId]
-        if let launch {
+        if let launch, forOffer {
+            info.launchPrompt = launch.prompt
+            info.launchWorktree = launch.worktree
+        } else if let launch {
             info.launchPrompt = launch.prompt
             info.launchWorktree = launch.worktree
             info.launchImages = launch.images.isEmpty
@@ -772,13 +918,35 @@ extension MasterEngine {
         return images.isEmpty ? nil : images
     }
 
-    /// The repository with origin `repoUrl` here: a configured project, or
-    /// a clone next to the others where this master may clone.
-    func localRepository(repoUrl: String?, fallback: String?, hasCommits: Bool = true) async throws -> String {
+    /// Where the repository a card needs is, or would be, on this master.
+    enum RepositoryPlan: Equatable {
+        /// It is here; `addsProject` when it may not be a project yet.
+        case here(String, addsProject: Bool)
+        /// It is cloned from `url` into the folder.
+        case clone(url: String, into: String)
+        /// A project with no `origin` and no commits starts as a new
+        /// repository in the folder.
+        case create(String)
+    }
+
+    /// How this master gets the repository with origin `repoUrl` (else the
+    /// project at `fallback` on the releasing master), without doing it:
+    /// a configured project or an earlier clone, a clone where this master
+    /// may clone, a new repository for a project with nothing to bring.
+    /// Throws why it cannot.
+    func repositoryPlan(repoUrl: String?, fallback: String?, hasCommits: Bool = true) async throws -> RepositoryPlan {
         guard let repoUrl, let wanted = Self.normalizedRepoURL(repoUrl) else {
-            if let fallback, FileManager.default.fileExists(atPath: fallback) { return fallback }
+            if let fallback, FileManager.default.fileExists(atPath: fallback) { return .here(fallback, addsProject: false) }
             guard let fallback else { throw MasterPeerError.noProject("unknown") }
-            return try await unpublishedRepository(named: (fallback as NSString).lastPathComponent, origin: fallback, hasCommits: hasCommits)
+            // The folder of the same name in the projects directory.
+            let name = (fallback as NSString).lastPathComponent
+            let dir = (platform.projectsDirectory as NSString).appendingPathComponent(name)
+            if FileManager.default.fileExists(atPath: dir) { return .here(dir, addsProject: true) }
+            guard platform.clonesMissingProjects else { throw MasterPeerError.noProject(fallback) }
+            guard !hasCommits else {
+                throw MasterPeerError.failed("\(name) has no git remote, so its files cannot follow here; give it a remote, or copy it to \(dir)")
+            }
+            return .create(dir)
         }
         var candidates = store.state.configuredProjects.map(\.effectiveRepoRoot)
         let cloneDir = (platform.projectsDirectory as NSString).appendingPathComponent(Self.repoName(of: repoUrl))
@@ -786,38 +954,41 @@ extension MasterEngine {
         for dir in candidates where FileManager.default.fileExists(atPath: dir) {
             let origin = await Self.git(["remote", "get-url", "origin"], in: dir)
             if let out = origin?.stdout, origin?.succeeded == true, Self.normalizedRepoURL(out) == wanted {
-                await addProjectIfMissing(dir)
-                return dir
+                return .here(dir, addsProject: true)
             }
         }
         guard platform.clonesMissingProjects else { throw MasterPeerError.noProject(repoUrl) }
         guard !FileManager.default.fileExists(atPath: cloneDir) else {
             throw MasterPeerError.failed("\(cloneDir) exists and is not a clone of \(repoUrl)")
         }
-        try? FileManager.default.createDirectory(atPath: platform.projectsDirectory, withIntermediateDirectories: true)
-        KanbanCodeLog.info("handover", "Cloning \(repoUrl) into \(cloneDir)")
-        let clone = await Self.git(["clone", repoUrl, cloneDir], in: platform.projectsDirectory, timeout: 1200)
-        guard clone?.succeeded == true else {
-            throw MasterPeerError.failed("git clone \(repoUrl) failed: \(clone?.stderr.prefix(300) ?? "no git")")
-        }
-        await addProjectIfMissing(cloneDir)
-        return cloneDir
+        return .clone(url: repoUrl, into: cloneDir)
     }
 
-    /// The folder here for a project that has no `origin` on the master
-    /// that released the card: the one of the same name in the projects
-    /// directory, created as a new repository when the project has no
-    /// commits to bring.
-    private func unpublishedRepository(named name: String, origin: String, hasCommits: Bool) async throws -> String {
-        let dir = (platform.projectsDirectory as NSString).appendingPathComponent(name)
-        if FileManager.default.fileExists(atPath: dir) {
+    /// The repository with origin `repoUrl` here: a configured project, or
+    /// a clone next to the others where this master may clone.
+    func localRepository(repoUrl: String?, fallback: String?, hasCommits: Bool = true) async throws -> String {
+        switch try await repositoryPlan(repoUrl: repoUrl, fallback: fallback, hasCommits: hasCommits) {
+        case .here(let dir, let addsProject):
+            if addsProject { await addProjectIfMissing(dir) }
+            return dir
+        case .clone(let url, let dir):
+            try? FileManager.default.createDirectory(atPath: platform.projectsDirectory, withIntermediateDirectories: true)
+            KanbanCodeLog.info("handover", "Cloning \(url) into \(dir)")
+            let clone = await Self.git(["clone", url, dir], in: platform.projectsDirectory, timeout: 1200)
+            guard clone?.succeeded == true else {
+                throw MasterPeerError.failed("git clone \(url) failed: \(clone?.stderr.prefix(300) ?? "no git")")
+            }
             await addProjectIfMissing(dir)
             return dir
+        case .create(let dir):
+            return try await newRepository(at: dir)
         }
-        guard platform.clonesMissingProjects else { throw MasterPeerError.noProject(origin) }
-        guard !hasCommits else {
-            throw MasterPeerError.failed("\(name) has no git remote, so its files cannot follow here; give it a remote, or copy it to \(dir)")
-        }
+    }
+
+    /// Starts a project that has no `origin` and no commits on the master
+    /// that released the card as a new repository in `dir`.
+    private func newRepository(at dir: String) async throws -> String {
+        let name = (dir as NSString).lastPathComponent
         try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         KanbanCodeLog.info("handover", "Starting \(name) as a new repository in \(dir)")
         // A worktree needs a commit to branch from.

@@ -647,6 +647,18 @@ public final class RemoteControlServer: Sendable {
             case ("GET", "cards/*/handover"):
                 return .response(.json(try await host.handoverInfo(cardId: id)))
 
+            case ("POST", "cards/*/offer"):
+                // Another master asks whether this one takes the card
+                // before it releases it.
+                guard device.scope.actsForOwner else {
+                    return .response(.error(403, "the \(device.scope.rawValue) scope cannot offer cards"))
+                }
+                guard let offer = try? JSONDecoder.remote.decode(RemoteCardOffer.self, from: request.body) else {
+                    return .response(.error(400, "body must be {\"from\": \"<machine id>\", \"handover\": {...}}"))
+                }
+                let answer = try await host.offerCard(cardId: id, offer)
+                return .response(.json(answer, status: answer.accepted == true ? 202 : 409))
+
             case ("GET", "cards/*/transcript/raw"):
                 let offset = max(Int(request.query["offset"] ?? "") ?? 0, 0)
                 let limit = min(max(Int(request.query["limit"] ?? "") ?? (4 << 20), 1), 16 << 20)
@@ -763,7 +775,7 @@ public final class RemoteControlServer: Sendable {
     private static let knownShapes: Set<String> = [
         "me", "board", "machines", "cards/search", "cards/*", "cards/*/transcript", "tasks", "cards/*/prompt", "cards/*/queue/*",
         "cards/*/interrupt", "cards/*/resume", "events", "cards/*/terminal",
-        "cards/*/move", "cards/*/fork", "cards/*/handover", "cards/*/transcript/raw", "cards/*/transcript/images",
+        "cards/*/move", "cards/*/fork", "cards/*/handover", "cards/*/offer", "cards/*/transcript/raw", "cards/*/transcript/images",
         "cards/*/worktree/remove", "cards/*/discover", "cards/*/side-chat", "cards/*/side-chat/*",
         "cards/*/slash-commands", "cards/*/pasted-image", "cards/*/files",
         "cards/*/conversations", "cards/*/conversations/*", "cards/*/conversations-raw", "cards/*/conversations/*/images",

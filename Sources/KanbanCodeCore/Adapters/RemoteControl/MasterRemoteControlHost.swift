@@ -647,6 +647,11 @@ public final class MasterRemoteControlHost: RemoteControlHost, @unchecked Sendab
         }
     }
 
+    public func offerCard(cardId: String, _ offer: RemoteCardOffer) async throws -> RemoteOfferAnswer {
+        if let reason = await engine.offerProblem(cardId: cardId, offer) { return .no(reason) }
+        return .yes
+    }
+
     public func updateCard(cardId: String, _ update: RemoteCardUpdate) async throws -> RemoteCard {
         try await MainActor.run { () throws -> RemoteCard in
             if update.pinned != nil, try card(cardId).link.parentCardId != nil {

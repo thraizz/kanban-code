@@ -1,6 +1,34 @@
 Feature: A card started on another master
-  A card launched from one master on another is released to it. The other
-  master finds the card's project on its own machine, then starts the card.
+  A card launched from one master on another is offered to it first, and
+  released to it once it said yes. The other master finds the card's
+  project on its own machine, then starts the card.
+
+  Scenario: The other master is not connected
+    Given another master this master cannot call now
+    When a card is launched on it or moved to it
+    Then it is refused at once, in under 2 seconds
+    And the card stays here, not released, in the column it was in
+    And the card shows that the other master is not connected, and why its connection went
+
+  Scenario: The other master is asked first
+    Given another master that is connected
+    When a card is launched on it or moved to it
+    Then the card shows that it is being handed over, and stays owned here
+    And the other master answers within 10 seconds whether it takes the card
+    And it takes it when it is not stopping, reaches this master, has the card's assistant, and has the project or may clone it
+    And only once it said yes is a running session ended, its branch pushed and the card released
+
+  Scenario: The other master says no
+    Given another master that has no clone of the card's project and may not make one
+    When a card is launched on it or moved to it
+    Then the card is never released
+    And a card that never ran stays in its column, and a running card keeps its session here
+    And the card shows that the other master does not take it, with the reason
+
+  Scenario: The other master does not answer the offer
+    Given another master that does not answer within 10 seconds
+    When a card is launched on it
+    Then the card stays here, not released, and shows that the other master did not answer
 
   Scenario: A project with a git remote
     Given a card of a project whose repository has an origin
@@ -27,9 +55,9 @@ Feature: A card started on another master
     Then that master does not start the card
     And the reason says the project has no git remote, so its files cannot follow
 
-  Scenario: The other master cannot take the card
-    Given a card launched or moved to another master
-    When that master cannot adopt it for a reason another try would repeat
+  Scenario: The other master cannot take the card after all
+    Given a card launched or moved to another master that took the offer
+    When that master cannot adopt it for a reason another try would repeat, such as a clone that fails
     Then it sends the card back to the master that released it
     And the card is owned there again, as it was before the launch
     And a card that never ran returns to the backlog

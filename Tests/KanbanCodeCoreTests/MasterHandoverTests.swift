@@ -71,6 +71,8 @@ private final class TestMaster {
         platform.claudeProjectsDirectory = "\(home)/claude-projects"
         platform.kanbanHome = home
         platform.clonesMissingProjects = clonesMissingProjects
+        // Every assistant is "installed": the sessions are recorded, not run.
+        platform.assistantInstalled = { _ in true }
         engine = MasterEngine(
             store: store,
             settingsStore: SettingsStore(basePath: home),
@@ -802,7 +804,8 @@ struct MasterHandoverTests {
         mac.store.dispatch(.createManualTask(Link(id: "card_new", name: "New work", projectPath: repoA, column: .backlog, promptBody: "do it")))
         mac.engine.launch(cardId: "card_new", prompt: "do it now", projectPath: repoA, worktreeName: nil,
                           runRemotely: true, machineChoice: .existing("box"))
-        #expect(mac.store.state.links["card_new"]?.ownerMachine == box.identity.id)
+        // Released once box said yes to the offer.
+        #expect(await eventually { mac.store.state.links["card_new"]?.ownerMachine == box.identity.id })
         #expect(mac.store.state.links["card_new"]?.isLaunching != true)
         #expect(mac.tmux.created.isEmpty)
         #expect(mac.store.state.selectedCardId == "card_new")
@@ -950,7 +953,7 @@ struct MasterHandoverTests {
         #expect(!FileManager.default.fileExists(atPath: "\(box.home)/Projects/twin"))
     }
 
-    @Test("a card the peer cannot take comes back to the master that launched it, with the reason")
+    @Test("a card the peer took but cannot adopt comes back to the master that launched it, with the reason")
     func refusedLaunchComesBack() async throws {
         let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-\(UUID().uuidString)")
         defer { try? FileManager.default.removeItem(atPath: root) }
@@ -962,8 +965,7 @@ struct MasterHandoverTests {
         try await sh(["git", "clone", "-q", origin, repoA], in: root)
 
         let mac = try TestMaster(name: "mac", root: root)
-        // A master that has no clone of the project and may not make one.
-        let box = try TestMaster(name: "box", root: root, clonesMissingProjects: false)
+        let box = try TestMaster(name: "box", root: root)
         try await mac.serve()
         try await box.serve()
         try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
@@ -975,7 +977,11 @@ struct MasterHandoverTests {
         mac.store.dispatch(.createManualTask(Link(id: "card_new", name: "New work", projectPath: repoA, column: .backlog, promptBody: "do it")))
         mac.engine.launch(cardId: "card_new", prompt: "do it now", projectPath: repoA, worktreeName: nil,
                           runRemotely: true, machineChoice: .existing("box"))
+        // box may clone the project, so it takes the offer.
+        #expect(await eventually { mac.store.state.links["card_new"]?.ownerMachine == box.identity.id })
         #expect(mac.store.state.links["card_new"]?.column == .inProgress)
+        // The origin is gone before box clones it: only the adoption finds that.
+        try FileManager.default.removeItem(atPath: "\(root)/origin")
         await box.peerSync.pullAll()
 
         #expect(await box.engine.adoptOrHandBack(cardId: "card_new"))
@@ -995,7 +1001,7 @@ struct MasterHandoverTests {
             return
         }
         #expect(line.contains("box could not take it"))
-        #expect(line.contains("no project with origin"))
+        #expect(line.contains("git clone"))
         #expect(mac.tmux.created.isEmpty)
 
         // The peer no longer queues the card.
@@ -1617,11 +1623,13 @@ struct PeerControlConnectionTests {
         defer { macTask.cancel(); boxTask.cancel(); mac.server.stop(); box.server.stop() }
         #expect(await eventually { mac.store.state.peerStatuses["peer_box"]?.connected == true })
 
+        // In the server's order: the connections close with the reason,
+        // then the server stops (at once, it could drop the close frame).
         boxTask.cancel()
-        box.server.stop()
         #expect(await eventually(within: .seconds(2)) { mac.store.state.peerStatuses["peer_box"]?.connected == false })
+        box.server.stop()
         let reason = mac.store.state.peerStatuses["peer_box"]?.controlError ?? ""
-        #expect(reason.contains("box"), "\(reason)")
+        #expect(reason.contains("box is stopping"), "\(reason)")
     }
 
     @Test("when both masters dial at once, the connection the lower machine id dialed is the one left")
@@ -2256,5 +2264,234 @@ struct PeerReverseStreamTests {
         #expect(await eventually { p.box.store.state.peerStatuses["peer_mac"]?.connectedVia == .accepted })
         #expect(try await forwardURL(p.box) == forward)
         #expect(try await httpStatus("GET", forward.appendingPathComponent("v1/me"), token: p.peerToken) == 200)
+    }
+}
+
+@Suite("Offer, then release", .serialized)
+@MainActor
+struct PeerOfferTests {
+    static let fast = PeerControl.Options(
+        pingInterval: .milliseconds(100), timeout: .milliseconds(600), helloTimeout: .seconds(2),
+        dialTimeout: 2, firstRetry: .milliseconds(100), maxRetry: .milliseconds(400))
+
+    private func root(_ name: String) -> String {
+        (NSTemporaryDirectory() as NSString).appendingPathComponent("\(name)-\(UUID().uuidString)")
+    }
+
+    /// The Mac and the box, each with an entry for the other, their syncs
+    /// running (the plain pull timer out of the way) until the control
+    /// connection is up and each knows the other's machine.
+    private func connected(_ root: String, boxClones: Bool = true) async throws
+        -> (mac: TestMaster, box: TestMaster, tasks: [Task<Void, Never>]) {
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root, clonesMissingProjects: boxClones)
+        try await mac.serve(control: true)
+        try await box.serve(control: true)
+        try await mac.start(peers: [PeerConfig(id: "peer_box", name: "box", url: box.url, token: box.tokenForPeer)],
+                            control: Self.fast)
+        try await box.start(peers: [PeerConfig(id: "peer_mac", name: "mac", url: mac.url, token: mac.tokenForPeer)],
+                            control: Self.fast)
+        let tasks = [mac.peerSync!, box.peerSync!].map { sync in
+            Task.detached { await sync.run(interval: .seconds(60), offlineInterval: .seconds(60), connectedInterval: .seconds(60)) }
+        }
+        #expect(await eventually {
+            mac.store.state.peerStatuses["peer_box"]?.connected == true
+                && box.store.state.peerStatuses["peer_mac"]?.connected == true
+                && mac.engine.peerMachine(named: "box") != nil && box.engine.peerMachine(named: "mac") != nil
+        })
+        return (mac, box, tasks)
+    }
+
+    /// A repository on the Mac with a commit, and its origin.
+    private func repository(_ root: String) async throws -> (origin: String, repo: String) {
+        let origin = "\(root)/origin/widgets.git"
+        let repo = "\(root)/mac/widgets"
+        try FileManager.default.createDirectory(atPath: "\(root)/origin", withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(atPath: "\(root)/mac", withIntermediateDirectories: true)
+        try await sh(["git", "init", "--bare", "-q", origin], in: root)
+        try await sh(["git", "clone", "-q", origin, repo], in: root)
+        try await sh(["git", "-c", "user.email=t@t", "-c", "user.name=t", "commit", "-q", "--allow-empty", "-m", "init"], in: repo)
+        try await sh(["git", "push", "-q", "origin", "HEAD"], in: repo)
+        return (origin, repo)
+    }
+
+    private func failure(_ master: TestMaster, _ cardId: String) -> String? {
+        if case .failed(let line) = master.store.state.cardStarts[cardId] { return line }
+        return nil
+    }
+
+    @Test("launching on a peer that is not connected fails in under 2 s with the reason, and the card stays here")
+    func disconnectedPeer() async throws {
+        let dir = root("offer-disconnected")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (mac, box, tasks) = try await connected(dir)
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+        let repo = "\(dir)/mac/widgets"
+        try FileManager.default.createDirectory(atPath: repo, withIntermediateDirectories: true)
+        mac.store.dispatch(.createManualTask(Link(id: "card_new", name: "New work", projectPath: repo, column: .backlog, promptBody: "do it")))
+
+        // box stops, as the server does on SIGTERM: its connections close
+        // with its reason, then the server goes.
+        tasks[1].cancel()
+        try await Task.sleep(for: .milliseconds(200))
+        box.server.stop()
+        #expect(await eventually { mac.store.state.peerStatuses["peer_box"]?.connected == false })
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        mac.engine.launch(cardId: "card_new", prompt: "do it now", projectPath: repo, worktreeName: nil,
+                          runRemotely: true, machineChoice: .existing("box"))
+        #expect(await eventually(within: .seconds(2)) { failure(mac, "card_new") != nil })
+        #expect(clock.now - start < .seconds(2), "took \(clock.now - start)")
+        let line = failure(mac, "card_new") ?? ""
+        #expect(line.contains("box is not connected"), "\(line)")
+        // The reason it went, kept while the redials fail.
+        #expect(line.contains("box is stopping"), "\(line)")
+        let card = mac.store.state.links["card_new"]
+        #expect(card?.ownerMachine != box.identity.id)
+        #expect(card?.migrating == nil)
+        #expect(card?.column == .backlog)
+        #expect(mac.engine.pendingPeerLaunches["card_new"] == nil)
+
+        // A move is refused the same way.
+        do {
+            try await mac.engine.moveCard("card_new", to: "box")
+            Issue.record("the card moved to a peer that is not connected")
+        } catch {
+            #expect(error.localizedDescription.contains("box is not connected"), "\(error.localizedDescription)")
+        }
+        #expect(mac.store.state.links["card_new"]?.ownerMachine != box.identity.id)
+    }
+
+    @Test("a refused offer (no project) leaves the card here with the reason, never released, its session running")
+    func refusedOffer() async throws {
+        let dir = root("offer-refused")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (_, repo) = try await repository(dir)
+        // A box with no clone of the project that may not make one.
+        let (mac, box, tasks) = try await connected(dir, boxClones: false)
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+
+        mac.store.dispatch(.createManualTask(Link(id: "card_new", name: "New work", projectPath: repo, column: .backlog, promptBody: "do it")))
+        mac.engine.launch(cardId: "card_new", prompt: "do it now", projectPath: repo, worktreeName: nil,
+                          runRemotely: true, machineChoice: .existing("box"))
+        // While the offer is out, the card says so and is still this master's.
+        guard case .handingOver(let offering) = mac.store.state.cardStarts["card_new"] else {
+            Issue.record("the card does not say it is being handed over")
+            return
+        }
+        #expect(offering.contains("Handing over to box"))
+        var owners: Set<String> = []
+        #expect(await eventually {
+            if let owner = mac.store.state.links["card_new"]?.ownerMachine { owners.insert(owner) }
+            return failure(mac, "card_new") != nil
+        })
+        let line = failure(mac, "card_new") ?? ""
+        #expect(line.contains("box does not take it"), "\(line)")
+        #expect(line.contains("no project with origin"), "\(line)")
+        #expect(!owners.contains(box.identity.id))
+        let card = mac.store.state.links["card_new"]
+        #expect(card?.ownerMachine != box.identity.id)
+        #expect(card?.migrating == nil)
+        #expect(card?.column == .backlog)
+        #expect(mac.engine.releasedCards["card_new"] == nil)
+        #expect(mac.engine.pendingPeerLaunches["card_new"] == nil)
+        // box never had it to adopt.
+        await box.peerSync.pullAll()
+        #expect(box.store.state.links["card_new"]?.ownerMachine != box.identity.id)
+        #expect(box.store.state.links["card_new"]?.migrating == nil)
+        #expect(box.tmux.created.isEmpty)
+
+        // A running card moved there: its session keeps running here.
+        let sessionId = "0f1e2d3c-aaaa-bbbb-cccc-000000000002"
+        let transcript = mac.engine.transcriptPath(cwd: repo, sessionId: sessionId)
+        try FileManager.default.createDirectory(atPath: (transcript as NSString).deletingLastPathComponent, withIntermediateDirectories: true)
+        try "{}\n".write(toFile: transcript, atomically: true, encoding: .utf8)
+        mac.store.dispatch(.createManualTask(Link(
+            id: "card_run", name: "Running", projectPath: repo, column: .inProgress,
+            sessionLink: SessionLink(sessionId: sessionId, sessionPath: transcript),
+            tmuxLink: TmuxLink(sessionName: "claude-0f1e2d3c")
+        )))
+        do {
+            try await mac.engine.moveCard("card_run", to: "box")
+            Issue.record("the card moved to a peer that refused it")
+        } catch {
+            #expect(error.localizedDescription.contains("no project with origin"), "\(error.localizedDescription)")
+        }
+        #expect(mac.tmux.killed.isEmpty)
+        #expect(mac.store.state.links["card_run"]?.ownerMachine != box.identity.id)
+        #expect(mac.store.state.links["card_run"]?.tmuxLink?.sessionName == "claude-0f1e2d3c")
+        #expect(mac.store.state.cardStarts["card_run"] == nil)
+    }
+
+    @Test("a master says no to an offer it cannot take, and only a peer or full token may offer")
+    func offerChecks() async throws {
+        let dir = root("offer-checks")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (origin, repo) = try await repository(dir)
+        let (mac, box, tasks) = try await connected(dir)
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+        box.engine.platform.assistantInstalled = { $0 == .claude }
+
+        var info = RemoteHandoverInfo(cardId: "card_x", sessionId: nil, assistant: "claude", projectPath: repo, cwd: repo,
+                                      repoUrl: origin, branch: nil, worktreeName: nil, patch: nil, transcriptSize: 0)
+        func problem(from: String? = nil) async -> String? {
+            await box.engine.offerProblem(cardId: "card_x", RemoteCardOffer(from: from ?? mac.identity.id, handover: info))
+        }
+        #expect(await problem() == nil)
+        info.assistant = "codex"
+        #expect(await problem()?.contains("Codex CLI is not installed on box") == true)
+        info.assistant = "gemini"
+        info.sessionId = "s1"
+        #expect(await problem()?.contains("only Claude conversations move") == true)
+        info.assistant = "claude"
+        info.sessionId = nil
+        // box could not fetch the card from a master it does not reach.
+        #expect(await problem(from: "machine_nobody")?.contains("box cannot reach") == true)
+
+        // Over HTTP: 202 with a peer token, 409 with the reason, 403 for an agent token.
+        let client = try #require(await mac.engine.peerClient(machineId: box.identity.id))
+        #expect(try await client.offer(cardId: "card_x", RemoteCardOffer(from: mac.identity.id, handover: info)) == .yes)
+        var codex = info
+        codex.assistant = "codex"
+        let no = try await client.offer(cardId: "card_x", RemoteCardOffer(from: mac.identity.id, handover: codex))
+        #expect(no.accepted != true)
+        #expect(no.refused?.contains("Codex CLI") == true)
+        let agent = try box.devices.add(name: "agent", scope: .agent).token
+        let body = try JSONEncoder.remote.encode(RemoteCardOffer(from: mac.identity.id, handover: info))
+        #expect(try await httpStatus("POST", try #require(URL(string: "\(box.url)/v1/cards/card_x/offer")), token: agent, body: body) == 403)
+
+        // A master that is stopping takes nothing.
+        box.peerSync.control.stop(reason: "box is stopping")
+        #expect(await problem()?.contains("box is shutting down") == true)
+    }
+
+    @Test("a master that stops closes its connections with its own reason and dials nothing more")
+    func stoppingMasterStaysDown() async throws {
+        let dir = root("offer-stop")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (mac, box, tasks) = try await connected(dir)
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+
+        // As the server's SIGTERM handler: the connections close while the
+        // process, and its dial loop, still run a moment.
+        box.peerSync.control.stop(reason: "box is stopping")
+        #expect(await eventually {
+            mac.store.state.peerStatuses["peer_box"]?.connected == false
+                && box.store.state.peerStatuses["peer_mac"]?.connected == false
+        })
+        // The stopping end names its own reason, not how the socket ended
+        // or the close frame the other end sent back.
+        #expect(box.store.state.peerStatuses["peer_mac"]?.controlError == "box is stopping",
+                "\(box.store.state.peerStatuses["peer_mac"]?.controlError ?? "nil")")
+        #expect(mac.store.state.peerStatuses["peer_box"]?.controlError?.contains("box is stopping") == true,
+                "\(mac.store.state.peerStatuses["peer_box"]?.controlError ?? "nil")")
+        // Redials come every 100 to 400 ms; none gets a connection back.
+        for _ in 0..<10 {
+            try await Task.sleep(for: .milliseconds(100))
+            #expect(await box.peerSync.control.links().isEmpty)
+            #expect(await mac.peerSync.control.links().isEmpty)
+        }
+        #expect(mac.store.state.peerStatuses["peer_box"]?.connected == false)
     }
 }
