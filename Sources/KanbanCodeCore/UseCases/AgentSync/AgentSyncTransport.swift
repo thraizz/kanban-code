@@ -106,6 +106,36 @@ public struct HTTPSyncTransport: SyncTransport {
     }
 }
 
+/// The agent sync's transport with its change notes going over a peer's
+/// control connection when it has one (`docs/peer-connections.md`); the
+/// rest, and the notes to a peer without one, over HTTP.
+public struct PeerControlSyncTransport: SyncTransport {
+    private let http: any SyncTransport
+    private let peerSync: PeerSync
+
+    public init(peerSync: PeerSync, http: any SyncTransport = HTTPSyncTransport()) {
+        self.peerSync = peerSync
+        self.http = http
+    }
+
+    public func state(peer: SyncPeer) async throws -> SyncStateResponse {
+        try await http.state(peer: peer)
+    }
+
+    public func file(peer: SyncPeer, entryId: String, path: String) async throws -> Data {
+        try await http.file(peer: peer, entryId: entryId, path: path)
+    }
+
+    public func notify(peer: SyncPeer, machineId: String, what: String) async {
+        if await peerSync.announce(PeerChange(what: .sync, detail: what), toMachine: peer.machine.id) { return }
+        await http.notify(peer: peer, machineId: machineId, what: what)
+    }
+
+    public func optmemRun(peer: SyncPeer, request: OptmemRunRequest) async throws -> OptmemRunResult {
+        try await http.optmemRun(peer: peer, request: request)
+    }
+}
+
 extension PeerSync {
     /// The peers that answered at least once and have an address, for the
     /// agent sync.

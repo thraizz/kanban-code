@@ -14,10 +14,20 @@ public protocol PeerLinksServing: AnyObject, Sendable {
     /// The peer master `machineId` reached this one from `host`, on one of
     /// the routes above.
     func peerReached(machineId: String, host: String) async
+    /// `GET /v1/peer/control`: serves a peer's control connection until it
+    /// ends. `device` is the token it came with.
+    func servePeerControl(_ socket: PeerControlSocket, device: RemoteDevice) async
+    /// Where the Remote Control server listens now, while it runs: the
+    /// control connections announce it.
+    func serverListening(_ provider: @escaping @Sendable () -> (addresses: [String], port: Int)?)
 }
 
 extension PeerLinksServing {
     public func peerReached(machineId: String, host: String) async {}
+    public func servePeerControl(_ socket: PeerControlSocket, device: RemoteDevice) async {
+        socket.close(reason: "this master does not sync with peers", code: 1008)
+    }
+    public func serverListening(_ provider: @escaping @Sendable () -> (addresses: [String], port: Int)?) {}
 }
 
 /// Body of `GET /v1/peers`.
@@ -117,6 +127,18 @@ public final class BoardPeerLinksServer: PeerLinksServing {
 
     public func peerReached(machineId: String, host: String) async {
         await peerSync?.noteContact(machineId: machineId, host: host)
+    }
+
+    public func servePeerControl(_ socket: PeerControlSocket, device: RemoteDevice) async {
+        guard let peerSync else {
+            socket.close(reason: "this master does not sync with peers", code: 1008)
+            return
+        }
+        await peerSync.control.serveAccepted(socket, device: device.name)
+    }
+
+    public func serverListening(_ provider: @escaping @Sendable () -> (addresses: [String], port: Int)?) {
+        peerSync?.control.setListening(provider)
     }
 
     public func peersOverview() async -> PeersOverview {

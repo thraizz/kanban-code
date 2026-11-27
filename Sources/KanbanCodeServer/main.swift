@@ -163,8 +163,12 @@ say("home \(options.home), devices \(devices.path), machine \(master.identity.na
 // can take half a minute on a loaded host, and clients read it as offline.
 Task { await master.run() }
 
-let stop: @Sendable (Int32) -> Void = { _ in
+let stop: @Sendable (Int32) -> Void = { [peerSync = master.peerSync, name = master.identity.name] _ in
+    // The peers see why the control connections closed; the close frames
+    // get a moment to leave before the process does.
+    peerSync.control.stop(reason: "\(name) is stopping")
     server.stop()
+    usleep(200_000)
     exit(0)
 }
 var signalSources: [any DispatchSourceSignal] = []

@@ -55,4 +55,20 @@ extension SettingsStore {
         try write(settings)
         return true
     }
+
+    /// Saves what a control connection taught about the peer `peerId`: the
+    /// machine it is and its address hints, newest success first. False
+    /// when there is no such peer or nothing changed.
+    @discardableResult
+    public func learnPeer(peerId: String, machineId: String, hints: [String]) throws -> Bool {
+        var settings = try read()
+        guard let index = settings.peers.firstIndex(where: { $0.id == peerId }) else { return false }
+        var peer = settings.peers[index]
+        peer.machineId = machineId
+        if !hints.isEmpty { peer.addressHints = hints }
+        guard peer != settings.peers[index] else { return false }
+        settings.peers[index] = peer
+        try write(settings)
+        return true
+    }
 }

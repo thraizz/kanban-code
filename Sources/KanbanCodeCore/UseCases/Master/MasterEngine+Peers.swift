@@ -551,6 +551,7 @@ extension MasterEngine {
     /// adopts the cards peers released to this master.
     public func runOwnershipLoop() async {
         var lastNotified = store.state.syncSeq
+        var lastAttention = localAttentionSignature
         var lastAttempt: [String: Date] = [:]
         var scannedVersion = -1
         var lastScan = Date.distantPast
@@ -561,6 +562,11 @@ extension MasterEngine {
             if seq != lastNotified {
                 lastNotified = seq
                 notifyPeers()
+            }
+            let attention = localAttentionSignature
+            if attention != lastAttention, let peerSync {
+                lastAttention = attention
+                Task.detached { await peerSync.announce(PeerChange(what: .attention)) }
             }
             let local = store.state.localMachineId
             guard !local.isEmpty else { continue }

@@ -162,6 +162,41 @@ final class RemoteConnection: @unchecked Sendable {
         )
     }
 
+    /// The status and headers (names lowercased) of the response to a
+    /// request this end sent, and its body when it says how long it is.
+    /// For a WebSocket upgrade the bytes after the head stay buffered: they
+    /// are the first frames.
+    func readResponse(maxBody: Int = 64 * 1024) async throws -> (status: Int, headers: [String: String], body: Data) {
+        let separator = Data("\r\n\r\n".utf8)
+        var headerEnd: Range<Data.Index>?
+        while true {
+            headerEnd = buffer.range(of: separator)
+            if headerEnd != nil { break }
+            if buffer.count > Self.maxHeaderBytes { throw RemoteHTTPError.tooLarge }
+            guard try await receiveMore() else { throw RemoteHTTPError.closed }
+        }
+        guard let headerEnd else { throw RemoteHTTPError.closed }
+        let head = String(decoding: buffer[buffer.startIndex..<headerEnd.lowerBound], as: UTF8.self)
+        buffer.removeSubrange(buffer.startIndex..<headerEnd.upperBound)
+        buffer = Data(buffer)
+        var lines = head.components(separatedBy: "\r\n")
+        let statusLine = lines.removeFirst().split(separator: " ", omittingEmptySubsequences: true)
+        guard statusLine.count >= 2, statusLine[0].hasPrefix("HTTP/"), let status = Int(statusLine[1]) else {
+            throw RemoteHTTPError.malformed("bad status line")
+        }
+        var headers: [String: String] = [:]
+        for line in lines {
+            guard let colon = line.firstIndex(of: ":") else { continue }
+            headers[line[..<colon].trimmingCharacters(in: .whitespaces).lowercased()] =
+                line[line.index(after: colon)...].trimmingCharacters(in: .whitespaces)
+        }
+        var body = Data()
+        if status != 101, let length = headers["content-length"].flatMap(Int.init), length > 0 {
+            body = try await read(exactly: min(length, maxBody))
+        }
+        return (status, headers, body)
+    }
+
     private func readLine() async throws -> String {
         let crlf = Data("\r\n".utf8)
         while true {

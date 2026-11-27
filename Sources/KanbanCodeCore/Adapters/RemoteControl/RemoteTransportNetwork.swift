@@ -3,13 +3,17 @@ import Foundation
 import Network
 import Synchronization
 
-/// An accepted Network.framework connection.
+/// A Network.framework connection: accepted by a listener, or dialed with
+/// `connect`.
 final class NWRemoteByteStream: RemoteByteStream, @unchecked Sendable {
     let nw: NWConnection
     private let queue = DispatchQueue(label: "kanban.remote.conn")
+    /// A dialed connection is started (and ready) before `start` is called.
+    private let started: Bool
 
-    init(_ nw: NWConnection) {
+    init(_ nw: NWConnection, started: Bool = false) {
         self.nw = nw
+        self.started = started
     }
 
     func start(onClose: @escaping @Sendable () -> Void) {
@@ -19,7 +23,94 @@ final class NWRemoteByteStream: RemoteByteStream, @unchecked Sendable {
             default: break
             }
         }
-        nw.start(queue: queue)
+        if started {
+            // It may have ended between opening and now.
+            queue.async { [nw] in
+                switch nw.state {
+                case .failed, .cancelled: onClose()
+                default: break
+                }
+            }
+        } else {
+            nw.start(queue: queue)
+        }
+    }
+
+    /// Opens a TCP connection to `host:port`. A refused or unreachable
+    /// address fails at once rather than waiting for the network to change,
+    /// which is what Network.framework would do.
+    static func connect(host: String, port: Int, timeout: TimeInterval) async throws -> NWRemoteByteStream {
+        // A local port the system picked can still be in TIME_WAIT towards
+        // the same address (many short dials to one peer): try another.
+        var attempt = 0
+        while true {
+            attempt += 1
+            do {
+                return try await connectOnce(host: host, port: port, timeout: timeout)
+            } catch let error as AddressInUse {
+                if attempt >= 3 { throw RemoteConnectError(error.message) }
+            }
+        }
+    }
+
+    private struct AddressInUse: Error {
+        let message: String
+    }
+
+    private static func connectOnce(host: String, port: Int, timeout: TimeInterval) async throws -> NWRemoteByteStream {
+        guard let nwPort = NWEndpoint.Port(rawValue: UInt16(clamping: port)) else {
+            throw RemoteConnectError("bad port \(port)")
+        }
+        let nw = NWConnection(host: NWEndpoint.Host(host), port: nwPort, using: .tcp)
+        let stream = NWRemoteByteStream(nw, started: true)
+        let done = Mutex(false)
+        let target = "\(host):\(port)"
+        do {
+            try await withTaskCancellationHandler {
+                try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+                    let finish: @Sendable (Result<Void, Error>) -> Void = { result in
+                        let first = done.withLock { finished -> Bool in
+                            if finished { return false }
+                            finished = true
+                            return true
+                        }
+                        if first { cont.resume(with: result) }
+                    }
+                    nw.stateUpdateHandler = { state in
+                        switch state {
+                        case .ready: finish(.success(()))
+                        case .failed(let error), .waiting(let error):
+                            if case .posix(.EADDRINUSE) = error {
+                                finish(.failure(AddressInUse(message: Self.describe(error, target: target))))
+                            } else {
+                                finish(.failure(RemoteConnectError(Self.describe(error, target: target))))
+                            }
+                        case .cancelled: finish(.failure(RemoteConnectError("\(target): cancelled")))
+                        default: break
+                        }
+                    }
+                    nw.start(queue: stream.queue)
+                    stream.queue.asyncAfter(deadline: .now() + timeout) {
+                        finish(.failure(RemoteConnectError("\(target): no answer within \(Int(timeout)) s")))
+                    }
+                }
+            } onCancel: {
+                nw.cancel()
+            }
+        } catch {
+            nw.stateUpdateHandler = nil
+            nw.cancel()
+            throw error
+        }
+        nw.stateUpdateHandler = nil
+        return stream
+    }
+
+    private static func describe(_ error: NWError, target: String) -> String {
+        switch error {
+        case .posix(let code): "\(target): \(String(cString: strerror(code.rawValue)).lowercased())"
+        default: "\(target): \(error.localizedDescription)"
+        }
     }
 
     func receive() async throws -> Data? {

@@ -85,27 +85,85 @@ private final class TestMaster {
     }
 
     func start(peerURL: String, peerToken: String) async throws {
+        try await start(peers: [PeerConfig(name: "peer", url: peerURL, token: peerToken)])
+    }
+
+    func start(peers: [PeerConfig], control: PeerControl.Options = PeerControl.Options()) async throws {
         let store = self.store
         // A master reads its own links before it pulls its peers.
         await store.loadLocalLinks()
-        peerSync = PeerSync(identity: identity, peers: [PeerConfig(name: "peer", url: peerURL, token: peerToken)]) { action in
+        peerSync = PeerSync(identity: identity, peers: peers, version: "test", controlOptions: control) { action in
             await MainActor.run { store.dispatch(action) }
         }
         engine.peerSync = peerSync
         engine.installForeignCardHandler()
+        latePeerServer?.peerSync = peerSync
     }
 
-    func serve() async throws {
+    /// Serves the peer routes from the sync `start` makes, control
+    /// connections included, when `control`; else from no sync at all.
+    private var latePeerServer: LatePeerLinksServer?
+
+    func serve(control: Bool = false) async throws {
+        let peerServer: any PeerLinksServing
+        if control {
+            let late = LatePeerLinksServer(store: store)
+            late.peerSync = peerSync
+            latePeerServer = late
+            peerServer = late
+        } else {
+            peerServer = BoardPeerLinksServer(store: store, peerSync: nil)
+        }
         server = RemoteControlServer(
             host: MasterRemoteControlHost(engine: engine), devices: devices, port: 0,
             bindAddresses: { [RemoteNetworkAddresses.loopback] },
             options: .init(appVersion: "test", hostName: identity.name),
-            peerServer: BoardPeerLinksServer(store: store, peerSync: nil)
+            peerServer: peerServer
         )
         try await server.start()
     }
 
     var url: String { "http://127.0.0.1:\(server.port)" }
+}
+
+/// The peer routes of a test master, served from the sync it gets once
+/// both servers are up (each master's peer entry needs the other's port).
+private final class LatePeerLinksServer: PeerLinksServing, @unchecked Sendable {
+    let store: BoardStore
+    private let lock = NSLock()
+    private var _peerSync: PeerSync?
+    private var listening: (@Sendable () -> (addresses: [String], port: Int)?)?
+
+    init(store: BoardStore) {
+        self.store = store
+    }
+
+    var peerSync: PeerSync? {
+        get { lock.withLock { _peerSync } }
+        set {
+            let provider = lock.withLock { () -> (@Sendable () -> (addresses: [String], port: Int)?)? in
+                _peerSync = newValue
+                return listening
+            }
+            if let provider { newValue?.control.setListening(provider) }
+        }
+    }
+
+    private var inner: BoardPeerLinksServer { BoardPeerLinksServer(store: store, peerSync: peerSync) }
+
+    func linksPage(since: Int?, epoch: String?, machine: String?) async -> LinksPage {
+        await inner.linksPage(since: since, epoch: epoch, machine: machine)
+    }
+    func peerLinksChanged(machineId: String?) async { await inner.peerLinksChanged(machineId: machineId) }
+    func peersOverview() async -> PeersOverview { await inner.peersOverview() }
+    func peerReached(machineId: String, host: String) async { await inner.peerReached(machineId: machineId, host: host) }
+    func servePeerControl(_ socket: PeerControlSocket, device: RemoteDevice) async {
+        await inner.servePeerControl(socket, device: device)
+    }
+    func serverListening(_ provider: @escaping @Sendable () -> (addresses: [String], port: Int)?) {
+        lock.withLock { listening = provider }
+        peerSync?.control.setListening(provider)
+    }
 }
 
 @discardableResult
@@ -1403,4 +1461,361 @@ private final class ProgressLog: @unchecked Sendable {
     func add(_ sent: Int64, _ total: Int64) { lock.withLock { reports.append([sent, total]) } }
     var last: [Int64]? { lock.withLock { reports.last } }
     var count: Int { lock.withLock { reports.count } }
+}
+
+// MARK: - Control connections
+
+/// Polls `condition` until it holds or `timeout` passed; whether it held.
+@MainActor
+private func eventually(within timeout: Duration = .seconds(5), _ condition: () async -> Bool) async -> Bool {
+    let clock = ContinuousClock()
+    let deadline = clock.now + timeout
+    while clock.now < deadline {
+        if await condition() { return true }
+        try? await Task.sleep(for: .milliseconds(10))
+    }
+    return await condition()
+}
+
+/// Collects what a sync hands to its change and learning handlers.
+private final class PeerSyncRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var _changes: [(String, PeerChange)] = []
+    private var _learned: [(peerId: String, machineId: String, hints: [String])] = []
+    var changes: [(String, PeerChange)] { lock.withLock { _changes } }
+    var learned: [(peerId: String, machineId: String, hints: [String])] { lock.withLock { _learned } }
+    func change(_ machine: String, _ change: PeerChange) { lock.withLock { _changes.append((machine, change)) } }
+    func learn(_ peerId: String, _ machineId: String, _ hints: [String]) { lock.withLock { _learned.append((peerId, machineId, hints)) } }
+}
+
+@Suite("Peer control connections", .serialized)
+@MainActor
+struct PeerControlConnectionTests {
+    /// Short times, so a test sees a timeout in well under a second.
+    static let fast = PeerControl.Options(
+        pingInterval: .milliseconds(100), timeout: .milliseconds(600), helloTimeout: .seconds(2),
+        dialTimeout: 2, firstRetry: .milliseconds(100), maxRetry: .milliseconds(400))
+
+    /// The Mac and the box, each serving with its control route, each with
+    /// an entry for the other ("peer_box" on the Mac, "peer_mac" on the
+    /// box), unless an entry is given.
+    private func pair(
+        _ root: String,
+        control: PeerControl.Options = PeerControlConnectionTests.fast,
+        macPeers: (([TestMaster]) -> [PeerConfig])? = nil,
+        boxPeers: (([TestMaster]) -> [PeerConfig])? = nil
+    ) async throws -> (mac: TestMaster, box: TestMaster) {
+        let mac = try TestMaster(name: "mac", root: root)
+        let box = try TestMaster(name: "box", root: root)
+        try await mac.serve(control: true)
+        try await box.serve(control: true)
+        let both = [mac, box]
+        try await mac.start(peers: macPeers?(both)
+            ?? [PeerConfig(id: "peer_box", name: "box", url: box.url, token: box.tokenForPeer)], control: control)
+        try await box.start(peers: boxPeers?(both)
+            ?? [PeerConfig(id: "peer_mac", name: "mac", url: mac.url, token: mac.tokenForPeer)], control: control)
+        return (mac, box)
+    }
+
+    /// Runs a master's sync with the plain pull timer out of the way: only
+    /// the first pull, pokes and pushes pull.
+    private func run(_ master: TestMaster) -> Task<Void, Never> {
+        let sync = master.peerSync!
+        return Task.detached { await sync.run(interval: .seconds(60), offlineInterval: .seconds(60), connectedInterval: .seconds(60)) }
+    }
+
+    private func root(_ name: String) -> String {
+        (NSTemporaryDirectory() as NSString).appendingPathComponent("\(name)-\(UUID().uuidString)")
+    }
+
+    @Test("the defaults ping every 10 s and give up after 30 s of silence")
+    func defaults() {
+        let options = PeerControl.Options()
+        #expect(options.pingInterval == .seconds(10))
+        #expect(options.timeout == .seconds(30))
+        #expect(options.maxRetry == .seconds(30))
+        #expect(PeerSync.safetyPull == .seconds(60))
+    }
+
+    @Test("two masters connect, and a card made on one is on the other within 1 s without the 5 s timer")
+    func pushReachesPeer() async throws {
+        let dir = root("control-push")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (mac, box) = try await pair(dir)
+        let tasks = [run(mac), run(box),
+                     Task { await mac.engine.runOwnershipLoop() }, Task { await box.engine.runOwnershipLoop() }]
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+
+        #expect(await eventually {
+            mac.store.state.peerStatuses["peer_box"]?.connected == true
+                && box.store.state.peerStatuses["peer_mac"]?.connected == true
+        })
+        // The pulls the connection set off are done.
+        try await Task.sleep(for: .milliseconds(300))
+
+        let clock = ContinuousClock()
+        var start = clock.now
+        mac.store.dispatch(.createManualTask(Link(id: "card_push", name: "Pushed", projectPath: "/tmp/p", column: .backlog)))
+        #expect(await eventually(within: .seconds(3)) { box.store.state.links["card_push"] != nil })
+        #expect(clock.now - start < .seconds(1), "took \(clock.now - start)")
+
+        start = clock.now
+        box.store.dispatch(.createManualTask(Link(id: "card_back", name: "Back", projectPath: "/tmp/p", column: .backlog)))
+        #expect(await eventually(within: .seconds(3)) { mac.store.state.links["card_back"] != nil })
+        #expect(clock.now - start < .seconds(1), "took \(clock.now - start)")
+
+        let macLinks = await mac.peerSync.control.links()
+        let boxLinks = await box.peerSync.control.links()
+        #expect(macLinks.count == 1)
+        #expect(boxLinks.count == 1)
+        #expect(macLinks.first?.dialer == boxLinks.first?.dialer)
+        #expect(macLinks.first?.machine.id == box.identity.id)
+        #expect(boxLinks.first?.machine.id == mac.identity.id)
+    }
+
+    @Test("a master that goes silent, as a Mac going to sleep, shows disconnected once the timeout passes")
+    func silentPeer() async throws {
+        let dir = root("control-silent")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (mac, box) = try await pair(dir)
+        let tasks = [run(mac), run(box)]
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+        #expect(await eventually { mac.store.state.peerStatuses["peer_box"]?.connected == true })
+
+        let clock = ContinuousClock()
+        let start = clock.now
+        box.peerSync.control.goSilentForTesting()
+        #expect(await eventually(within: .seconds(3)) { mac.store.state.peerStatuses["peer_box"]?.connected == false })
+        let took = clock.now - start
+        // The timeout, and at most the watchdog's tick on top.
+        #expect(took < Self.fast.timeout + .milliseconds(400), "took \(took)")
+        #expect(mac.store.state.peerStatuses["peer_box"]?.controlError?.contains("no answer for 0.6 s") == true,
+                "\(mac.store.state.peerStatuses["peer_box"]?.controlError ?? "nil")")
+        // Redials reach nothing that answers.
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(mac.store.state.peerStatuses["peer_box"]?.connected == false)
+    }
+
+    @Test("a master that stops shows disconnected on the other at once, with its reason")
+    func stoppedPeer() async throws {
+        let dir = root("control-stop")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (mac, box) = try await pair(dir)
+        let macTask = run(mac)
+        let boxTask = run(box)
+        defer { macTask.cancel(); boxTask.cancel(); mac.server.stop(); box.server.stop() }
+        #expect(await eventually { mac.store.state.peerStatuses["peer_box"]?.connected == true })
+
+        boxTask.cancel()
+        box.server.stop()
+        #expect(await eventually(within: .seconds(2)) { mac.store.state.peerStatuses["peer_box"]?.connected == false })
+        let reason = mac.store.state.peerStatuses["peer_box"]?.controlError ?? ""
+        #expect(reason.contains("box"), "\(reason)")
+    }
+
+    @Test("when both masters dial at once, the connection the lower machine id dialed is the one left")
+    func simultaneousDials() async throws {
+        for round in 0..<3 {
+            let dir = root("control-both-\(round)")
+            defer { try? FileManager.default.removeItem(atPath: dir) }
+            let (mac, box) = try await pair(dir)
+            // Each side holds what it accepted a moment: both dial for sure.
+            await mac.peerSync.control.delayAcceptsForTesting(.milliseconds(300))
+            await box.peerSync.control.delayAcceptsForTesting(.milliseconds(300))
+            let tasks = [run(mac), run(box)]
+            defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+
+            #expect(await eventually {
+                mac.store.state.peerStatuses["peer_box"]?.connected == true
+                    && box.store.state.peerStatuses["peer_mac"]?.connected == true
+            })
+            // The losing connection closes on both ends.
+            try await Task.sleep(for: .milliseconds(400))
+            let macLinks = await mac.peerSync.control.links()
+            let boxLinks = await box.peerSync.control.links()
+            let lower = min(mac.identity.id, box.identity.id)
+            #expect(macLinks.count == 1 && boxLinks.count == 1)
+            #expect(macLinks.first?.dialer == lower)
+            #expect(boxLinks.first?.dialer == lower)
+            let (low, high) = mac.identity.id == lower ? (mac, box) : (box, mac)
+            let lowPeer = low === mac ? "peer_box" : "peer_mac"
+            let highPeer = high === mac ? "peer_box" : "peer_mac"
+            #expect(low.store.state.peerStatuses[lowPeer]?.connectedVia == .dialed)
+            #expect(high.store.state.peerStatuses[highPeer]?.connectedVia == .accepted)
+            #expect(low.store.state.peerStatuses[lowPeer]?.connected == true)
+            #expect(high.store.state.peerStatuses[highPeer]?.connected == true)
+        }
+    }
+
+    @Test("a dial tries the hints in order, and the one that worked and the peer's machine id are learned")
+    func learnsHints() async throws {
+        let dir = root("control-hints")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let dead = "http://127.0.0.1:1"
+        let (mac, box) = try await pair(dir, macPeers: { both in
+            [PeerConfig(id: "peer_box", name: "box", addressHints: [dead, both[1].url], token: both[1].tokenForPeer)]
+        })
+        let recorder = PeerSyncRecorder()
+        await mac.peerSync.onEntryLearned { recorder.learn($0, $1, $2) }
+        let boxRecorder = PeerSyncRecorder()
+        await box.peerSync.onEntryLearned { boxRecorder.learn($0, $1, $2) }
+        // Only the Mac dials.
+        await box.peerSync.setPeers([PeerConfig(id: "peer_mac", name: "mac", addressHints: [], token: mac.tokenForPeer)])
+        let tasks = [run(mac), run(box)]
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+
+        #expect(await eventually { mac.store.state.peerStatuses["peer_box"]?.connected == true })
+        #expect(mac.store.state.peerStatuses["peer_box"]?.connectedVia == .dialed)
+        #expect(await eventually { !recorder.learned.isEmpty && !boxRecorder.learned.isEmpty })
+        let learned = try #require(recorder.learned.last)
+        #expect(learned.machineId == box.identity.id)
+        #expect(learned.hints == [box.url, dead])
+        let entry = try #require(await mac.peerSync.configuredPeers().first)
+        #expect(entry.addressHints.first == box.url)
+        #expect(entry.machineId == box.identity.id)
+        // The box knew the Mac by no machine id; the only such entry is it.
+        #expect(boxRecorder.learned.last?.machineId == mac.identity.id)
+        #expect(await box.peerSync.configuredPeers().first?.machineId == mac.identity.id)
+        // Pulls follow the hint that worked.
+        #expect(mac.peerSync.endpoints.baseURL(forPeer: "peer_box")?.absoluteString == box.url)
+    }
+
+    @Test("a peer that answers as another machine than its entry names is not connected, and says why")
+    func machineMismatch() async throws {
+        let dir = root("control-mismatch")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (mac, box) = try await pair(dir, macPeers: { both in
+            [PeerConfig(id: "peer_box", machineId: "machine_someone_else", name: "box",
+                        addressHints: [both[1].url], token: both[1].tokenForPeer)]
+        })
+        let tasks = [run(mac), run(box)]
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+
+        #expect(await eventually { mac.store.state.peerStatuses["peer_box"]?.controlError?.contains("not machine_someone_else") == true })
+        #expect(mac.store.state.peerStatuses["peer_box"]?.connected == false)
+        // The box refused it before taking it: it never counted as connected there.
+        let refused = await box.peerSync.control.links()
+        #expect(refused.isEmpty)
+        // The box's dial is refused by the Mac: its entry for the box names another machine.
+        #expect(await eventually { box.store.state.peerStatuses["peer_mac"]?.controlError?.contains("no peer entry") == true })
+    }
+
+    @Test("a master with no entry for the dialer refuses its control connection with the reason")
+    func noEntry() async throws {
+        let dir = root("control-noentry")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (mac, box) = try await pair(dir, boxPeers: { _ in [] })
+        let tasks = [run(mac), run(box)]
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+
+        #expect(await eventually {
+            mac.store.state.peerStatuses["peer_box"]?.controlError?.contains("box has no peer entry for mac") == true
+        }, "\(mac.store.state.peerStatuses["peer_box"]?.controlError ?? "nil")")
+        #expect(mac.store.state.peerStatuses["peer_box"]?.connected == false)
+    }
+
+    @Test("only a peer or full token opens a control connection")
+    func controlScopes() async throws {
+        let dir = root("control-scope")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (_, box) = try await pair(dir)
+        defer { box.server.stop() }
+        let base = try #require(URL(string: box.url))
+        for scope in [RemoteScope.agent, .terminal] {
+            let token = try box.devices.add(name: "x", scope: scope).token
+            await #expect(throws: RemoteWebSocketDialError.self) {
+                _ = try await RemoteWebSocketClient.connect(baseURL: base, path: PeerControl.path, token: token)
+            }
+            do {
+                _ = try await RemoteWebSocketClient.connect(baseURL: base, path: PeerControl.path, token: token)
+            } catch let error as RemoteWebSocketDialError {
+                guard case .refused(let status, _) = error else { Issue.record("\(error)"); continue }
+                #expect(status == 403)
+            }
+        }
+        do {
+            _ = try await RemoteWebSocketClient.connect(baseURL: base, path: PeerControl.path, token: "nope")
+            Issue.record("an unknown token opened a control connection")
+        } catch let error as RemoteWebSocketDialError {
+            #expect(error == .refused(401, "unknown or revoked token"))
+        }
+        let peer = try box.devices.add(name: "mac", scope: .peer).token
+        let ws = try await RemoteWebSocketClient.connect(baseURL: base, path: PeerControl.path, token: peer)
+        ws.close()
+    }
+
+    @Test("the agent sync's change notes and attention go over the control connection")
+    func syncAndAttentionPushes() async throws {
+        let dir = root("control-sync")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let (mac, box) = try await pair(dir)
+        let recorder = PeerSyncRecorder()
+        await box.peerSync.onPeerChange { recorder.change($0, $1) }
+        let tasks = [run(mac), run(box), Task { await mac.engine.runOwnershipLoop() }]
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+        #expect(await eventually { mac.store.state.peerStatuses["peer_box"]?.connected == true })
+        // What a fresh connection pokes.
+        #expect(await eventually { recorder.changes.contains { $0.1.what == .sync } })
+
+        let transport = PeerControlSyncTransport(peerSync: mac.peerSync)
+        let syncPeer = SyncPeer(machine: box.identity, baseURL: URL(string: box.url)!, token: box.tokenForPeer, online: true)
+        await transport.notify(peer: syncPeer, machineId: mac.identity.id, what: "git:entry_1")
+        #expect(await eventually(within: .seconds(1)) {
+            recorder.changes.contains { $0.0 == mac.identity.id && $0.1 == PeerChange(what: .sync, detail: "git:entry_1") }
+        })
+
+        let before = recorder.changes.filter { $0.1.what == .attention }.count
+        mac.store.dispatch(.attentionRaised(AttentionRequest(id: "att_push", cardId: nil, kind: .question, title: "Q", body: "?")))
+        #expect(await eventually(within: .seconds(2)) {
+            recorder.changes.filter { $0.0 == mac.identity.id && $0.1.what == .attention }.count > before
+        })
+    }
+}
+
+@Suite("Peer control wire format")
+struct PeerControlWireTests {
+    @Test("a peer status from before control connections decodes as not connected")
+    func oldStatus() throws {
+        let json = #"{"peerId":"peer_a","online":true,"url":"http://10.0.0.2:7780"}"#
+        let status = try JSONDecoder().decode(PeerStatus.self, from: Data(json.utf8))
+        #expect(status.online)
+        #expect(!status.connected)
+        #expect(status.connectedVia == nil)
+        let round = try JSONDecoder().decode(PeerStatus.self, from: JSONEncoder().encode(
+            PeerStatus(peerId: "p", online: true, connected: true, connectedVia: .accepted)))
+        #expect(round.connected && round.connectedVia == .accepted)
+    }
+
+    @Test("control messages are one small JSON object each")
+    func messages() throws {
+        let changed = try JSONEncoder.remote.encode(PeerControlMessage(changed: PeerChange(what: .links)))
+        #expect(String(decoding: changed, as: UTF8.self) == #"{"changed":{"what":"links"}}"#)
+        let decoded = try JSONDecoder.remote.decode(PeerControlMessage.self, from: Data(#"{"ping":3,"later":{"x":1}}"#.utf8))
+        #expect(decoded.ping == 3)
+        let hello = PeerHello(machine: MachineIdentity(id: "machine_a", name: "a"), version: "1",
+                              addresses: ["192.168.178.59", "127.0.0.1", "fe80::1", "2001:db8::2"], port: 7780)
+        #expect(hello.hintURLs == ["http://192.168.178.59:7780", "http://[2001:db8::2]:7780"])
+    }
+
+    @Test("the hint that worked goes first, announced ones follow, and the list stays bounded")
+    func mergedHints() {
+        let merged = PeerControl.mergedHints(["http://a:1", "http://b:1/"], promote: "http://b:1",
+                                             announced: ["http://c:1", "http://a:1"], limit: 8)
+        #expect(merged == ["http://b:1", "http://a:1", "http://c:1"])
+        let bounded = PeerControl.mergedHints(["http://a:1"], promote: nil,
+                                              announced: (0..<20).map { "http://h\($0):1" }, limit: 4)
+        #expect(bounded.count == 4)
+        #expect(bounded.first == "http://a:1")
+    }
+
+    @Test("a hello announces the addresses the server listens on, every interface's for a wildcard")
+    func advertised() {
+        let fixed = PeerControl.advertised((addresses: ["127.0.0.1", "192.168.178.230"], port: 7780))
+        #expect(fixed.addresses == ["192.168.178.230"])
+        #expect(fixed.port == 7780)
+        let wild = PeerControl.advertised((addresses: ["0.0.0.0"], port: 7780))
+        #expect(!wild.addresses.contains("0.0.0.0"))
+        #expect(!wild.addresses.contains("127.0.0.1"))
+        #expect(PeerControl.advertised(nil).addresses.isEmpty)
+    }
 }

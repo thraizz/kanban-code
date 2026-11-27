@@ -1,6 +1,6 @@
 # Peer connections
 
-Status: **in progress**, step 1 done (2026-11-27). Replaces how two masters reach each other
+Status: **in progress**, steps 1 and 2 done (2026-11-27). Replaces how two masters reach each other
 (the Mac app and `kanban-code-server`, see [Several masters](remote-control.md#several-masters)).
 No overlay network (Tailscale and the like), no mDNS and no DHCP reservation:
 the design works on a plain LAN where addresses change.
@@ -83,20 +83,27 @@ with the dialer's peer token for the listener (peer scope, add the route to
   stays and the other closes. In practice the laptop ends up the dialer,
   because its dials to the box succeed and the box's dials to it do not.
   No setting says who dials.
-- **Hello.** Both sides send `{"hello": {machine, version, addresses: [...], port}}`
-  first. The listener matches the machine id to a peer entry (or creates
-  one, see Pairing). A mismatch with a known `machineId` closes the
-  connection with a reason that shows in Settings › Peers.
-- **Liveness.** Ping every 10 s; no pong for 30 s closes it. A Mac going to
-  sleep shows as disconnected on the box within 30 s.
-- **State.** `PeerStatus.connected` (and `connectedVia: dialed|accepted`)
-  replaces the pull-success heuristics behind `online`. `isPeerOnline`,
-  `peerOutage`, `ownerWait` and the board's offline marks read it.
-- **Push.** `{"changed": {"what": "links"|"sync"|"attention"}}` on the
+- **Hello.** The dialer sends `{"hello": {machine, version, addresses: [...], port, expect}}`
+  first; `expect` is the machine id its entry for the listener is saved
+  with. The listener matches the machine id to a peer entry (or creates
+  one, see Pairing) and answers with its own hello, or closes with the
+  reason (no entry, sync turned off, `expect` names another machine)
+  without taking the connection. A dialer that gets a hello from another
+  machine than its entry's `machineId` closes too. Either reason shows in
+  Settings › Peers.
+- **Liveness.** `{"ping": n}` every 10 s each way, answered with
+  `{"pong": n}`; a connection that heard nothing for 30 s closes. A Mac
+  going to sleep shows as disconnected on the box within 30 s.
+- **State.** `PeerStatus.connected` (and `connectedVia: dialed|accepted`,
+  `controlError` for why it is not) replaces the pull-success heuristics
+  behind `online`. `isPeerOnline`, `peerOutage`, `ownerWait` and the
+  board's offline marks read it from step 3 on.
+- **Push.** `{"changed": {"what": "links"|"sync"|"attention", "detail"}}` on the
   control connection replaces `POST /v1/links/changed` and
-  `POST /v1/sync/changed`. The receiver pulls at once over the same peer
-  URL as always (which may be the tunnel below). A safety pull every 60 s
-  stays; the 5 s pull timer goes.
+  `POST /v1/sync/changed` (`detail` is what the agent sync says changed).
+  The receiver pulls at once over the same peer URL as always (which may
+  be the tunnel below). A safety pull every 60 s stays; the 5 s pull timer
+  goes.
 
 ### 3. Reverse streams: the peer's API on a loopback port
 
@@ -211,6 +218,51 @@ The box's entry for the Mac is no longer needed for anything but the token.
   (as Syncthing does with device ids). That would let a master tell its
   peer from whoever has the peer's old address.
 
+### As built in step 2
+
+Where the code differs from the plan above, and why:
+
+- **Who sends the hello first.** The dialer, then the listener answers
+  (the plan had both send at once). A listener that refuses closes before
+  it takes the connection, so a refused dial never shows as connected for
+  a moment on the listener; `expect` lets it refuse a dial meant for
+  another machine the same way.
+- **Readers of `online`.** They keep reading the pull result until step 3.
+  In step 2 pulls still go to the address on file, so `connected` does not
+  yet mean this master can call the peer: the box holds the Mac's
+  connection while its pulls to the Mac's old address fail. Once step 3
+  sends every call through the connection, `connected` is the fact.
+- **The saved machine id is the identity.** An entry's `machineId` is
+  saved (Settings) once a connection's hellos agree; from then on a dial
+  that reaches another machine and a pull that answers as another machine
+  (`PeerSyncError.otherMachine`) are refused. An accepted hello is matched
+  to the entry saved with its machine id, else to one not saved with an id
+  whose pulls answered as it, else (among entries with no machine known)
+  to the one with a hint at the address it came from or announced, else
+  to the only such entry.
+- **Pushes and the timers.** The ownership loop already called
+  `notifyPeers` within 500 ms of every change of the served cards; that
+  call now goes over the control connection, and a poke starts the pull at
+  once. It also pushes `attention` when this master's open requests
+  change, and the attention mirror then fetches at once instead of at its
+  next 4 s round. A peer with a connection is pulled every 60 s besides;
+  one without (an older build, or no address works) keeps the 5 s timer
+  and the HTTP `changed` routes until step 5.
+- **The WebSocket client is the module's own** (`RemoteWebSocketClient`
+  over `RemoteTransport.connect`: Network.framework on the Mac, sockets on
+  Linux), not `URLSessionWebSocketTask`: the Linux server dials too, and
+  step 3 needs the frames' bytes. `http` peers only.
+- **Hint expiry is kept in memory**: a restart starts the 7 days again.
+- **Scopes.** `GET /v1/peer/control` is on the peer allow list and also
+  takes a full token (setups paired before the peer scope); agent and
+  terminal tokens get 403.
+- **Code.** `PeerControl` (`UseCases/PeerControl.swift`, owned by
+  `PeerSync` as `peerSync.control`) dials, serves and resolves duplicates;
+  `PeerControlSocket` and the message types are in
+  `Adapters/RemoteControl/PeerControlSocket.swift`. The connection log
+  lines are `[peer]`: every connect and every close with its cause, dial
+  failures when the reason changes (else every 10 minutes).
+
 ## Call sites that read a peer address today
 
 | Where | What |
@@ -264,7 +316,9 @@ connection.
 
 **Step 3: reverse streams.** `/v1/peer/stream`, the box's loopback forward
 listener, in-process `RemoteByteStream` on the dialer's side with the
-tunnel marker, `PeerEndpoints` returning the forward URL. Done when: with
+tunnel marker, `PeerEndpoints` returning the forward URL. `isPeerOnline`,
+`peerOutage`, `ownerWait` and the board's offline marks switch from
+`online` to `connected` (see "As built in step 2"). Done when: with
 master B's address for A pointing at a dead port and A dialing B, every
 feature in the table works from B to A in tests (links, forwarded prompt,
 handover info and transcript copy, attention, a terminal WebSocket); the

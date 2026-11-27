@@ -167,12 +167,21 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
     }
 }
 
+/// Which master dialed a control connection, seen from this one.
+public enum PeerConnectionDirection: String, Codable, Sendable, Equatable {
+    /// This master dialed the peer.
+    case dialed
+    /// The peer dialed this master.
+    case accepted
+}
+
 /// Live state of a peer, as the sync loop last saw it.
 public struct PeerStatus: Codable, Sendable, Equatable {
     /// The `PeerConfig.id` this status belongs to.
     public var peerId: String
     /// The peer's machine identity, known after its first answer.
     public var machine: MachineIdentity?
+    /// The last pull answered (or failed for less than the grace).
     public var online: Bool
     /// Last successful pull.
     public var lastSeen: Date?
@@ -180,6 +189,12 @@ public struct PeerStatus: Codable, Sendable, Equatable {
     /// The peer's Remote Control URL, to tell an ssh machine that is the
     /// same host.
     public var url: String?
+    /// A control connection to the peer is up (`docs/peer-connections.md`).
+    public var connected: Bool
+    /// Who dialed it, while `connected`.
+    public var connectedVia: PeerConnectionDirection?
+    /// Why the last control connection ended, or why no dial got through.
+    public var controlError: String?
 
     public init(
         peerId: String,
@@ -187,7 +202,10 @@ public struct PeerStatus: Codable, Sendable, Equatable {
         online: Bool = false,
         lastSeen: Date? = nil,
         lastError: String? = nil,
-        url: String? = nil
+        url: String? = nil,
+        connected: Bool = false,
+        connectedVia: PeerConnectionDirection? = nil,
+        controlError: String? = nil
     ) {
         self.peerId = peerId
         self.machine = machine
@@ -195,6 +213,23 @@ public struct PeerStatus: Codable, Sendable, Equatable {
         self.lastSeen = lastSeen
         self.lastError = lastError
         self.url = url
+        self.connected = connected
+        self.connectedVia = connectedVia
+        self.controlError = controlError
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        peerId = try c.decode(String.self, forKey: .peerId)
+        machine = try c.decodeIfPresent(MachineIdentity.self, forKey: .machine)
+        online = try c.decodeIfPresent(Bool.self, forKey: .online) ?? false
+        lastSeen = try c.decodeIfPresent(Date.self, forKey: .lastSeen)
+        lastError = try c.decodeIfPresent(String.self, forKey: .lastError)
+        url = try c.decodeIfPresent(String.self, forKey: .url)
+        // A status from a master before control connections has none.
+        connected = try c.decodeIfPresent(Bool.self, forKey: .connected) ?? false
+        connectedVia = try? c.decodeIfPresent(PeerConnectionDirection.self, forKey: .connectedVia)
+        controlError = try c.decodeIfPresent(String.self, forKey: .controlError)
     }
 }
 

@@ -19,6 +19,9 @@ public enum PeerSyncError: Error, Equatable, LocalizedError {
     case noAddress(String)
     case http(Int, String)
     case selfPeer
+    /// The address answered as another machine than the entry is saved as:
+    /// the machine it answered as (name, id) and the one expected.
+    case otherMachine(String, String, expected: String)
 
     public var errorDescription: String? {
         switch self {
@@ -26,6 +29,7 @@ public enum PeerSyncError: Error, Equatable, LocalizedError {
         case .noAddress(let name): "no usable address for \(name)"
         case .http(let status, let body): "HTTP \(status): \(body)"
         case .selfPeer: "this peer is the local machine"
+        case .otherMachine(let name, let id, let expected): "answered as \(name) (\(id)), not \(expected)"
         }
     }
 }
@@ -91,7 +95,12 @@ public struct HTTPPeerLinksTransport: PeerLinksTransport {
 /// Each peer is pulled on a timer (and at once after `poke`), asking only
 /// for what changed since the last page (`since` + `epoch`); every page goes
 /// to the board as `.peerLinksMerged`. Peer status (online, last seen,
-/// machine identity) goes out as `.peerStatusChanged` when it changes.
+/// machine identity, control connection) goes out as `.peerStatusChanged`
+/// when it changes.
+///
+/// A peer with a control connection (`control`) says when its cards
+/// changed, so it is pulled then, plus a safety pull every minute; one
+/// without is pulled every few seconds.
 public actor PeerSync {
     public typealias Dispatch = @Sendable (Action) async -> Void
 
@@ -117,6 +126,8 @@ public actor PeerSync {
     /// Last repository slugs each peer sent, to dispatch only changes.
     private var repoSlugs: [String: [String: String]] = [:]
     private var pokedAll = false
+    /// Wakes the pull loop for a poke instead of at its next check.
+    private var wake: AsyncStream<Void>.Continuation?
     /// Failed pulls since each peer last answered: an online peer turns
     /// offline only once they span `offlineGrace`.
     private var reachability: [String: RemoteReachability] = [:]
@@ -131,6 +142,27 @@ public actor PeerSync {
     /// Saves a peer's new address (peer id, address), so Settings › Peers
     /// shows it and the next start reaches the peer at once.
     private var addressLearned: (@Sendable (String, String) async -> Void)?
+    /// The control connections to the peers.
+    public nonisolated let control: PeerControl
+    /// The control connection of each peer, by peer id, as last reported.
+    private var controlStates: [String: ControlState] = [:]
+    /// Takes a change a peer announced other than its cards (machine id,
+    /// change): the agent sync and attention.
+    private var changeHandler: (@Sendable (String, PeerChange) async -> Void)?
+    /// Saves what a control connection taught about an entry (peer id,
+    /// machine id, address hints).
+    private var entryLearned: (@Sendable (String, String, [String]) async -> Void)?
+
+    private struct ControlState {
+        var connected = false
+        var via: PeerConnectionDirection?
+        var machine: MachineIdentity?
+        var error: String?
+    }
+
+    /// How often a peer with a control connection is pulled without being
+    /// told to: its pushes carry the rest.
+    public static let safetyPull: Duration = .seconds(60)
 
     /// A contact older than this says nothing about where the peer is now.
     static let contactWindow: TimeInterval = 120
@@ -142,11 +174,15 @@ public actor PeerSync {
         peers: [PeerConfig] = [],
         transport: any PeerLinksTransport = HTTPPeerLinksTransport(),
         offlineGrace: TimeInterval = RemoteReachability.defaultGrace,
+        version: String = RemoteControlServer.bundleVersion,
+        controlOptions: PeerControl.Options = PeerControl.Options(),
         dispatch: @escaping Dispatch
     ) {
         self.identity = identity
         self.peers = peers
-        self.endpoints = PeerEndpoints(peers: peers)
+        let endpoints = PeerEndpoints(peers: peers)
+        self.endpoints = endpoints
+        self.control = PeerControl(identity: identity, endpoints: endpoints, version: version, options: controlOptions)
         self.transport = transport
         self.offlineGrace = offlineGrace
         self.dispatch = dispatch
@@ -156,7 +192,7 @@ public actor PeerSync {
 
     /// Replaces the peer list (Settings > Peers changed). A peer whose
     /// address changed starts over with a full pull.
-    public func setPeers(_ newPeers: [PeerConfig]) {
+    public func setPeers(_ newPeers: [PeerConfig]) async {
         let old = Dictionary(peers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
         for peer in newPeers where old[peer.id]?.addressHints.first != peer.addressHints.first {
             cursors[peer.id] = nil
@@ -165,8 +201,11 @@ public actor PeerSync {
         for id in cursors.keys where !ids.contains(id) { cursors[id] = nil }
         for id in statuses.keys where !ids.contains(id) { statuses[id] = nil }
         for id in reachability.keys where !ids.contains(id) { reachability[id] = nil }
+        for id in controlStates.keys where !ids.contains(id) { controlStates[id] = nil }
         peers = newPeers
         pokedAll = true
+        wake?.yield()
+        await control.peersChanged(newPeers)
     }
 
     public func configuredPeers() -> [PeerConfig] { peers }
@@ -186,6 +225,19 @@ public actor PeerSync {
     /// gets the peer id and the address.
     public func onAddressLearned(_ handler: @escaping @Sendable (_ peerId: String, _ address: String) async -> Void) {
         addressLearned = handler
+    }
+
+    /// Sets what takes a change a peer announced on its control connection,
+    /// other than its cards: `sync` (with what the agent sync says changed)
+    /// and `attention`. It gets the peer's machine id.
+    public func onPeerChange(_ handler: @escaping @Sendable (_ machineId: String, _ change: PeerChange) async -> Void) {
+        changeHandler = handler
+    }
+
+    /// Sets what saves what a control connection taught about an entry:
+    /// the machine it is and its address hints, newest success first.
+    public func onEntryLearned(_ handler: @escaping @Sendable (_ peerId: String, _ machineId: String, _ hints: [String]) async -> Void) {
+        entryLearned = handler
     }
 
     /// Notes that the peer master `machineId` reached this one from `host`
@@ -232,6 +284,11 @@ public actor PeerSync {
     /// Takes in a page `peer` answered with.
     private func accept(_ page: LinksPage, from peer: PeerEndpoint) async throws {
         guard page.machine.id != identity.id else { throw PeerSyncError.selfPeer }
+        // An entry saved with its machine id is that machine; an address
+        // that answers as another one is someone else now.
+        if let expected = peers.first(where: { $0.id == peer.id })?.machineId, expected != page.machine.id {
+            throw PeerSyncError.otherMachine(page.machine.name, page.machine.id, expected: expected)
+        }
         endpoints.noteMachine(page.machine.id, forPeer: peer.id)
         if !page.links.isEmpty {
             await dispatch(.peerLinksMerged(peer: page.machine.id, links: page.links))
@@ -303,22 +360,108 @@ public actor PeerSync {
     public func poke(machineId: String? = nil) {
         if let machineId, let peer = peer(forMachine: machineId) {
             pokedPeers.insert(peer.id)
+            wake?.yield()
         } else {
             pokedAll = true
+            wake?.yield()
         }
     }
 
-    /// Tells every online peer this machine's cards changed.
+    /// Tells every peer this machine's cards changed: on its control
+    /// connection, or (a peer without one that answers pulls) with
+    /// `POST /v1/links/changed`.
     public func notifyPeers() async {
-        let online = peers.filter { $0.enabled && statuses[$0.id]?.online == true }
-            .compactMap { endpoints.endpoint(forPeer: $0.id) }
+        let enabled = peers.filter(\.enabled)
         let machineId = identity.id
         let transport = transport
+        let control = control
+        let online = Set(enabled.filter { statuses[$0.id]?.online == true }.map(\.id))
+        let endpoints = enabled.map { ($0.id, self.endpoints.endpoint(forPeer: $0.id)) }
         await withTaskGroup(of: Void.self) { group in
-            for peer in online {
-                group.addTask { await transport.notifyChanged(peer: peer, machineId: machineId) }
+            for (peerId, endpoint) in endpoints {
+                group.addTask {
+                    if await control.send(PeerChange(what: .links), toPeer: peerId) { return }
+                    guard online.contains(peerId), let endpoint else { return }
+                    await transport.notifyChanged(peer: endpoint, machineId: machineId)
+                }
             }
         }
+    }
+
+    /// Tells the peer that is the machine `machineId` that `change` happened
+    /// here (agent sync). False when it has no control connection; the
+    /// caller tells it its own way.
+    @discardableResult
+    public func announce(_ change: PeerChange, toMachine machineId: String) async -> Bool {
+        await control.send(change, toMachine: machineId)
+    }
+
+    /// Tells every connected peer that `change` happened here (attention).
+    /// The others notice at their next poll.
+    public func announce(_ change: PeerChange) async {
+        let control = control
+        let ids = peers.filter(\.enabled).map(\.id)
+        await withTaskGroup(of: Void.self) { group in
+            for id in ids {
+                group.addTask { await control.send(change, toPeer: id) }
+            }
+        }
+    }
+
+    // MARK: - Control connection
+
+    /// Follows the control connections until the task is cancelled.
+    private func followControl() async {
+        for await event in control.events {
+            await handle(event)
+        }
+    }
+
+    private func handle(_ event: PeerControl.Event) async {
+        switch event {
+        case let .connected(peerId, machine, via, _, remoteHost):
+            controlStates[peerId] = ControlState(connected: true, via: via, machine: machine)
+            endpoints.noteMachine(machine.id, forPeer: peerId)
+            // A peer that dialed in shows where it is now, for a pull that
+            // fails at the address on file.
+            if via == .accepted, let remoteHost { noteContact(machineId: machine.id, host: remoteHost) }
+            // What changed while it was not connected was not pushed.
+            pokedPeers.insert(peerId)
+            wake?.yield()
+            await reportControl(peerId)
+            await changeHandler?(machine.id, PeerChange(what: .sync))
+            await changeHandler?(machine.id, PeerChange(what: .attention))
+        case let .disconnected(peerId, reason):
+            controlStates[peerId] = ControlState(connected: false, machine: controlStates[peerId]?.machine, error: reason)
+            await reportControl(peerId)
+        case let .dialFailed(peerId, reason):
+            guard controlStates[peerId]?.connected != true else { return }
+            var state = controlStates[peerId] ?? ControlState()
+            state.error = reason
+            controlStates[peerId] = state
+            await reportControl(peerId)
+        case let .changed(peerId, machineId, change):
+            if change.what == .links {
+                pokedPeers.insert(peerId)
+                wake?.yield()
+            } else {
+                await changeHandler?(machineId, change)
+            }
+        case let .learned(peerId, machineId, hints):
+            guard let index = peers.firstIndex(where: { $0.id == peerId }) else { return }
+            peers[index].machineId = machineId
+            peers[index].addressHints = hints
+            await entryLearned?(peerId, machineId, hints)
+        }
+    }
+
+    private func reportControl(_ peerId: String) async {
+        await report(statuses[peerId] ?? PeerStatus(peerId: peerId))
+    }
+
+    /// Whether the peer has a control connection, as last reported.
+    public func isConnected(peerId: String) -> Bool {
+        controlStates[peerId]?.connected == true
     }
 
     /// How often an offline peer is tried again. A master restarting for a
@@ -326,9 +469,30 @@ public actor PeerSync {
     /// that long; a failed pull to a refusing host costs next to nothing.
     public static let offlineRetry: Duration = .seconds(5)
 
-    /// Runs until the task is cancelled: online peers every `interval`,
-    /// offline ones every `offlineInterval`, poked ones at once.
-    public func run(interval: Duration = .seconds(5), offlineInterval: Duration = PeerSync.offlineRetry) async {
+    /// Runs until the task is cancelled: dials and serves the control
+    /// connections, and pulls peers with a control connection every
+    /// `connectedInterval`, other online peers every `interval`, offline
+    /// ones every `offlineInterval`, poked ones at once.
+    public func run(
+        interval: Duration = .seconds(5),
+        offlineInterval: Duration = PeerSync.offlineRetry,
+        connectedInterval: Duration = PeerSync.safetyPull
+    ) async {
+        let control = control
+        await withTaskGroup(of: Void.self) { group in
+            group.addTask { await control.run() }
+            group.addTask { await self.followControl() }
+            group.addTask {
+                await self.pullLoop(interval: interval, offlineInterval: offlineInterval, connectedInterval: connectedInterval)
+            }
+            await group.next()
+            group.cancelAll()
+        }
+    }
+
+    private func pullLoop(interval: Duration, offlineInterval: Duration, connectedInterval: Duration) async {
+        let (wakes, wake) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
+        self.wake = wake
         var nextPull: [String: ContinuousClock.Instant] = [:]
         let clock = ContinuousClock()
         while !Task.isCancelled {
@@ -346,15 +510,33 @@ public actor PeerSync {
                         group.addTask { (peer.id, await self.pull(peerId: peer.id)) }
                     }
                     for await (id, online) in group {
-                        nextPull[id] = clock.now + (online ? interval : offlineInterval)
+                        let every = controlStates[id]?.connected == true ? connectedInterval : (online ? interval : offlineInterval)
+                        nextPull[id] = clock.now + every
                     }
                 }
             }
-            try? await Task.sleep(for: .milliseconds(250))
+            await withTaskGroup(of: Void.self) { group in
+                group.addTask { try? await Task.sleep(for: .milliseconds(250)) }
+                group.addTask {
+                    var next = wakes.makeAsyncIterator()
+                    _ = await next.next()
+                }
+                await group.next()
+                group.cancelAll()
+            }
         }
     }
 
-    private func report(_ status: PeerStatus) async {
+    /// Records and (when it changed, or about once a minute) dispatches a
+    /// peer's status, with the state of its control connection laid over
+    /// what the pulls found.
+    private func report(_ pulled: PeerStatus) async {
+        var status = pulled
+        let control = controlStates[status.peerId]
+        status.connected = control?.connected ?? false
+        status.connectedVia = status.connected ? control?.via : nil
+        status.controlError = status.connected ? nil : control?.error
+        if status.machine == nil { status.machine = control?.machine }
         let previous = statuses[status.peerId]
         statuses[status.peerId] = status
         let lastSent = statusDispatchedAt[status.peerId]
@@ -363,6 +545,9 @@ public actor PeerSync {
             || previous?.machine != status.machine
             || previous?.lastError != status.lastError
             || previous?.url != status.url
+            || previous?.connected != status.connected
+            || previous?.connectedVia != status.connectedVia
+            || previous?.controlError != status.controlError
         guard changed || stale else { return }
         statusDispatchedAt[status.peerId] = .now
         await dispatch(.peerStatusChanged(status))

@@ -11,7 +11,7 @@ struct RemotePeerScopeTests {
     /// scrubber, and what MasterEngine forwards for a card the peer owns.
     static let peerCalls: [(String, [String])] = [
         ("GET", ["me"]), ("GET", ["board"]), ("GET", ["machines"]), ("GET", ["events"]),
-        ("GET", ["links"]), ("POST", ["links", "changed"]), ("GET", ["peers"]),
+        ("GET", ["links"]), ("POST", ["links", "changed"]), ("GET", ["peers"]), ("GET", ["peer", "control"]),
         ("GET", ["sync", "state"]), ("GET", ["sync", "file"]), ("POST", ["sync", "changed"]), ("POST", ["optmem", "run"]),
         ("GET", ["attention"]), ("POST", ["attention", "presence"]), ("POST", ["attention", "att_1", "resolve"]),
         ("GET", ["vault", "replica"]), ("POST", ["vault", "replica"]), ("POST", ["vault", "card-token"]),

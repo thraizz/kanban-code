@@ -47,6 +47,9 @@ public final class MasterEngine {
 
     /// Card sync with the other masters; nil when there are none.
     public var peerSync: PeerSync?
+    /// Wakes the attention peer sync before its next round: a peer said its
+    /// requests changed.
+    var attentionPeerPoke: AsyncStream<Void>.Continuation?
 
     /// Delivers attention requests to the Mac and the phone; nil until the
     /// app or the server sets it up.

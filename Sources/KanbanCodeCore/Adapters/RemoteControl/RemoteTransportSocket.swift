@@ -200,6 +200,73 @@ final class SocketRemoteByteStream: RemoteByteStream, @unchecked Sendable {
     }
 }
 
+extension SocketRemoteByteStream {
+    /// Opens a TCP connection to `host:port` (a name or a numeric address),
+    /// trying each address it resolves to until one answers within what is
+    /// left of `timeout`. The blocking work runs off the caller's thread.
+    static func connect(host: String, port: Int, timeout: TimeInterval) async throws -> SocketRemoteByteStream {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<SocketRemoteByteStream, Error>) in
+            DispatchQueue.global().async {
+                cont.resume(with: Result { try connectBlocking(host: host, port: port, timeout: timeout) })
+            }
+        }
+    }
+
+    private static func connectBlocking(host: String, port: Int, timeout: TimeInterval) throws -> SocketRemoteByteStream {
+        let target = host.contains(":") ? "[\(host)]:\(port)" : "\(host):\(port)"
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = Int32(SOCK_STREAM.rawValue)
+        var results: UnsafeMutablePointer<addrinfo>?
+        let resolved = getaddrinfo(host, String(port), &hints, &results)
+        guard resolved == 0, let first = results else {
+            throw RemoteConnectError("\(target): \(String(cString: gai_strerror(resolved)))")
+        }
+        defer { freeaddrinfo(results) }
+        let deadline = Date().addingTimeInterval(timeout)
+        var lastError = "no address"
+        var cursor: UnsafeMutablePointer<addrinfo>? = first
+        while let info = cursor {
+            cursor = info.pointee.ai_next
+            let fd = socket(info.pointee.ai_family, Int32(SOCK_STREAM.rawValue) | Int32(SOCK_CLOEXEC.rawValue), 0)
+            guard fd >= 0 else {
+                lastError = RemoteSocket.errorText
+                continue
+            }
+            RemoteSocket.setNonBlocking(fd)
+            if Glibc.connect(fd, info.pointee.ai_addr, info.pointee.ai_addrlen) == 0 {
+                return SocketRemoteByteStream(fd: fd)
+            }
+            guard errno == EINPROGRESS else {
+                lastError = RemoteSocket.errorText
+                close(fd)
+                continue
+            }
+            var pfd = pollfd(fd: fd, events: Int16(POLLOUT), revents: 0)
+            var ready: Int32
+            repeat {
+                let left = Int32(max(0, deadline.timeIntervalSinceNow) * 1000)
+                ready = poll(&pfd, 1, left)
+            } while ready < 0 && errno == EINTR
+            if ready <= 0 {
+                lastError = ready == 0 ? "no answer within \(Int(timeout)) s" : RemoteSocket.errorText
+                close(fd)
+                continue
+            }
+            var soError: Int32 = 0
+            var length = socklen_t(MemoryLayout<Int32>.size)
+            _ = getsockopt(fd, SOL_SOCKET, SO_ERROR, &soError, &length)
+            guard soError == 0 else {
+                lastError = String(cString: strerror(soError)).lowercased()
+                close(fd)
+                continue
+            }
+            return SocketRemoteByteStream(fd: fd)
+        }
+        throw RemoteConnectError("\(target): \(lastError)")
+    }
+}
+
 final class SocketRemoteListener: RemoteListener, @unchecked Sendable {
     let port: Int
     private let fd: Int32

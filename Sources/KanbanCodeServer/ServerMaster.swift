@@ -114,14 +114,15 @@ final class ServerMaster {
             await store.reconcile()
         }
 
-        peerSync = PeerSync(identity: identity, peers: settings?.peers ?? []) { [weak store] action in
+        peerSync = PeerSync(identity: identity, peers: settings?.peers ?? [],
+                            version: KanbanCodeServerVersion.current) { [weak store] action in
             await MainActor.run { store?.dispatch(action) }
         }
         engine.peerSync = peerSync
         engine.installForeignCardHandler()
-        agentSync = AgentSyncEngine(kanbanHome: home, identity: identity) { [peerSync] in
+        agentSync = AgentSyncEngine(kanbanHome: home, identity: identity, peers: { [peerSync] in
             await peerSync.syncPeers()
-        }
+        }, transport: PeerControlSyncTransport(peerSync: peerSync))
         vault = VaultService(
             kanbanHome: home,
             keys: FileVaultKeyProvider(path: VaultStore.defaultDirectory(kanbanHome: home) + "/identity.txt"),
@@ -181,8 +182,21 @@ final class ServerMaster {
         await peerSync.onAddressLearned { peerId, address in
             _ = try? await SettingsStore(basePath: home).promotePeerAddress(peerId: peerId, address: address)
         }
-        Task.detached { await peerSync.run() }
+        // What a control connection taught about a peer (its machine id, its
+        // addresses) is saved, so the next start knows it.
+        await peerSync.onEntryLearned { peerId, machineId, hints in
+            _ = try? await SettingsStore(basePath: home).learnPeer(peerId: peerId, machineId: machineId, hints: hints)
+        }
         let agentSync = self.agentSync
+        let engine = self.engine
+        await peerSync.onPeerChange { machineId, change in
+            switch change.what {
+            case .sync: await agentSync.poke(machineId: machineId, what: change.detail)
+            case .attention: await MainActor.run { engine.pokeAttentionPeerSync() }
+            case .links: break
+            }
+        }
+        Task.detached { await peerSync.run() }
         Task.detached { await agentSync.run() }
         await vault.start()
         startAttention(settings: Self.readSettings(home: home).settings)

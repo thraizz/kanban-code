@@ -198,7 +198,20 @@ final class AppComposition {
                 guard (try? await SettingsStore().promotePeerAddress(peerId: peerId, address: address)) == true else { return }
                 await MainActor.run { NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil) }
             }
+            // What a control connection taught about a peer (its machine id,
+            // its addresses) is saved, so the next start knows it.
+            await peerSync.onEntryLearned { peerId, machineId, hints in
+                guard (try? await SettingsStore().learnPeer(peerId: peerId, machineId: machineId, hints: hints)) == true else { return }
+                await MainActor.run { NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil) }
+            }
             await peerSync.run()
+        }
+        // A quit closes the control connections with its reason, not as a
+        // dropped network.
+        let machineName = identity.name
+        NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil, queue: nil) { _ in
+            peerSync.control.stop(reason: "\(machineName) quit")
+            Thread.sleep(forTimeInterval: 0.2)
         }
         Task { await engine.runOwnershipLoop() }
         let mirror = PeerTranscriptMirror(engine: engine)
@@ -214,8 +227,20 @@ final class AppComposition {
                   let newPath = note.userInfo?["newPath"] as? String else { return }
             MainActor.assumeIsolated { boardStore?.dispatch(.projectRelocated(oldPath: oldPath, newPath: newPath)) }
         }
-        let agentSync = AgentSyncEngine(identity: identity) { [peerSync] in await peerSync.syncPeers() }
+        let agentSync = AgentSyncEngine(identity: identity, peers: { [peerSync] in await peerSync.syncPeers() },
+                                        transport: PeerControlSyncTransport(peerSync: peerSync))
         Task.detached { await agentSync.run() }
+        // A peer's control connection says when its agent setup or its
+        // attention requests changed.
+        Task.detached { [weak engine] in
+            await peerSync.onPeerChange { machineId, change in
+                switch change.what {
+                case .sync: await agentSync.poke(machineId: machineId, what: change.detail)
+                case .attention: await MainActor.run { engine?.pokeAttentionPeerSync() }
+                case .links: break
+                }
+            }
+        }
         let vault = VaultService(
             kanbanHome: NSHomeDirectory() + "/.kanban-code",
             keys: KeychainVaultKeyProvider(),

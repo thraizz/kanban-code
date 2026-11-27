@@ -102,6 +102,13 @@ struct PeersSettingsSection: View {
         if let seen = status?.lastSeen {
             parts.append("seen " + RelativeDateTimeFormatter().localizedString(for: seen, relativeTo: Date()))
         }
+        if peer.enabled, let status {
+            if status.connected {
+                parts.append(status.connectedVia == .accepted ? "connected (it dialed)" : "connected")
+            } else if let reason = status.controlError {
+                parts.append("not connected: \(reason.prefix(120))")
+            }
+        }
         return parts.joined(separator: " · ")
     }
 

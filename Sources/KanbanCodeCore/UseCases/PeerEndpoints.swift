@@ -98,14 +98,52 @@ public final class PeerEndpoints: Sendable {
         endpoint(forMachine: machineId)?.baseURL
     }
 
+    /// Every peer entry, with or without an address.
+    public func peers() -> [PeerConfig] {
+        state.withLock { $0.peers }
+    }
+
+    public func peer(_ peerId: String) -> PeerConfig? {
+        state.withLock { $0.peers.first { $0.id == peerId } }
+    }
+
+    /// The entry that is the machine `machineId`: the one that answered as
+    /// it, or that names it as its machine id. With or without an address.
+    public func peer(forMachine machineId: String) -> PeerConfig? {
+        guard !machineId.isEmpty else { return nil }
+        return state.withLock { state in
+            state.peers.first { (state.machines[$0.id] ?? $0.machineId) == machineId }
+        }
+    }
+
+    /// The machine the entry is, once known: the one it answered as, else
+    /// the one it names.
+    public func machineId(forPeer peerId: String) -> String? {
+        state.withLock { state in
+            state.machines[peerId] ?? state.peers.first { $0.id == peerId }?.machineId
+        }
+    }
+
     /// The entry's first address hint as a base URL: trimmed, without a
     /// trailing slash, nil unless it names a scheme and a host.
     static func configuredURL(_ peer: PeerConfig) -> URL? {
-        guard var raw = peer.addressHints.first?.trimmingCharacters(in: .whitespacesAndNewlines) else { return nil }
-        while raw.hasSuffix("/") { raw.removeLast() }
+        peer.addressHints.first.flatMap(baseURL(fromHint:))
+    }
+
+    /// An address hint as a base URL: trimmed, without a trailing slash,
+    /// nil unless it names a scheme and a host.
+    public static func baseURL(fromHint hint: String) -> URL? {
+        let raw = normalizedHint(hint)
         guard let components = URLComponents(string: raw),
               components.scheme != nil, components.host?.isEmpty == false
         else { return nil }
         return components.url
+    }
+
+    /// A hint trimmed and without trailing slashes, to compare two hints.
+    public static func normalizedHint(_ hint: String) -> String {
+        var raw = hint.trimmingCharacters(in: .whitespacesAndNewlines)
+        while raw.hasSuffix("/") { raw.removeLast() }
+        return raw
     }
 }

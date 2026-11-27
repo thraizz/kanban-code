@@ -63,7 +63,8 @@ public final class RemoteControlServer: Sendable {
 
     private struct SocketEntry {
         let deviceId: String
-        let close: @Sendable () -> Void
+        /// Closes the socket with this code and reason.
+        let close: @Sendable (UInt16, String) -> Void
     }
 
     private struct State {
@@ -159,6 +160,11 @@ public final class RemoteControlServer: Sendable {
             throw error
         }
         await reconcileAddresses()
+        // The control connections announce where this server listens.
+        peerServer?.serverListening { [weak self] in
+            guard let self, self.isRunning else { return nil }
+            return (self.listeningAddresses, self.port)
+        }
 
         #if canImport(Network)
         let monitor = NWPathMonitor()
@@ -209,7 +215,7 @@ public final class RemoteControlServer: Sendable {
         }
         watch?.cancel()
         listeners.forEach { $0.cancel() }
-        sockets.forEach { $0.close() }
+        sockets.forEach { $0.close(1001, "server stopping") }
         connections.forEach { $0.cancel() }
         KanbanCodeLog.info("remote", "remote control stopped")
     }
@@ -220,7 +226,7 @@ public final class RemoteControlServer: Sendable {
         let closers = state.withLock { s in
             s.sockets.values.filter { $0.deviceId == deviceId }.map(\.close)
         }
-        closers.forEach { $0() }
+        closers.forEach { $0(1008, "device revoked") }
     }
 
     private func closeRevokedSockets() {
@@ -323,6 +329,9 @@ public final class RemoteControlServer: Sendable {
             case .terminal(let device, let argv, let session, let cols, let rows):
                 await serveTerminal(conn, request: request, device: device, argv: argv, session: session, cols: cols, rows: rows)
                 return
+            case .peerControl(let device, let peerServer):
+                await servePeerControl(conn, request: request, device: device, peerServer: peerServer)
+                return
             }
         }
     }
@@ -333,6 +342,7 @@ public final class RemoteControlServer: Sendable {
         case response(RemoteHTTPResponse)
         case events(RemoteDevice)
         case terminal(RemoteDevice, argv: [String], session: String, cols: Int, rows: Int)
+        case peerControl(RemoteDevice, any PeerLinksServing)
     }
 
     private func token(from request: RemoteHTTPRequest) -> String? {
@@ -638,6 +648,16 @@ public final class RemoteControlServer: Sendable {
                 guard request.wantsWebSocket else { return .response(.error(426, "WebSocket upgrade required")) }
                 return .events(device)
 
+            case ("GET", "peer/control"):
+                // Another master: a peer token, or a full one of a setup
+                // from before the peer scope.
+                guard device.scope.actsForOwner else {
+                    return .response(.error(403, "the \(device.scope.rawValue) scope cannot open a peer control connection"))
+                }
+                guard let peerServer else { return .response(.error(404, "this server does not sync with peers")) }
+                guard request.wantsWebSocket else { return .response(.error(426, "WebSocket upgrade required")) }
+                return .peerControl(device, peerServer)
+
             case ("GET", "cards/*/terminal"):
                 guard device.scope == .full || device.scope == .terminal else {
                     return .response(.error(403, "the \(device.scope.rawValue) scope cannot open terminals"))
@@ -721,6 +741,7 @@ public final class RemoteControlServer: Sendable {
         "cards/*/worktree/remove", "cards/*/discover", "cards/*/side-chat", "cards/*/side-chat/*",
         "cards/*/slash-commands", "cards/*/pasted-image", "cards/*/files",
         "cards/*/conversations", "cards/*/conversations/*", "cards/*/conversations-raw", "cards/*/conversations/*/images",
+        "peer/control",
     ]
 
     static func response(for error: Error) -> RemoteHTTPResponse {
@@ -738,7 +759,7 @@ public final class RemoteControlServer: Sendable {
 
     // MARK: - WebSockets
 
-    private func register(_ deviceId: String, close: @escaping @Sendable () -> Void) -> UUID? {
+    private func register(_ deviceId: String, close: @escaping @Sendable (UInt16, String) -> Void) -> UUID? {
         let id = UUID()
         let ok = state.withLock { s -> Bool in
             guard s.running else { return false }
@@ -764,7 +785,7 @@ public final class RemoteControlServer: Sendable {
         }
         do { try await conn.send(handshake) } catch { return }
         let ws = RemoteWebSocket(connection: conn)
-        guard let socketId = register(device.id, close: { ws.close(code: 1008, reason: "device revoked") }) else {
+        guard let socketId = register(device.id, close: { ws.close(code: $0, reason: $1) }) else {
             ws.close(code: 1001, reason: "server stopping")
             return
         }
@@ -845,6 +866,31 @@ public final class RemoteControlServer: Sendable {
         case resync
     }
 
+    /// `GET /v1/peer/control`: a peer master's control connection, served
+    /// by its sync until it ends (`docs/peer-connections.md`).
+    private func servePeerControl(
+        _ conn: RemoteConnection, request: RemoteHTTPRequest, device: RemoteDevice, peerServer: any PeerLinksServing
+    ) async {
+        guard let handshake = RemoteWebSocketHandshake.response(for: request) else {
+            try? await conn.send(RemoteHTTPResponse.error(400, "bad WebSocket upgrade").serialized(keepAlive: false))
+            return
+        }
+        do { try await conn.send(handshake) } catch { return }
+        let ws = RemoteWebSocket(connection: conn)
+        guard let socketId = register(device.id, close: { ws.close(code: $0, reason: $1) }) else {
+            ws.close(code: 1001, reason: "server stopping")
+            return
+        }
+        defer { unregister(socketId) }
+        await peerServer.servePeerControl(PeerControlSocket(ws), device: device)
+        // A refusal's reason goes out in the close frame: give it time to
+        // leave before the connection is dropped.
+        ws.close()
+        for _ in 0..<50 where !conn.closed {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     private func serveTerminal(
         _ conn: RemoteConnection, request: RemoteHTTPRequest, device: RemoteDevice,
         argv: [String], session: String, cols: Int, rows: Int
@@ -867,7 +913,7 @@ public final class RemoteControlServer: Sendable {
         }
         KanbanCodeLog.info("remote", "terminal for \(device.name): \(argv.joined(separator: " ")) pid \(process.pid) \(cols)x\(rows)")
 
-        guard let socketId = register(device.id, close: { ws.close(code: 1008, reason: "device revoked") }) else {
+        guard let socketId = register(device.id, close: { ws.close(code: $0, reason: $1) }) else {
             process.terminate()
             ws.close(code: 1001, reason: "server stopping")
             return

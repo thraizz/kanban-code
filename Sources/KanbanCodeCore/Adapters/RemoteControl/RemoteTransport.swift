@@ -43,7 +43,32 @@ protocol RemoteListener: AnyObject, Sendable {
     func cancel()
 }
 
+/// Why an outgoing connection did not open.
+public struct RemoteConnectError: Error, LocalizedError, Equatable {
+    public var message: String
+
+    public init(_ message: String) {
+        self.message = message
+    }
+
+    public var errorDescription: String? { message }
+}
+
 enum RemoteTransport {
+    /// Opens a TCP connection to `host:port`, for a master dialing its peer.
+    /// Throws `RemoteConnectError` when it is refused, unreachable, or not
+    /// open within `timeout`.
+    static func connect(host: String, port: Int, timeout: TimeInterval) async throws -> any RemoteByteStream {
+        guard (1...65535).contains(port), !host.isEmpty else {
+            throw RemoteConnectError("bad address \(host):\(port)")
+        }
+        #if canImport(Network)
+        return try await NWRemoteByteStream.connect(host: host, port: port, timeout: timeout)
+        #else
+        return try await SocketRemoteByteStream.connect(host: host, port: port, timeout: timeout)
+        #endif
+    }
+
     /// Listens on `address:port` and hands every accepted connection to
     /// `onAccept`. Throws when the address cannot be bound.
     static func listen(

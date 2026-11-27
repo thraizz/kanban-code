@@ -1,11 +1,20 @@
 import Foundation
 
 /// RFC 6455 framing over an upgraded `RemoteConnection`. The server never
-/// masks its frames; client frames must be masked.
+/// masks its frames; client frames must be masked. The server end serves
+/// requests; the client end is a master dialing its peer
+/// (`RemoteWebSocketClient`).
 final class RemoteWebSocket: @unchecked Sendable {
     enum Message: Sendable, Equatable {
         case text(String)
         case binary(Data)
+    }
+
+    enum Role: Sendable {
+        /// Sends plain frames, wants masked ones.
+        case server
+        /// Masks every frame it sends, takes plain ones.
+        case client
     }
 
     enum Opcode: UInt8 {
@@ -22,25 +31,36 @@ final class RemoteWebSocket: @unchecked Sendable {
     static let maxMessageBytes = 16 * 1024 * 1024
 
     let connection: RemoteConnection
+    let role: Role
     private let lock = NSLock()
     private var closeSent = false
+    private var _peerClose: (code: UInt16, reason: String)?
 
-    init(connection: RemoteConnection) {
+    init(connection: RemoteConnection, role: Role = .server) {
         self.connection = connection
+        self.role = role
     }
+
+    /// The code and reason of the close frame the other end sent, once it
+    /// sent one.
+    var peerClose: (code: UInt16, reason: String)? {
+        lock.withLock { _peerClose }
+    }
+
+    private var masks: Bool { role == .client }
 
     // MARK: Sending
 
     func sendText(_ text: String) async throws {
-        try await connection.send(Self.frames(opcode: .text, payload: Data(text.utf8)))
+        try await connection.send(Self.frames(opcode: .text, payload: Data(text.utf8), masked: masks))
     }
 
     func sendBinary(_ data: Data) async throws {
-        try await connection.send(Self.frames(opcode: .binary, payload: data))
+        try await connection.send(Self.frames(opcode: .binary, payload: data, masked: masks))
     }
 
     func sendPing() {
-        connection.sendDetached(Self.frame(fin: true, opcode: .ping, payload: Data()))
+        connection.sendDetached(Self.frame(fin: true, opcode: .ping, payload: Data(), mask: masks ? Self.newMask() : nil))
     }
 
     /// Sends a close frame (once) and ends the connection shortly after.
@@ -52,17 +72,22 @@ final class RemoteWebSocket: @unchecked Sendable {
         }
         guard first else { return }
         var payload = Data([UInt8(code >> 8), UInt8(code & 0xFF)])
-        payload.append(Data(reason.utf8.prefix(120)))
+        // A control frame carries at most 125 bytes; cut the reason on a
+        // character boundary.
+        var cut = reason
+        while cut.utf8.count > 120 { cut.removeLast() }
+        payload.append(Data(cut.utf8))
         let conn = connection
-        conn.send(Self.frame(fin: true, opcode: .close, payload: payload)) { _ in
+        conn.send(Self.frame(fin: true, opcode: .close, payload: payload, mask: masks ? Self.newMask() : nil)) { _ in
             DispatchQueue.global().asyncAfter(deadline: .now() + 0.5) { conn.cancel() }
         }
     }
 
-    /// One whole message split into frames of at most `maxFramePayload`.
-    static func frames(opcode: Opcode, payload: Data) -> Data {
+    /// One whole message split into frames of at most `maxFramePayload`,
+    /// each with its own mask when `masked` (a client's frames).
+    static func frames(opcode: Opcode, payload: Data, masked: Bool = false) -> Data {
         if payload.count <= maxFramePayload {
-            return frame(fin: true, opcode: opcode, payload: payload)
+            return frame(fin: true, opcode: opcode, payload: payload, mask: masked ? newMask() : nil)
         }
         var out = Data()
         var offset = payload.startIndex
@@ -70,11 +95,16 @@ final class RemoteWebSocket: @unchecked Sendable {
         while offset < payload.endIndex {
             let end = min(offset + maxFramePayload, payload.endIndex)
             let isLast = end == payload.endIndex
-            out.append(frame(fin: isLast, opcode: first ? opcode : .continuation, payload: payload[offset..<end]))
+            out.append(frame(fin: isLast, opcode: first ? opcode : .continuation, payload: payload[offset..<end],
+                             mask: masked ? newMask() : nil))
             first = false
             offset = end
         }
         return out
+    }
+
+    static func newMask() -> [UInt8] {
+        (0..<4).map { _ in UInt8.random(in: 0...255) }
     }
 
     static func frame(fin: Bool, opcode: Opcode, payload: Data, mask: [UInt8]? = nil) -> Data {
@@ -130,22 +160,29 @@ final class RemoteWebSocket: @unchecked Sendable {
                 length = ext.reduce(0) { $0 << 8 | UInt64($1) }
             }
             guard length <= UInt64(Self.maxMessageBytes) else { throw RemoteHTTPError.tooLarge }
-            guard masked else { throw RemoteHTTPError.malformed("client frames must be masked") }
-            let mask = [UInt8](try await connection.read(exactly: 4))
+            guard masked || role == .client else { throw RemoteHTTPError.malformed("client frames must be masked") }
+            let mask = masked ? [UInt8](try await connection.read(exactly: 4)) : nil
             var payload = try await connection.read(exactly: Int(length))
-            payload.withUnsafeMutableBytes { raw in
-                let bytes = raw.bindMemory(to: UInt8.self)
-                for i in 0..<bytes.count { bytes[i] ^= mask[i & 3] }
+            if let mask {
+                payload.withUnsafeMutableBytes { raw in
+                    let bytes = raw.bindMemory(to: UInt8.self)
+                    for i in 0..<bytes.count { bytes[i] ^= mask[i & 3] }
+                }
             }
 
             switch opcode {
             case .ping:
-                connection.sendDetached(Self.frame(fin: true, opcode: .pong, payload: payload))
+                connection.sendDetached(Self.frame(fin: true, opcode: .pong, payload: payload, mask: masks ? Self.newMask() : nil))
             case .pong:
                 break
             case .close:
-                var code: UInt16 = 1000
-                if payload.count >= 2 { code = UInt16(payload[payload.startIndex]) << 8 | UInt16(payload[payload.startIndex + 1]) }
+                var code: UInt16 = 1005
+                var reason = ""
+                if payload.count >= 2 {
+                    code = UInt16(payload[payload.startIndex]) << 8 | UInt16(payload[payload.startIndex + 1])
+                    reason = String(decoding: payload.dropFirst(2), as: UTF8.self)
+                }
+                lock.withLock { _peerClose = (code, reason) }
                 close(code: code == 1005 ? 1000 : code)
                 return nil
             case .text, .binary:
