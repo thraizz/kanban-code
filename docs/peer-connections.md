@@ -269,6 +269,44 @@ when: osaka's settings hold no address for the Mac and everything in the
 table works; switching the Mac between its two networks heals within 30 s
 with no edit anywhere.
 
+## Running the steps
+
+Each step is one Kanban Code card in the `kanban-code` project on the Mac
+(the app target only builds on macOS), in the shared checkout on `main`.
+A card that has met every "Done when" of its step, committed, pushed,
+installed the app and deployed osaka, launches the next step's card
+itself, with this command and `N` replaced by the next step's number:
+
+```bash
+kanban remote task --project kanban-code --machine mac --model opus \
+  --name "Peer connections N/5" - <<'EOF'
+Implement step N of docs/peer-connections.md (read the whole doc first,
+then the code it names). Its "Done when" is your acceptance test.
+
+- This checkout is shared with other agents on main: never stash, reset
+  or checkout the tree; stage only your own files (hunks in shared files);
+  commit to main with a Conventional Commit; git push fork main. Nothing
+  goes to upstream.
+- Before starting, read `git log --oneline -15` and the commits of the
+  earlier steps ("Peer connections" in their messages) to see what they built.
+- The SecretScrubber test "a transcript stored compressed on a Mac is
+  compressed again after the run" already failed on main on 2026-11-27;
+  do not chase it. Name any other failure in your report.
+- When the code disagrees with the doc in a detail, follow the code, fix
+  the doc in the same commit and say why. When the step cannot be done as
+  designed, stop, explain, and do not launch the next step.
+- Install the app (CLAUDE.md) and deploy osaka
+  (Scripts/kanban-code-server/deploy.sh aron@192.168.178.230; the server
+  restart leaves running agents alone). Check osaka's log afterwards.
+- Step 4 only: first read the [peer]/[sync] lines in
+  ~/.kanban-code/logs/kanban-code.log here and on osaka since step 2 was
+  deployed. Fix control connections that dropped without a cause before
+  building on them.
+- When done, launch step N+1 exactly as "Running the steps" in the doc
+  says. After step 5, launch nothing; end with a summary for the owner.
+EOF
+```
+
 ## Risks
 
 - **Sleep and reconnect storms.** A Mac waking on another network redials
