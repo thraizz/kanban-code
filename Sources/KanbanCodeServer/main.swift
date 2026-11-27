@@ -120,6 +120,10 @@ if let name = options.pairName {
 }
 
 let master = ServerMaster(home: options.home, reconciles: options.reconciles)
+// A peer this server dials that has no entry for it gets a peer token from
+// this server's devices (pairing on one side).
+let tokenIssuer = PeerTokenIssuer(devices: devices, settings: SettingsStore(basePath: options.home))
+master.peerSync.control.setTokenIssuer { peer, machine in await tokenIssuer.issue(for: peer, machine: machine) }
 await master.start()
 let host = MasterRemoteControlHost(engine: master.engine)
 let peerServer = BoardPeerLinksServer(store: master.store, peerSync: master.peerSync)

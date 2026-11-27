@@ -70,17 +70,14 @@ Feature: A card started on another master
     Then the card stays released
     And the other master tries again
 
-  Scenario: The other master does not fetch from this one
-    Given another master that has not fetched this master's cards for 90 seconds
-    When a card is launched on it
-    Then the card is not released to it, and does not start
-    And the card shows that the other master has not fetched from here since when, and where to check its address
+  Scenario: The other master goes away after it took the card
+    Given a card released to another master that took the offer
+    When that master's connection goes before it picked the card up
+    Then the card shows that it moves there once that master is connected again
+    And that master adopts it when it connects
 
   Scenario: A launch right after this master started
-    Given this master started less than 90 seconds ago
-    And the other master has not fetched from it since
+    Given this master started a moment ago and is not connected to the other master yet
     When a card is launched on the other master
-    Then the card waits here and shows that it waits for the other master to answer
-    And it is released as soon as the other master fetches from here
-    And when 90 seconds pass without a fetch, it is not released and shows why
-    And a second start while it waits releases nothing twice
+    Then it is refused at once, saying the other master is not connected
+    And nothing waits for a guess about whether the other master can fetch from here

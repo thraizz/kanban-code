@@ -2,9 +2,11 @@ import SwiftUI
 import KanbanCodeCore
 
 /// Settings > Remote Control > Peers: the other masters (an always-on box,
-/// another Mac) this Mac syncs cards with. Each peer is its Remote Control
-/// URL and a device token that peer issued for this Mac
-/// (`kanban-code-server pair <name>` on a box).
+/// another Mac) this Mac syncs cards with. A peer is its machine, a device
+/// token it issued for this Mac (`kanban-code-server pair <name> --scope
+/// peer` on a box) and the addresses to dial it at. An entry made by the
+/// peer itself (it dialed this Mac and had no entry) has no address: that
+/// peer dials this Mac. See `docs/peer-connections.md`.
 struct PeersSettingsSection: View {
     @State private var peers: [PeerConfig] = []
     @State private var name = ""
@@ -23,13 +25,22 @@ struct PeersSettingsSection: View {
                 let status = AppComposition.shared.store.state.peerStatuses[peer.id]
                 HStack {
                     Circle()
-                        .fill(!peer.enabled ? Color.secondary : (status?.online == true ? Color.green : Color.red))
+                        .fill(!peer.enabled ? Color.secondary : (status?.connected == true ? Color.green : Color.red))
                         .frame(width: 8, height: 8)
                     VStack(alignment: .leading, spacing: 2) {
                         Text(status?.machine?.name ?? peer.name)
-                        Text(detail(peer, status))
+                        Text(connection(peer, status))
                             .font(.caption)
                             .foregroundStyle(.secondary)
+                        Text(addresses(peer))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        if let machine = status?.machine?.id ?? peer.machineId {
+                            Text(machine)
+                                .font(.caption2.monospaced())
+                                .foregroundStyle(.tertiary)
+                                .textSelection(.enabled)
+                        }
                         if let ssh = sshMachineName(of: status) {
                             Text("Also the ssh machine \(ssh) in Settings > Remote: one machine, cards run there are owned by this master.")
                                 .font(.caption)
@@ -66,7 +77,7 @@ struct PeersSettingsSection: View {
         } header: {
             Text("Peers")
         } footer: {
-            Text("Other masters this Mac syncs cards with. On a box, `kanban-code-server pair <name> --scope peer` prints a token for this Mac; give that box a Peer master token from Add Device here so it syncs back. A peer token cannot open terminals: to show the box's card terminals here, add the token of `kanban-code-server pair <name> --scope terminal` as the terminal token.")
+            Text("Other masters this Mac syncs cards with. On a box, `kanban-code-server pair <name> --scope peer` prints a token for this Mac; add the box here with its address and that token. That is all: on the first connection this Mac gives the box a token of its own, and the box needs no address for this Mac, since this Mac dials it. A peer token cannot open terminals: to show the box's card terminals here, add the token of `kanban-code-server pair <name> --scope terminal` as the terminal token.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -88,28 +99,35 @@ struct PeersSettingsSection: View {
             .first { $0.master?.id == id && $0.sshMachine != nil }?.name
     }
 
-    private func detail(_ peer: PeerConfig, _ status: PeerStatus?) -> String {
-        var parts = [peer.addressHints.first ?? "no address"]
-        if !peer.enabled {
-            parts.append("off")
-        } else if status?.online == true {
-            parts.append("online")
-        } else if let error = status?.lastError {
-            parts.append("offline: \(error.prefix(80))")
+    /// The state of the peer's control connection: who dialed and where,
+    /// or why there is none.
+    private func connection(_ peer: PeerConfig, _ status: PeerStatus?) -> String {
+        guard peer.enabled else { return "off" }
+        var parts: [String] = []
+        if let status, status.connected {
+            if status.connectedVia == .accepted {
+                parts.append("connected: it dialed this Mac" + (status.url.map { " from \($0)" } ?? ""))
+            } else {
+                parts.append("connected: this Mac dialed it" + (status.url.map { " at \($0)" } ?? ""))
+            }
+        } else if let reason = status?.controlError {
+            parts.append("not connected: \(reason.prefix(160))")
+        } else if peer.addressHints.isEmpty {
+            parts.append("not connected: waits for it to dial this Mac")
         } else {
-            parts.append("offline")
+            parts.append("not connected yet")
         }
         if let seen = status?.lastSeen {
-            parts.append("seen " + RelativeDateTimeFormatter().localizedString(for: seen, relativeTo: Date()))
-        }
-        if peer.enabled, let status {
-            if status.connected {
-                parts.append(status.connectedVia == .accepted ? "connected (it dialed)" : "connected")
-            } else if let reason = status.controlError {
-                parts.append("not connected: \(reason.prefix(120))")
-            }
+            parts.append("cards fetched " + RelativeDateTimeFormatter().localizedString(for: seen, relativeTo: Date()))
         }
         return parts.joined(separator: " · ")
+    }
+
+    /// The addresses this Mac dials the peer at, newest success first.
+    private func addresses(_ peer: PeerConfig) -> String {
+        peer.addressHints.isEmpty
+            ? "No address: it dials this Mac."
+            : "Dialed at " + peer.addressHints.joined(separator: ", ")
     }
 
     private func load() async {

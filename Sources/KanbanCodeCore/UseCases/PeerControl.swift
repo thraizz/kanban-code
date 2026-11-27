@@ -20,9 +20,14 @@ import Synchronization
 /// dials `GET /v1/peer/stream?id=` back, and the two are piped together. The
 /// dialer serves that stream in-process (`PeerTunnelStream`).
 ///
+/// A listener with no entry for the dialer asks it for a token in its hello;
+/// the dialer issues one and the listener saves an entry for it ("Pairing on
+/// one side"). A dialer whose own addresses changed (a laptop on another
+/// network) redials at once instead of waiting for the ping timeout.
+///
 /// What happens goes out on `events`, which `PeerSync` follows: connection
-/// state, changes the peer announced, and what the hellos taught about a
-/// peer (its machine id, its addresses).
+/// state, changes the peer announced, entries made by pairing, and what the
+/// hellos taught about a peer (its machine id, its addresses).
 public actor PeerControl {
     public struct Options: Sendable {
         public var pingInterval: Duration
@@ -41,6 +46,10 @@ public actor PeerControl {
         /// How long a local connection to a forward port waits for the
         /// dialer to answer its `open`.
         public var streamTimeout: Duration
+        /// How often this machine's own addresses are compared with the last
+        /// ones: one that went away ends the connections this master dialed,
+        /// which are redialed at once.
+        public var addressCheck: Duration
 
         public init(
             pingInterval: Duration = .seconds(10),
@@ -51,9 +60,11 @@ public actor PeerControl {
             maxRetry: Duration = .seconds(30),
             hintExpiry: TimeInterval = 7 * 24 * 3600,
             maxHints: Int = 8,
-            streamTimeout: Duration = .seconds(10)
+            streamTimeout: Duration = .seconds(10),
+            addressCheck: Duration = .seconds(2)
         ) {
             self.streamTimeout = streamTimeout
+            self.addressCheck = addressCheck
             self.pingInterval = pingInterval
             self.timeout = timeout
             self.helloTimeout = helloTimeout
@@ -78,6 +89,9 @@ public actor PeerControl {
         /// What the connection taught about the entry: the machine it is and
         /// its address hints, newest success first. Saved to the settings.
         case learned(peerId: String, machineId: String, hints: [String])
+        /// A peer with no entry here dialed in and gave this master a token
+        /// for it: the entry made for it, saved to the settings.
+        case paired(PeerConfig)
     }
 
     /// A live control connection, as `links()` shows it.
@@ -91,6 +105,8 @@ public actor PeerControl {
         /// The loopback port the peer's API is forwarded to, for one this
         /// master accepted.
         public var forwardPort: Int?
+        /// When the connection's hellos went through.
+        public var since: ContinuousClock.Instant
     }
 
     /// One open control connection.
@@ -108,11 +124,8 @@ public actor PeerControl {
         /// The device whose token an accepted connection came with: its
         /// streams must come with the same one.
         let deviceId: String?
-        /// Where an accepted connection's peer listens: the host it came
-        /// from and the port its hello announced.
-        let address: URL?
         let openedAt = ContinuousClock.now
-        private let state: Mutex<(heard: ContinuousClock.Instant, endReason: String?)>
+        private let state: Mutex<(heard: ContinuousClock.Instant, endReason: String?, address: URL?)>
 
         init(peerId: String, machine: MachineIdentity, dialer: String, direction: PeerConnectionDirection,
              url: String?, socket: PeerControlSocket, token: String? = nil, deviceId: String? = nil, address: URL? = nil) {
@@ -124,8 +137,14 @@ public actor PeerControl {
             self.socket = socket
             self.token = token
             self.deviceId = deviceId
-            self.address = address
-            state = Mutex((ContinuousClock.now, nil))
+            state = Mutex((ContinuousClock.now, nil, address))
+        }
+
+        /// Where an accepted connection's peer listens: the host it came
+        /// from and the port its last hello announced.
+        var address: URL? {
+            get { state.withLock { $0.address } }
+            set { state.withLock { $0.address = newValue } }
         }
 
         func heard() { state.withLock { $0.heard = .now } }
@@ -146,7 +165,7 @@ public actor PeerControl {
         }
 
         var link: Link {
-            Link(peerId: peerId, machine: machine, via: direction, dialer: dialer, url: url)
+            Link(peerId: peerId, machine: machine, via: direction, dialer: dialer, url: url, since: openedAt)
         }
     }
 
@@ -193,6 +212,15 @@ public actor PeerControl {
     /// Set by tests: an accepted connection waits this long before it
     /// reads the hello, so two masters surely dial each other at once.
     private var acceptDelay: Duration = .zero
+    /// Issues the peer-scope token a listener with no entry for this master
+    /// asks for (the peer entry, the listener's machine); nil while this
+    /// master cannot issue one.
+    private nonisolated let tokenIssuer = Mutex<(@Sendable (PeerConfig, MachineIdentity) async -> String?)?>(nil)
+    /// This machine's own addresses, as the address check reads them.
+    private nonisolated let localAddresses = Mutex<@Sendable () -> [String]>({ RemoteNetworkAddresses.local() })
+    /// Peers whose connection ended because this machine's network changed:
+    /// they are redialed at once.
+    private var redialAtOnce: Set<String> = []
 
     /// A loopback listener that forwards to a peer's API.
     private struct Forward {
@@ -239,6 +267,14 @@ public actor PeerControl {
 
     // MARK: - Configuration
 
+    /// Sets what issues the peer-scope token a listener with no entry for
+    /// this master asks for on a connection this master dialed ("Pairing on
+    /// one side"). It gets this master's entry for the listener and the
+    /// machine the listener's hello said it is; nil when it cannot.
+    public nonisolated func setTokenIssuer(_ issue: (@Sendable (PeerConfig, MachineIdentity) async -> String?)?) {
+        tokenIssuer.withLock { $0 = issue }
+    }
+
     /// Sets where this master's Remote Control server listens, for the
     /// hello: the server calls it when it starts.
     public nonisolated func setListening(_ provider: (@Sendable () -> (addresses: [String], port: Int)?)?) {
@@ -257,9 +293,14 @@ public actor PeerControl {
 
     /// The Remote Control server started after connections were dialed (the
     /// app dials while its server still starts): what their peers called
-    /// through them was refused, so they are told to call again now.
+    /// through them was refused, so they are told to call again now. The
+    /// hello goes again too: the first one had no port, so the peer did not
+    /// know where this master listens.
     private func serverStarted() async {
         for connection in connections.values where connection.direction == .dialed && !isSilent {
+            var hello = ownHello()
+            hello.expect = connection.machine.id
+            try? await connection.socket.send(PeerControlMessage(hello: hello))
             for what in [PeerChange.What.links, .sync, .attention] {
                 try? await connection.socket.send(PeerControlMessage(changed: PeerChange(what: what)))
             }
@@ -326,12 +367,23 @@ public actor PeerControl {
     // MARK: - Dialing
 
     /// Dials the peers until the task is cancelled, then closes every
-    /// connection.
+    /// connection. From its start a peer is called only through its
+    /// control connection (`PeerEndpoints`).
     public func run() async {
+        endpoints.setControlRunning()
+        var addresses = Set(localAddresses.withLock { $0 }())
+        var lastCheck = ContinuousClock.now
         await withTaskCancellationHandler {
             await withTaskGroup(of: Void.self) { group in
                 while !Task.isCancelled {
                     let now = ContinuousClock.now
+                    if now - lastCheck >= options.addressCheck {
+                        lastCheck = now
+                        let current = Set(localAddresses.withLock { $0 }())
+                        let gone = addresses.subtracting(current)
+                        addresses = current
+                        if !gone.isEmpty { networkChanged(gone: gone, now: current) }
+                    }
                     for peer in endpoints.peers() where !isSilent && !isStopping && peer.enabled && !peer.addressHints.isEmpty
                         && connections[peer.id] == nil && !dialing.contains(peer.id)
                         && (nextDial[peer.id] ?? now) <= now {
@@ -344,6 +396,39 @@ public actor PeerControl {
         } onCancel: {
             self.stop(reason: "\(self.identity.name) is stopping")
         }
+    }
+
+    /// An address of this machine went away (a laptop that changed
+    /// networks, or went to sleep on one and woke on another): the
+    /// connections this master dialed went out from it and are dead, but
+    /// would only show it once the ping timeout ran out. They close now and
+    /// are redialed at once; the peer takes the new connection in place of
+    /// the old one. Peers not connected are tried again at once too.
+    private func networkChanged(gone: Set<String>, now current: Set<String>) {
+        let dialed = connections.values.filter { $0.direction == .dialed }
+        KanbanCodeLog.info("peer", "this machine's addresses changed (gone: \(gone.sorted().joined(separator: ", ")); now: "
+            + "\(current.sorted().joined(separator: ", "))): redialing \(dialed.count) control connection(s)")
+        for connection in dialed {
+            redialAtOnce.insert(connection.peerId)
+            connection.close("\(identity.name)'s network changed", code: 1001)
+            // On a dead path the close frame may never leave, and the
+            // connection would wait for it.
+            let socket = connection.socket
+            Task {
+                try? await Task.sleep(for: .milliseconds(500))
+                socket.abort()
+            }
+        }
+        for peer in endpoints.peers() where connections[peer.id] == nil {
+            nextDial[peer.id] = nil
+            retry[peer.id] = nil
+        }
+    }
+
+    /// Makes the address check read `addresses` instead of this machine's
+    /// interfaces, for tests.
+    nonisolated func setLocalAddressesForTesting(_ addresses: @escaping @Sendable () -> [String]) {
+        localAddresses.withLock { $0 = addresses }
     }
 
     /// Closes every connection, as a master that stops, and dials or takes
@@ -391,7 +476,7 @@ public actor PeerControl {
             }
             noteHint(peer.id, hint, worked: true)
             loggedFailure[peer.id] = nil
-            learn(peerId: peer.id, machineId: hello.machine.id, promote: hint, hello: hello)
+            learn(peerId: peer.id, machineId: hello.machine.id, promote: hint, announced: hello.hintURLs)
             let connection = Connection(peerId: peer.id, machine: hello.machine, dialer: identity.id,
                                         direction: .dialed, url: PeerEndpoints.normalizedHint(hint), socket: socket,
                                         token: peer.token)
@@ -400,6 +485,12 @@ public actor PeerControl {
             let reason = await serve(connection)
             unregister(connection, reason: reason)
             connectionEnded(connection)
+            if redialAtOnce.remove(peer.id) != nil {
+                // This machine's network changed: the peer is there still.
+                retry[peer.id] = nil
+                nextDial[peer.id] = nil
+                return
+            }
             // A connection that held is redialed at once; one that keeps
             // ending right away backs off.
             if ContinuousClock.now - connection.openedAt >= .seconds(30) { retry[peer.id] = nil }
@@ -428,7 +519,8 @@ public actor PeerControl {
 
     /// Sends this master's hello and waits for the peer's. Closes and
     /// throws when the peer is this machine or another one than the entry
-    /// says.
+    /// says. A peer that has no entry for this master gets a token for it
+    /// here, after its hello showed which machine it is.
     private func handshakeAsDialer(_ socket: PeerControlSocket, peer: PeerConfig) async throws -> PeerHello {
         // The machine the entry was saved as is its identity; one a pull
         // noted only counts for an entry not saved with one.
@@ -448,15 +540,37 @@ public actor PeerControl {
             socket.close(reason: "expected machine \(expected)", code: 1008)
             throw ControlError.failed("answered as \(answer.machine.name) (\(answer.machine.id)), not \(expected)")
         }
+        if answer.needsToken == true {
+            try await issueToken(on: socket, peer: peer, listener: answer.machine)
+        }
         return answer
+    }
+
+    /// The listener has no entry for this master: issues it a peer-scope
+    /// token and sends it on the connection this master dialed, to the
+    /// machine its entry expects. Closes and throws when it cannot.
+    private func issueToken(on socket: PeerControlSocket, peer: PeerConfig, listener: MachineIdentity) async throws {
+        guard let issue = tokenIssuer.withLock({ $0 }) else {
+            socket.close(reason: "\(identity.name) cannot issue \(listener.name) a token", code: 1008)
+            throw ControlError.failed("\(listener.name) has no entry for this master, and this master cannot issue it a token")
+        }
+        guard let token = await issue(peer, listener), !token.isEmpty else {
+            socket.close(reason: "\(identity.name) could not issue \(listener.name) a token", code: 1008)
+            throw ControlError.failed("\(listener.name) has no entry for this master, and issuing it a token failed")
+        }
+        try await socket.send(PeerControlMessage(token: token))
+        KanbanCodeLog.info("peer", "\(listener.name) (\(listener.id)) had no entry for this master: issued it a peer token over the connection")
     }
 
     // MARK: - Accepting
 
     /// Serves a connection this master's server accepted, until it ends.
     /// `device` is the name of the token it came with, `deviceId` its id:
-    /// the streams of the connection must come with the same token.
-    public func serveAccepted(_ socket: PeerControlSocket, device: String, deviceId: String? = nil) async {
+    /// the streams of the connection must come with the same token. With
+    /// `pairs` (a peer-scope token, one this master issued to a peer
+    /// master), a dialer with no entry here is asked for a token and gets
+    /// an entry made for it, else it is refused.
+    public func serveAccepted(_ socket: PeerControlSocket, device: String, deviceId: String? = nil, pairs: Bool = false) async {
         track(socket)
         defer { untrack(socket) }
         if let reason = stopReason {
@@ -484,11 +598,20 @@ public actor PeerControl {
             logRefusal(hello, from: from, "it expects machine \(expected)")
             return
         }
-        guard let peer = match(hello, from: socket.remoteHost) else {
-            let reason = "\(identity.name) has no peer entry for \(hello.machine.name) (\(hello.machine.id))"
-            logRefusal(hello, from: from, "no peer entry")
-            socket.close(reason: reason, code: 1008)
-            return
+        var answered = false
+        let peer: PeerConfig
+        if let matched = match(hello, from: socket.remoteHost) {
+            peer = matched
+        } else {
+            guard pairs else {
+                let reason = "\(identity.name) has no peer entry for \(hello.machine.name) (\(hello.machine.id))"
+                logRefusal(hello, from: from, "no peer entry")
+                socket.close(reason: reason, code: 1008)
+                return
+            }
+            guard let paired = await pair(socket, hello: hello, from: from) else { return }
+            peer = paired
+            answered = true
         }
         guard peer.enabled else {
             socket.close(reason: "\(identity.name) turned sync with \(peer.name) off", code: 1008)
@@ -496,12 +619,17 @@ public actor PeerControl {
             return
         }
         loggedRefusal[hello.machine.id] = nil
-        do {
-            try await socket.send(PeerControlMessage(hello: ownHello()))
-        } catch {
-            return
+        if !answered {
+            do {
+                try await socket.send(PeerControlMessage(hello: ownHello()))
+            } catch {
+                return
+            }
         }
-        learn(peerId: peer.id, machineId: hello.machine.id, promote: nil, hello: hello)
+        // The machine id only: the addresses of a peer that dials in are
+        // not kept. It reaches this master on its own, and they are the
+        // ones that change (a laptop's).
+        learn(peerId: peer.id, machineId: hello.machine.id, promote: nil, announced: [])
         let connection = Connection(peerId: peer.id, machine: hello.machine, dialer: hello.machine.id,
                                     direction: .accepted, url: nil, socket: socket, deviceId: deviceId,
                                     address: Self.origin(host: socket.remoteHost, hello: hello))
@@ -512,6 +640,39 @@ public actor PeerControl {
         let reason = await serve(connection)
         unregister(connection, reason: reason)
         connectionEnded(connection)
+    }
+
+    /// Pairing on one side: the dialer has a token this master issued, but
+    /// no entry here. The answer hello asks it for a token; with it, this
+    /// master makes an entry for the dialer (its machine id and name, the
+    /// token, no address) and saves it. Nil, the connection closed, when no
+    /// token came.
+    private func pair(_ socket: PeerControlSocket, hello: PeerHello, from: String) async -> PeerConfig? {
+        var answer = ownHello()
+        answer.needsToken = true
+        do {
+            try await socket.send(PeerControlMessage(hello: answer))
+        } catch {
+            return nil
+        }
+        guard let token = try? await receiveToken(socket), !token.isEmpty else {
+            let why = socket.closeReason ?? "no token within \(Self.seconds(options.helloTimeout)) s"
+            socket.close(reason: "\(identity.name) has no peer entry for \(hello.machine.name) and got no token for one", code: 1008)
+            logRefusal(hello, from: from, "no peer entry, and no token for one: \(why)")
+            return nil
+        }
+        var entry = PeerConfig(machineId: hello.machine.id, name: hello.machine.name, addressHints: [], token: token)
+        if let existing = endpoints.peers().first(where: { $0.machineId == hello.machine.id }) {
+            // Made meanwhile by another connection of the same dialer: the
+            // token issued last is the one that works.
+            entry = existing
+            entry.token = token
+        }
+        endpoints.addPeer(entry)
+        sink.yield(.paired(entry))
+        KanbanCodeLog.info("peer", "paired with \(hello.machine.name) (\(hello.machine.id)) from \(from): "
+            + "it issued this master a token on its control connection; no address is kept for it")
+        return entry
     }
 
     /// Where a peer that dialed in from `host` listens: that host, at the
@@ -677,20 +838,45 @@ public actor PeerControl {
             if let refusal = message.refused, connection.direction == .accepted {
                 await streamRefused(refusal, on: connection)
             }
+            if let hello = message.hello, connection.direction == .accepted, hello.machine.id == connection.machine.id {
+                await helloAgain(hello, on: connection)
+            }
         }
+    }
+
+    /// A dialer's later hello (its server started after it dialed): where it
+    /// listens is known now.
+    private func helloAgain(_ hello: PeerHello, on connection: Connection) {
+        let address = Self.origin(host: connection.socket.remoteHost, hello: hello)
+        guard address != nil, address != connection.address else { return }
+        connection.address = address
+        guard connections[connection.peerId]?.id == connection.id else { return }
+        endpoints.setRouteAddress(address, forPeer: connection.peerId)
     }
 
     /// The peer's hello: the first hello message within `helloTimeout`, nil
     /// when the socket closed first or the time ran out (then it is closed).
     private nonisolated func receiveHello(_ socket: PeerControlSocket) async throws -> PeerHello? {
+        try await receiveFirst(socket, what: "hello") { $0.hello }
+    }
+
+    /// The dialer's token, after a hello that asked for one; nil like
+    /// `receiveHello`.
+    private nonisolated func receiveToken(_ socket: PeerControlSocket) async throws -> String? {
+        try await receiveFirst(socket, what: "token") { $0.token }
+    }
+
+    private nonisolated func receiveFirst<T: Sendable>(
+        _ socket: PeerControlSocket, what: String, _ pick: (PeerControlMessage) -> T?
+    ) async throws -> T? {
         let timeout = options.helloTimeout
         let timer = Task {
             try? await Task.sleep(for: timeout)
-            if !Task.isCancelled { socket.close(reason: "no hello within \(Self.seconds(timeout)) s", code: 1008) }
+            if !Task.isCancelled { socket.close(reason: "no \(what) within \(Self.seconds(timeout)) s", code: 1008) }
         }
         defer { timer.cancel() }
         while let message = try await socket.receive() {
-            if let hello = message.hello { return hello }
+            if let value = pick(message) { return value }
         }
         return nil
     }
@@ -919,11 +1105,11 @@ public actor PeerControl {
     // MARK: - Hints
 
     /// Notes what a connection taught about the entry: its machine id, the
-    /// hint that worked (first from now on) and the addresses its hello
-    /// announced (tried after the known ones).
-    private func learn(peerId: String, machineId: String, promote: String?, hello: PeerHello) {
+    /// hint that worked (first from now on) and the addresses the hello of a
+    /// peer this master dialed announced (tried after the known ones).
+    private func learn(peerId: String, machineId: String, promote: String?, announced: [String]) {
         guard let peer = endpoints.peer(peerId) else { return }
-        let hints = Self.mergedHints(peer.addressHints, promote: promote, announced: hello.hintURLs, limit: options.maxHints)
+        let hints = Self.mergedHints(peer.addressHints, promote: promote, announced: announced, limit: options.maxHints)
         guard hints != peer.addressHints || peer.machineId != machineId else { return }
         sink.yield(.learned(peerId: peerId, machineId: machineId, hints: hints))
     }

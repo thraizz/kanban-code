@@ -33,9 +33,6 @@ public final class MasterEngine {
     var handoversInFlight: Set<String> = []
     /// First launches handed to a peer, served with the handover info.
     var pendingPeerLaunches: [String: PeerLaunch] = [:]
-    /// First launches waiting for their peer to fetch from here once, so
-    /// it is known whether it can pick them up (this master just started).
-    var peerLaunchesWaiting: Set<String> = []
     /// Cards this master could not adopt and sent back, with the reason
     /// the master that released them shows.
     var refusedHandovers: [String: String] = [:]

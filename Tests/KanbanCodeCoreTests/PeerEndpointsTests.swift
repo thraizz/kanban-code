@@ -10,12 +10,10 @@ private final class OnePageTransport: PeerLinksTransport, @unchecked Sendable {
 
     init(page: LinksPage) { self.page = page }
 
-    func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
+    func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?) async throws -> LinksPage {
         lock.withLock { asked.append(peer.baseURL.absoluteString) }
         return page
     }
-
-    func notifyChanged(peer: PeerEndpoint, machineId: String) async {}
 }
 
 @Suite("Peer endpoints")
@@ -90,30 +88,82 @@ struct PeerEndpointsTests {
         #expect(try await store.read().peers == settings.peers)
     }
 
-    @Test("hints and the machine id survive a round trip; hints win over a stale url")
+    @Test("hints, the machine id and the issued device survive a round trip; hints win over a stale url")
     func roundTrip() throws {
         let peer = PeerConfig(id: "peer_mac", machineId: "machine_mac", name: "mac",
-                              addressHints: ["http://192.168.178.59:7780", "http://192.168.178.202:7780"], token: "t")
+                              addressHints: ["http://192.168.178.59:7780", "http://192.168.178.202:7780"], token: "t",
+                              issuedDeviceId: "device_1")
         let back = try JSONDecoder().decode(PeerConfig.self, from: JSONEncoder().encode(peer))
         #expect(back == peer)
+        // An entry made by pairing has no address, and writes an empty url.
+        let paired = PeerConfig(machineId: "machine_mac", name: "mac", addressHints: [], token: "t")
+        let data = try JSONEncoder().encode(paired)
+        #expect(try JSONDecoder().decode(PeerConfig.self, from: data) == paired)
+        #expect(String(decoding: data, as: UTF8.self).contains(#""url":"""#))
 
         let mixed = #"{"id":"p","name":"n","token":"t","url":"http://old:1","addressHints":["http://new:1","http://old:1"]}"#
         #expect(try JSONDecoder().decode(PeerConfig.self, from: Data(mixed.utf8)).addressHints == ["http://new:1", "http://old:1"])
     }
 
-    @Test("an address that answered moves to the front; the others stay behind it")
-    func promote() {
-        var peer = PeerConfig(name: "mac", addressHints: ["http://a:1", "http://b:1"], token: "t")
-        let movedB = peer.promoteHint("http://b:1")
-        #expect(movedB)
-        #expect(peer.addressHints == ["http://b:1", "http://a:1"])
-        let movedBAgain = peer.promoteHint("http://b:1")
-        #expect(!movedBAgain)
-        let addedC = peer.promoteHint("http://c:1")
-        #expect(addedC)
-        #expect(peer.addressHints == ["http://c:1", "http://b:1", "http://a:1"])
-        let addedEmpty = peer.promoteHint("")
-        #expect(!addedEmpty)
+    @Test("once the control loop runs, a peer is called only through its connection, and its real address is kept apart")
+    func onlyThroughConnection() {
+        let box = PeerConfig(id: "peer_box", name: "box", url: "http://box:7780", token: "kc_b")
+        let mac = PeerConfig(id: "peer_mac", name: "mac", addressHints: [], token: "kc_m")
+        let endpoints = PeerEndpoints(peers: [box, mac])
+        // A sync without a control loop (tests, tools) calls the first hint.
+        #expect(endpoints.baseURL(forPeer: "peer_box")?.absoluteString == "http://box:7780")
+        #expect(endpoints.baseURL(forPeer: "peer_mac") == nil)
+
+        endpoints.setControlRunning()
+        #expect(endpoints.controlRuns)
+        #expect(endpoints.baseURL(forPeer: "peer_box") == nil)
+        #expect(endpoints.all().isEmpty)
+
+        // Dialed: the hint it dialed is the URL and the address.
+        let dialed = URL(string: "http://box:7780")!
+        endpoints.setRoute(dialed, address: dialed, forPeer: "peer_box")
+        #expect(endpoints.endpoint(forPeer: "peer_box")?.baseURL == dialed)
+        #expect(endpoints.endpoint(forPeer: "peer_box")?.address == dialed)
+
+        // Accepted before the peer's server listened: a forward port, and
+        // no real address until its hello says where it listens.
+        let forward = PeerEndpoints.forwardURL(port: 51234)
+        endpoints.setRoute(forward, address: nil, forPeer: "peer_mac")
+        #expect(endpoints.endpoint(forPeer: "peer_mac")?.baseURL == forward)
+        #expect(endpoints.endpoint(forPeer: "peer_mac")?.address == nil)
+        let real = URL(string: "http://192.168.178.59:7780")!
+        endpoints.setRouteAddress(real, forPeer: "peer_mac")
+        #expect(endpoints.endpoint(forPeer: "peer_mac")?.address == real)
+        #expect(endpoints.all().map(\.id) == ["peer_box", "peer_mac"])
+
+        endpoints.setRoute(nil, address: nil, forPeer: "peer_box")
+        #expect(endpoints.baseURL(forPeer: "peer_box") == nil)
+        #expect(endpoints.all().map(\.id) == ["peer_mac"])
+    }
+
+    @Test("an entry made by pairing is saved, and a second one for the same machine takes its place with the new token")
+    func savePaired() async throws {
+        let home = NSTemporaryDirectory() + "peer-paired-\(UUID().uuidString)"
+        defer { try? FileManager.default.removeItem(atPath: home) }
+        let store = SettingsStore(basePath: home)
+        var settings = Settings()
+        settings.peers = [PeerConfig(id: "peer_box", name: "box", url: "http://box:7780", token: "kc_b")]
+        try await store.write(settings)
+
+        let mac = PeerConfig(id: "peer_mac", machineId: "machine_mac", name: "mac", addressHints: [], token: "kc_1")
+        #expect(try await store.savePairedPeer(mac))
+        #expect(try await store.savePairedPeer(mac) == false)
+        var again = PeerConfig(machineId: "machine_mac", name: "mac", addressHints: [], token: "kc_2")
+        again.terminalToken = nil
+        #expect(try await store.savePairedPeer(again))
+        let peers = try await SettingsStore(basePath: home).read().peers
+        #expect(peers.map(\.id) == ["peer_box", "peer_mac"])
+        #expect(peers[1].token == "kc_2")
+        #expect(peers[1].addressHints.isEmpty)
+
+        #expect(try await store.setPeerIssuedDevice(peerId: "peer_box", deviceId: "dev_1"))
+        #expect(try await store.setPeerIssuedDevice(peerId: "peer_box", deviceId: "dev_1") == false)
+        #expect(try await SettingsStore(basePath: home).read().peers[0].issuedDeviceId == "dev_1")
     }
 
     @Test("the base URL is the first hint, trimmed; an entry without a usable one has none")

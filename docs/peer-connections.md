@@ -1,6 +1,6 @@
 # Peer connections
 
-Status: **in progress**, steps 1 to 4 done (2026-11-27). Replaces how two masters reach each other
+Status: **done**, steps 1 to 5 (2026-11-27). Replaces how two masters reach each other
 (the Mac app and `kanban-code-server`, see [Several masters](remote-control.md#several-masters)).
 No overlay network (Tailscale and the like), no mDNS and no DHCP reservation:
 the design works on a plain LAN where addresses change.
@@ -25,9 +25,9 @@ Its settings had been edited back and forth by hand four times since
    guessed from when it last fetched (`PeerReachBack`, a 90 s window, blind
    for 90 s after a start).
 
-Stopgap in `b4503edf`: a master learns a moved peer's address from the
-requests that peer sends it, and a launch right after a start waits for
-the peer's first fetch. Step 5 below deletes both.
+Stopgap in `b4503edf`: a master learned a moved peer's address from the
+requests that peer sent it, and a launch right after a start waited for
+the peer's first fetch. Step 5 deleted both.
 
 ## Goals
 
@@ -68,7 +68,8 @@ before the hints (a rolled-back app or server) still finds the peer.
 Hints come from what the user typed, from every successful connection (the URL that
 worked moves to the front), and from the `hello` of the other side (its
 bind addresses and port, see below). A hint that failed for 7 days is
-dropped, never the last one.
+dropped, never the last one. (As built in step 5: only the hello of a peer
+this master dialed; see there.)
 
 ### 2. The control connection
 
@@ -161,8 +162,8 @@ instead of `[PeerConfig]`. The base URL is:
 
 - the loopback forward port when the peer dialed this master;
 - the hint that the control connection was dialed to, when this master dialed;
-- nil when not connected (callers already handle a nil client). As built
-  in step 3 it is the first hint until step 5; see "As built in step 3".
+- nil when not connected (callers already handle a nil client), since
+  step 5; see "As built in step 3" and "As built in step 5".
 
 Every reader of `peer.url` goes through it (inventory below). After that,
 nothing outside `PeerEndpoints` and the dialer reads an address.
@@ -368,6 +369,85 @@ since step 2 showed:
   dialer now sends `changed` (links, sync, attention) on the connections
   it dialed, and the peer calls again.
 
+### As built in step 5
+
+Where the code differs from the plan above, and why:
+
+- **The token comes after the listener's hello, not in the dialer's.** A
+  listener with no entry for the dialer answers its hello with
+  `"needsToken": true`; the dialer checks the machine id the hello names
+  (against its entry's, once known), issues a peer-scope device named
+  `<listener> (peer master)` (`PeerTokenIssuer`) and sends
+  `{"token": "kc_…"}` on the connection it dialed. The listener saves an
+  entry for the dialer: its machine id and name, that token, no address
+  (`.paired`, `SettingsStore.savePairedPeer`). In the dialer's own hello,
+  a token would be issued on every connection or kept in plain text to
+  send again, and would reach whoever answers before its hello was
+  checked. Asked for, it is issued once, when the listener has no entry
+  (the first connection, or the user removed it); the dialer notes the
+  device in its entry (`issuedDeviceId`) and revokes it when it issues
+  another. Only a peer-scope token pairs: a dialer with a full token and
+  no entry is refused as before. A dialer that cannot issue one says so
+  ("…has no entry for this master, and this master cannot issue it a
+  token").
+- **An accepted hello teaches no addresses.** Section 1 had hints come
+  from the hello of either side. Saved now: what the user typed, the hint
+  a dial succeeded at, and the addresses announced by the hello of a peer
+  this master dialed. A peer that dials in reaches this master on its own,
+  and its addresses are the ones that change (the laptop's); saving them
+  would put the Mac's address back into osaka's settings, which "Done
+  when" rules out. The real address of a connection that came in (where it
+  came from, at the port its hello announced) is kept in memory for the
+  same-host check and Settings. A dialer whose server starts after it
+  dialed sends its hello again, so the port is known then;
+  `PeerEndpoint.address` is nil until it is.
+- **No URL without a connection, once the control loop runs.**
+  `PeerEndpoints` answers nil for a peer without a route from the moment
+  `PeerControl.run` starts. A sync whose control loop does not run (tests,
+  tools) still calls the first hint. The pull loop pulls connected peers
+  only: when they connect, on a push, and every 60 s
+  (`PeerSync.run(safetyPull:)`). `POST /v1/links/changed` and
+  `/v1/sync/changed` are no longer sent (the agent sync's notes go only on
+  the control connection); both routes stay for older builds, and
+  `GET /v1/links` ignores the `machine` query it no longer gets.
+- **`online` ends with the connection.** With no pulls between
+  connections, a peer's last pull would read `online` for good; a
+  disconnect now clears it, and the pull request poller
+  (`MasterRoles.prPollingLeader`, the last reader of `online`) is picked
+  from the peers that are `reachable`. A Mac whose box went away polls
+  itself.
+- **A changed network redials at once.** Not in the plan: a laptop that
+  joins another network kept its dead connection until 30 s of silence,
+  then redialed. The dialer compares its own addresses every 2 s
+  (`Options.addressCheck`); when one went away it closes the connections
+  it dialed ("<name>'s network changed"), redials them at once, and tries
+  every peer it is not connected to at once too. The box takes the new
+  hello from the same machine in place of the old connection and keeps the
+  forward port. An address that only appeared (a VPN coming up) changes
+  nothing.
+- **Deleted:** `PeerReachBack`, `peersNotFetching` and its action,
+  `peerLaunchesWaiting`, `BoardStore.peerPulls` and `notePeerPull`,
+  `PeerSync.relocate`, `contacts`, `noteContact`, `onAddressLearned`,
+  `SettingsStore.promotePeerAddress`, `PeerConfig.promoteHint`,
+  `PeerAddress.replacingHost`, `peerReached` and `from:` on the links
+  routes, `PeerLinksTransport.notifyChanged`, and the 5 s and offline pull
+  timers. A card released to a peer that then disconnects reads "Moving to
+  osaka, once it is connected again" instead of the fetch line.
+- **Settings › Peers** shows per entry who dialed and where, or why it is
+  not connected ("waits for it to dial this Mac" for an entry without an
+  address), the addresses this Mac dials, and the machine id.
+- **Tests changed.** The step 3 tests run with the box's entry for the Mac
+  holding no address at all (they had a dead port); the box then shows no
+  address for the Mac, as the Mac dials from loopback. Deleted with what
+  they tested: the PeerReachBack and moved-address suites, "a first launch
+  right after a start waits for the peer to fetch from here once", and the
+  5 s and offline timer tests (now: run pulls no peer without a
+  connection). New: pairing on one side (entry, token scope, no address,
+  no second issue, a new token and the old one revoked after the box lost
+  its entry, a full token refused, no issuer refused), a changed network
+  reconnecting in under 2 s with the same forward port, a new connection
+  from the same Mac replacing a dead one at once, and the endpoint rules.
+
 ## Call sites that read a peer address today
 
 | Where | What |
@@ -387,10 +467,10 @@ since step 2 showed:
 | `UseCases/PeerSync.swift` `PeerStatus.url`, `RemoteLinksRoutes.swift` `PeerOverview.url` | the address shown for a peer: the ssh same-host check (`MachineDirectory`), outage text (`PeerOutage`), `GET /v1/peers` |
 
 Since step 1 each row resolves its URL through `PeerEndpoints` per use;
-the line numbers above are from before it. The learned-address stopgap
-puts the new address first among the hints and keeps the old one behind it
-(`PeerConfig.promoteHint`, `SettingsStore.promotePeerAddress`) instead of
-replacing the URL. The last row shows a real address since step 3
+the line numbers above are from before it. Until step 5 the learned-address
+stopgap put the new address first among the hints and kept the old one
+behind it (`PeerConfig.promoteHint`, `SettingsStore.promotePeerAddress`,
+both deleted). The last row shows a real address since step 3
 (`PeerEndpoint.address`): the same-host check would never match
 `127.0.0.1`.
 
@@ -490,10 +570,12 @@ EOF
 - **Sleep and reconnect storms.** A Mac waking on another network redials
   while the box still holds the dead connection: the hello from the same
   machine id replaces the old connection at once instead of waiting for
-  the ping timeout.
+  the ping timeout. The Mac itself redials within 2 s of its address going
+  away (step 5), and at once after a sleep longer than the timeout.
 - **Two laptops paired with each other** still need one of them to reach
-  the other's address. Hints from hellos cover a changed address only if
-  they connected at least once since it changed.
+  the other's address. Only the hello of a peer a master dialed teaches
+  addresses (step 5), so a changed address is learned only by a laptop
+  that reached the other one since.
 - **Long-lived WebSockets on Linux.** The server's WebSocket code serves
   terminals today; the control connection is the first one that lives for
   days. Soak it on osaka before step 4 depends on it.

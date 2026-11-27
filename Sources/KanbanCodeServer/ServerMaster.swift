@@ -176,11 +176,12 @@ final class ServerMaster {
         await store.loadSettingsAndCache()
 
         let peerSync = self.peerSync
-        // A peer that moved to another address is saved there, so the
-        // settings and the next start know it.
+        // A peer that dialed in with a token this server issued, and had no
+        // entry here, is saved with the token it gave for itself (pairing on
+        // one side): no address, it dials this server.
         let home = self.home
-        await peerSync.onAddressLearned { peerId, address in
-            _ = try? await SettingsStore(basePath: home).promotePeerAddress(peerId: peerId, address: address)
+        await peerSync.onEntryCreated { entry in
+            _ = try? await SettingsStore(basePath: home).savePairedPeer(entry)
         }
         // What a control connection taught about a peer (its machine id, its
         // addresses) is saved, so the next start knows it.

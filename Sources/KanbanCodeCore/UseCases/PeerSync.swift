@@ -5,12 +5,9 @@ import FoundationNetworking
 import KanbanCodeRemoteKit
 
 /// Fetches a peer's cards. The live one is HTTP; tests pass their own.
+/// That a peer's cards changed comes on its control connection.
 public protocol PeerLinksTransport: Sendable {
-    /// `machineId` is this machine's, so the peer knows who reaches it.
-    func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage
-    /// Tells a peer this machine's cards changed, so it pulls now instead of
-    /// at its next tick. Best effort.
-    func notifyChanged(peer: PeerEndpoint, machineId: String) async
+    func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?) async throws -> LinksPage
 }
 
 public enum PeerSyncError: Error, Equatable, LocalizedError {
@@ -34,8 +31,7 @@ public enum PeerSyncError: Error, Equatable, LocalizedError {
     }
 }
 
-/// `GET <url>/v1/links?since=&epoch=` and `POST <url>/v1/links/changed`
-/// with the peer's device token.
+/// `GET <url>/v1/links?since=&epoch=` with the peer's device token.
 public struct HTTPPeerLinksTransport: PeerLinksTransport {
     private let session: URLSession
     private let timeout: TimeInterval
@@ -48,7 +44,7 @@ public struct HTTPPeerLinksTransport: PeerLinksTransport {
         self.timeout = timeout
     }
 
-    static func linksURL(base: String, since: Int?, epoch: String?, machine: String? = nil) -> URL? {
+    static func linksURL(base: String, since: Int?, epoch: String?) -> URL? {
         var trimmed = base.trimmingCharacters(in: .whitespacesAndNewlines)
         while trimmed.hasSuffix("/") { trimmed.removeLast() }
         guard var components = URLComponents(string: trimmed + "/v1/links"),
@@ -57,13 +53,12 @@ public struct HTTPPeerLinksTransport: PeerLinksTransport {
         var items: [URLQueryItem] = []
         if let since { items.append(URLQueryItem(name: "since", value: String(since))) }
         if let epoch { items.append(URLQueryItem(name: "epoch", value: epoch)) }
-        if let machine, !machine.isEmpty { items.append(URLQueryItem(name: "machine", value: machine)) }
         components.queryItems = items.isEmpty ? nil : items
         return components.url
     }
 
-    public func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
-        guard let url = Self.linksURL(base: peer.baseURL.absoluteString, since: since, epoch: epoch, machine: machineId) else {
+    public func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?) async throws -> LinksPage {
+        guard let url = Self.linksURL(base: peer.baseURL.absoluteString, since: since, epoch: epoch) else {
             throw PeerSyncError.badURL(peer.baseURL.absoluteString)
         }
         var request = URLRequest(url: url, timeoutInterval: timeout)
@@ -76,31 +71,19 @@ public struct HTTPPeerLinksTransport: PeerLinksTransport {
         }
         return try JSONDecoder.remote.decode(LinksPage.self, from: data)
     }
-
-    public func notifyChanged(peer: PeerEndpoint, machineId: String) async {
-        guard let links = Self.linksURL(base: peer.baseURL.absoluteString, since: nil, epoch: nil),
-              var components = URLComponents(url: links.appendingPathComponent("changed"), resolvingAgainstBaseURL: false)
-        else { return }
-        components.queryItems = [URLQueryItem(name: "machine", value: machineId)]
-        guard let url = components.url else { return }
-        var request = URLRequest(url: url, timeoutInterval: 5)
-        request.httpMethod = "POST"
-        request.setValue("Bearer \(peer.token)", forHTTPHeaderField: "Authorization")
-        _ = try? await session.data(for: request)
-    }
 }
 
 /// Pulls every configured peer's cards into this board.
 ///
-/// Each peer is pulled on a timer (and at once after `poke`), asking only
+/// A peer is pulled through its control connection (`control`), asking only
 /// for what changed since the last page (`since` + `epoch`); every page goes
 /// to the board as `.peerLinksMerged`. Peer status (online, last seen,
 /// machine identity, control connection) goes out as `.peerStatusChanged`
 /// when it changes.
 ///
-/// A peer with a control connection (`control`) says when its cards
-/// changed, so it is pulled then, plus a safety pull every minute; one
-/// without is pulled every few seconds.
+/// A connected peer says when its cards changed, so it is pulled then, when
+/// it connects, and once a minute besides. A peer without a connection is
+/// not pulled: there is no address to call it at.
 public actor PeerSync {
     public typealias Dispatch = @Sendable (Action) async -> Void
 
@@ -132,16 +115,9 @@ public actor PeerSync {
     /// offline only once they span `offlineGrace`.
     private var reachability: [String: RemoteReachability] = [:]
     private let offlineGrace: TimeInterval
-    /// Where each peer master last reached this one from, by machine id: a
-    /// peer that moved to another address keeps fetching from here, from
-    /// the new one (`PeerAddress`).
-    private var contacts: [String: (host: String, at: Date)] = [:]
-    /// When a pull last tried a peer at an address learned from its
-    /// requests, by peer id and URL, so a wrong one is not tried every tick.
-    private var relocationsTried: [String: Date] = [:]
-    /// Saves a peer's new address (peer id, address), so Settings › Peers
-    /// shows it and the next start reaches the peer at once.
-    private var addressLearned: (@Sendable (String, String) async -> Void)?
+    /// Saves an entry made for a peer that paired over its control
+    /// connection.
+    private var entryCreated: (@Sendable (PeerConfig) async -> Void)?
     /// The control connections to the peers.
     public nonisolated let control: PeerControl
     /// The control connection of each peer, by peer id, as last reported.
@@ -166,11 +142,6 @@ public actor PeerSync {
     /// How often a peer with a control connection is pulled without being
     /// told to: its pushes carry the rest.
     public static let safetyPull: Duration = .seconds(60)
-
-    /// A contact older than this says nothing about where the peer is now.
-    static let contactWindow: TimeInterval = 120
-    /// How long before a learned address that did not answer is tried again.
-    static let relocationRetry: TimeInterval = 30
 
     public init(
         identity: MachineIdentity,
@@ -224,10 +195,11 @@ public actor PeerSync {
         peers.first { statuses[$0.id]?.machine?.id == machineId }
     }
 
-    /// Sets what saves a peer's address once a pull learned a new one: it
-    /// gets the peer id and the address.
-    public func onAddressLearned(_ handler: @escaping @Sendable (_ peerId: String, _ address: String) async -> Void) {
-        addressLearned = handler
+    /// Sets what saves an entry made for a peer that dialed in with no
+    /// entry here and gave this master a token for it ("Pairing on one
+    /// side").
+    public func onEntryCreated(_ handler: @escaping @Sendable (PeerConfig) async -> Void) {
+        entryCreated = handler
     }
 
     /// Sets what takes a change a peer announced on its control connection,
@@ -243,45 +215,32 @@ public actor PeerSync {
         entryLearned = handler
     }
 
-    /// Notes that the peer master `machineId` reached this one from `host`
-    /// (it fetched this master's cards, or said its own changed).
-    public func noteContact(machineId: String, host: String, at date: Date = .now) {
-        guard !machineId.isEmpty, machineId != identity.id, let host = PeerAddress.usableHost(host) else { return }
-        contacts[machineId] = (host, date)
-    }
-
     // MARK: - Pulling
 
     /// Pulls one peer now. Returns whether it answered. A peer that was
     /// online stays online through failed pulls until they span
     /// `offlineGrace`: a loaded host that answers late is not offline.
-    /// A peer that does not answer at its address but reached this master
-    /// lately from another one is tried there; when it answers there as the
-    /// same machine, that is its address from then on.
+    /// A peer this master is not connected to is not called (false); its
+    /// control connection's state says why.
     @discardableResult
     public func pull(peerId: String) async -> Bool {
         guard let peer = peers.first(where: { $0.id == peerId }), peer.enabled else { return false }
         let cursor = cursors[peer.id]
         let endpoint = endpoints.endpoint(forPeer: peer.id)
+        if endpoint == nil, endpoints.controlRuns { return false }
         do {
             guard let endpoint else { throw PeerSyncError.noAddress(peer.name) }
-            let page = try await transport.fetchLinks(from: endpoint, since: cursor?.seq, epoch: cursor?.epoch, machineId: identity.id)
+            let page = try await transport.fetchLinks(from: endpoint, since: cursor?.seq, epoch: cursor?.epoch)
             try await accept(page, from: endpoint)
             return true
         } catch {
-            // A connected peer is called through its connection; an address
-            // learned from its requests says nothing about that.
-            if (error as? PeerSyncError) != .selfPeer, controlStates[peer.id]?.connected != true,
-               let endpoint, !endpoint.isForwarded, await relocate(endpoint, cursor: cursor) {
-                return true
-            }
             var reach = reachability[peer.id] ?? RemoteReachability(grace: offlineGrace)
             reach.failed()
             reachability[peer.id] = reach
             var status = statuses[peer.id] ?? PeerStatus(peerId: peer.id)
             status.online = status.online && !reach.isOffline()
             status.lastError = error.localizedDescription
-            status.url = endpoint?.address.absoluteString
+            if let address = endpoint?.address { status.url = address.absoluteString }
             await report(status)
             return false
         }
@@ -305,51 +264,10 @@ public actor PeerSync {
         }
         cursors[peer.id] = Cursor(epoch: page.epoch, seq: page.seq)
         reachability[peer.id] = nil
-        // The address shown is a real one, never a forward port.
+        // The address shown is a real one, never a forward port; while none
+        // is known, the last one stays.
         await report(PeerStatus(peerId: peer.id, machine: page.machine, online: true, lastSeen: .now,
-                                url: peer.address.absoluteString))
-    }
-
-    /// Tries `peer`, which did not answer at its address, at the one it
-    /// reached this master from lately. The machine it is: the one it
-    /// answered as before, else one that reached this master and is no
-    /// other peer. It moves there only when it answers there, with its
-    /// token, as that machine. Whether it answered there.
-    private func relocate(_ peer: PeerEndpoint, cursor: Cursor?) async -> Bool {
-        let now = Date()
-        let current = peer.baseURL.absoluteString
-        let known = statuses[peer.id]?.machine?.id
-        let others = Set(peers.filter { $0.id != peer.id }.compactMap { statuses[$0.id]?.machine?.id })
-        let candidates = contacts
-            .filter { id, contact in
-                now.timeIntervalSince(contact.at) < Self.contactWindow
-                    && (known.map { $0 == id } ?? !others.contains(id))
-            }
-            .sorted { $0.value.at > $1.value.at }
-        let oldHost = PeerAddress.host(of: current)
-        for (machineId, contact) in candidates where contact.host != oldHost {
-            guard let url = PeerAddress.replacingHost(of: current, with: contact.host),
-                  let base = URL(string: url)
-            else { continue }
-            let key = peer.id + " " + url
-            if let last = relocationsTried[key], now.timeIntervalSince(last) < Self.relocationRetry { continue }
-            relocationsTried[key] = now
-            let moved = PeerEndpoint(peer: peer.peer, baseURL: base)
-            guard let page = try? await transport.fetchLinks(
-                      from: moved, since: cursor?.seq, epoch: cursor?.epoch, machineId: identity.id),
-                  page.machine.id == machineId,
-                  // Settings › Peers may have changed it meanwhile.
-                  let index = peers.firstIndex(where: { $0.id == peer.id }),
-                  endpoints.baseURL(forPeer: peer.id) == peer.baseURL
-            else { continue }
-            peers[index].promoteHint(url)
-            relocationsTried[key] = nil
-            KanbanCodeLog.info("sync", "\(peer.name) moved from \(current) to \(url): it reached this machine from \(contact.host)")
-            try? await accept(page, from: moved)
-            await addressLearned?(peer.id, url)
-            return true
-        }
-        return false
+                                url: peer.address?.absoluteString ?? statuses[peer.id]?.url))
     }
 
     /// Pulls every enabled peer once, concurrently.
@@ -363,7 +281,8 @@ public actor PeerSync {
     }
 
     /// Asks for a pull before the next tick: of the peer with machine id
-    /// `machineId` (a `POST /v1/links/changed` from it), or of every peer.
+    /// `machineId` (a `POST /v1/links/changed` from an older build), or of
+    /// every peer.
     public func poke(machineId: String? = nil) {
         if let machineId, let peer = peer(forMachine: machineId) {
             pokedPeers.insert(peer.id)
@@ -374,25 +293,10 @@ public actor PeerSync {
         }
     }
 
-    /// Tells every peer this machine's cards changed: on its control
-    /// connection, or (a peer without one that answers pulls) with
-    /// `POST /v1/links/changed`.
+    /// Tells every connected peer this machine's cards changed, on its
+    /// control connection. A peer that connects later pulls then.
     public func notifyPeers() async {
-        let enabled = peers.filter(\.enabled)
-        let machineId = identity.id
-        let transport = transport
-        let control = control
-        let online = Set(enabled.filter { statuses[$0.id]?.online == true }.map(\.id))
-        let endpoints = enabled.map { ($0.id, self.endpoints.endpoint(forPeer: $0.id)) }
-        await withTaskGroup(of: Void.self) { group in
-            for (peerId, endpoint) in endpoints {
-                group.addTask {
-                    if await control.send(PeerChange(what: .links), toPeer: peerId) { return }
-                    guard online.contains(peerId), let endpoint else { return }
-                    await transport.notifyChanged(peer: endpoint, machineId: machineId)
-                }
-            }
-        }
+        await announce(PeerChange(what: .links))
     }
 
     /// Tells the peer that is the machine `machineId` that `change` happened
@@ -426,12 +330,9 @@ public actor PeerSync {
 
     private func handle(_ event: PeerControl.Event) async {
         switch event {
-        case let .connected(peerId, machine, via, _, remoteHost):
+        case let .connected(peerId, machine, via, _, _):
             controlStates[peerId] = ControlState(connected: true, via: via, machine: machine)
             endpoints.noteMachine(machine.id, forPeer: peerId)
-            // A peer that dialed in shows where it is now, for a pull that
-            // fails at the address on file.
-            if via == .accepted, let remoteHost { noteContact(machineId: machine.id, host: remoteHost) }
             // What changed while it was not connected was not pushed.
             pokedPeers.insert(peerId)
             wake?.yield()
@@ -441,7 +342,12 @@ public actor PeerSync {
         case let .disconnected(peerId, reason):
             controlStates[peerId] = ControlState(connected: false, machine: controlStates[peerId]?.machine, error: reason,
                                                  closedBecause: reason)
-            await reportControl(peerId)
+            // Without its connection it is not pulled, so its last pull says
+            // nothing about it now.
+            var status = statuses[peerId] ?? PeerStatus(peerId: peerId)
+            status.online = false
+            reachability[peerId] = nil
+            await report(status)
         case let .dialFailed(peerId, reason):
             guard controlStates[peerId]?.connected != true else { return }
             var state = controlStates[peerId] ?? ControlState()
@@ -460,6 +366,13 @@ public actor PeerSync {
             peers[index].machineId = machineId
             peers[index].addressHints = hints
             await entryLearned?(peerId, machineId, hints)
+        case let .paired(entry):
+            if let index = peers.firstIndex(where: { $0.id == entry.id }) {
+                peers[index] = entry
+            } else {
+                peers.append(entry)
+            }
+            await entryCreated?(entry)
         }
     }
 
@@ -472,33 +385,21 @@ public actor PeerSync {
         controlStates[peerId]?.connected == true
     }
 
-    /// How often an offline peer is tried again. A master restarting for a
-    /// deploy is back within seconds, and a longer wait shows it offline for
-    /// that long; a failed pull to a refusing host costs next to nothing.
-    public static let offlineRetry: Duration = .seconds(5)
-
     /// Runs until the task is cancelled: dials and serves the control
-    /// connections, and pulls peers with a control connection every
-    /// `connectedInterval`, other online peers every `interval`, offline
-    /// ones every `offlineInterval`, poked ones at once.
-    public func run(
-        interval: Duration = .seconds(5),
-        offlineInterval: Duration = PeerSync.offlineRetry,
-        connectedInterval: Duration = PeerSync.safetyPull
-    ) async {
+    /// connections, and pulls each connected peer when it connects, when it
+    /// says its cards changed (a poke) and every `safetyPull` besides.
+    public func run(safetyPull: Duration = PeerSync.safetyPull) async {
         let control = control
         await withTaskGroup(of: Void.self) { group in
             group.addTask { await control.run() }
             group.addTask { await self.followControl() }
-            group.addTask {
-                await self.pullLoop(interval: interval, offlineInterval: offlineInterval, connectedInterval: connectedInterval)
-            }
+            group.addTask { await self.pullLoop(safetyPull: safetyPull) }
             await group.next()
             group.cancelAll()
         }
     }
 
-    private func pullLoop(interval: Duration, offlineInterval: Duration, connectedInterval: Duration) async {
+    private func pullLoop(safetyPull: Duration) async {
         let (wakes, wake) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
         self.wake = wake
         var nextPull: [String: ContinuousClock.Instant] = [:]
@@ -509,17 +410,20 @@ public actor PeerSync {
             pokedAll = false
             let poked = pokedPeers
             pokedPeers = []
+            // Only a connected peer has an address; one that connects is
+            // pulled at once (`.connected` pokes it).
+            for id in nextPull.keys where controlStates[id]?.connected != true { nextPull[id] = nil }
             let due = peers.filter { peer in
-                peer.enabled && (forceAll || poked.contains(peer.id) || (nextPull[peer.id] ?? now) <= now)
+                peer.enabled && controlStates[peer.id]?.connected == true
+                    && (forceAll || poked.contains(peer.id) || (nextPull[peer.id] ?? now) <= now)
             }
             if !due.isEmpty {
-                await withTaskGroup(of: (String, Bool).self) { group in
+                await withTaskGroup(of: String.self) { group in
                     for peer in due {
-                        group.addTask { (peer.id, await self.pull(peerId: peer.id)) }
+                        group.addTask { _ = await self.pull(peerId: peer.id); return peer.id }
                     }
-                    for await (id, online) in group {
-                        let every = controlStates[id]?.connected == true ? connectedInterval : (online ? interval : offlineInterval)
-                        nextPull[id] = clock.now + every
+                    for await id in group {
+                        nextPull[id] = clock.now + safetyPull
                     }
                 }
             }
@@ -569,14 +473,6 @@ extension BoardStore {
     public var localMachine: MachineIdentity {
         MachineIdentity(id: state.localMachineId, name: state.localMachineName,
                         alwaysOn: state.localMachineAlwaysOn ? true : nil)
-    }
-
-    /// The page `GET /v1/links` answers with. `machine` is the peer asking,
-    /// when it says (older peers do not), noted as a sign that it reaches
-    /// this master.
-    public func peerLinksPage(machine: String?, since: Int?, epoch: String?) -> LinksPage {
-        notePeerPull(machine: machine)
-        return peerLinksPage(since: since, epoch: epoch)
     }
 
     /// The page `GET /v1/links` answers with.

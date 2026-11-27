@@ -191,11 +191,15 @@ final class AppComposition {
         }
         engine.peerSync = peerSync
         engine.installForeignCardHandler()
+        // A peer this Mac dials that has no entry for it gets a peer token
+        // from this Mac's Remote Control devices (pairing on one side).
+        let tokenIssuer = PeerTokenIssuer(devices: RemoteDeviceStore(), settings: SettingsStore())
+        peerSync.control.setTokenIssuer { peer, machine in await tokenIssuer.issue(for: peer, machine: machine) }
         Task.detached {
-            // A peer that moved to another address is saved there, so
-            // Settings › Peers and the next start know it.
-            await peerSync.onAddressLearned { peerId, address in
-                guard (try? await SettingsStore().promotePeerAddress(peerId: peerId, address: address)) == true else { return }
+            // A peer that dialed in with a token this Mac issued, and had no
+            // entry here, is saved with the token it gave for itself.
+            await peerSync.onEntryCreated { entry in
+                guard (try? await SettingsStore().savePairedPeer(entry)) == true else { return }
                 await MainActor.run { NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil) }
             }
             // What a control connection taught about a peer (its machine id,

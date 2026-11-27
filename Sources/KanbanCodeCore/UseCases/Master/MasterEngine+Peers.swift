@@ -89,6 +89,14 @@ extension MasterEngine {
         return await peerClient(machineId: owner)
     }
 
+    /// Why there is no client of the card's owner: it is not connected (and
+    /// why), or it is no peer of this master at all.
+    func ownerUnavailable(_ cardId: String) -> String {
+        let owner = store.state.links[cardId]?.ownerMachine ?? ""
+        guard peerSync?.endpoints.peer(forMachine: owner) != nil else { return "\(peerName(owner)) is not a configured peer" }
+        return peerNotConnected(owner) ?? "\(peerName(owner)) is not connected"
+    }
+
     /// Whether another master owns the card.
     public func isForeign(_ cardId: String) -> Bool {
         guard let owner = store.state.links[cardId]?.ownerMachine else { return false }
@@ -181,7 +189,7 @@ extension MasterEngine {
                                           data: data.base64EncodedString()))
             }
             guard let client = await ownerClient(forCard: cardId) else {
-                return fail("\(ownerName) is not a configured peer")
+                return fail(self.ownerUnavailable(cardId))
             }
             do {
                 try await client.sendPrompt(cardId: cardId, text: prompt.body, mode: .queue, images: images,
@@ -205,7 +213,7 @@ extension MasterEngine {
         Task {
             let owner = peerName(store.state.links[cardId]?.ownerMachine ?? "")
             guard let client = await ownerClient(forCard: cardId) else {
-                report("Could not \(what): \(owner) is not a configured peer")
+                report("Could not \(what): \(ownerUnavailable(cardId))")
                 return
             }
             do {
@@ -248,7 +256,7 @@ extension MasterEngine {
     /// there, for a paste into the card's terminal here to type.
     public func uploadPastedImage(cardId: String, data: Data) async throws -> String {
         guard let client = await ownerClient(forCard: cardId) else {
-            throw MasterPeerError.unknownPeer(peerName(store.state.links[cardId]?.ownerMachine ?? "the owner"))
+            throw MasterPeerError.notConnected(ownerUnavailable(cardId))
         }
         return try await client.uploadPastedImage(cardId: cardId, data: data).path
     }
@@ -335,9 +343,11 @@ extension MasterEngine {
         guard let link = store.state.links[cardId] else { throw MasterPeerError.unknownCard(cardId) }
         guard store.state.isOwnedLocally(link) else { throw MasterPeerError.notOwner(cardId) }
         guard link.isLaunching != true, !handoversInFlight.contains(cardId) else { throw MasterPeerError.busy(cardId) }
-        guard await peerClient(machineId: machineId) != nil else { throw MasterPeerError.unknownPeer(machineId) }
+        guard peerSync?.endpoints.peer(forMachine: machineId) != nil else { throw MasterPeerError.unknownPeer(machineId) }
         if let problem = peerNotConnected(machineId) { throw MasterPeerError.notConnected(problem) }
-        if let problem = peerReachBackProblem(machineId) { throw MasterPeerError.failed(problem) }
+        guard await peerClient(machineId: machineId) != nil else {
+            throw MasterPeerError.notConnected("\(peerName(machineId)) is not connected")
+        }
         handoversInFlight.insert(cardId)
         defer { handoversInFlight.remove(cardId) }
 
@@ -398,35 +408,6 @@ extension MasterEngine {
         return "\(line). It resumes by itself once it is here."
     }
 
-    /// Whether the peer `machineId` would pick up a card released to it
-    /// (`PeerReachBack`).
-    func peerReachBack(_ machineId: String) -> PeerReachBack.Verdict {
-        let name = store.state.peerStatuses.values.first { $0.machine?.id == machineId }
-            .map { store.state.peerDisplayName($0) } ?? peerName(machineId)
-        return PeerReachBack.verdict(
-            machineId: machineId, name: name, pulls: store.peerPulls, since: store.peerPullsSince)
-    }
-
-    /// Why the peer `machineId` would not pick up a card released to it;
-    /// nil when it would, or when that cannot be told yet.
-    func peerReachBackProblem(_ machineId: String) -> String? {
-        if case .problem(let line) = peerReachBack(machineId) { return line }
-        return nil
-    }
-
-    /// Notes which peers have not fetched from here lately, for the line of
-    /// a card that waits for one of them. Dispatched only when it changes.
-    func refreshPeersNotFetching() {
-        var problems: [String: String] = [:]
-        for status in store.state.peerStatuses.values {
-            guard let id = status.machine?.id, let problem = peerReachBackProblem(id) else { continue }
-            problems[id] = problem
-        }
-        if problems != store.state.peersNotFetching {
-            store.dispatch(.peersNotFetchingChanged(problems))
-        }
-    }
-
     /// The name of the peer master with this machine id, as Settings shows it.
     public func peerDisplayName(_ machineId: String) -> String { peerName(machineId) }
 
@@ -440,38 +421,10 @@ extension MasterEngine {
     /// that says no or does not answer leaves the card here, not started,
     /// with the reason.
     func launchOnPeer(cardId: String, prompt: String, worktree: String?, peer: MachineIdentity, images: [ImageAttachment] = []) {
-        guard !peerLaunchesWaiting.contains(cardId), !handoversInFlight.contains(cardId) else { return }
+        guard !handoversInFlight.contains(cardId) else { return }
         if let problem = peerNotConnected(peer.id) {
             KanbanCodeLog.warn("handover", "Not launching card=\(cardId.prefix(12)) on \(peer.name): \(problem)")
             store.dispatch(.cardStartReported(cardId: cardId, report: .failed("Could not start it on \(peer.name): \(problem)")))
-            return
-        }
-        switch peerReachBack(peer.id) {
-        case .reaches:
-            break
-        case .problem(let problem):
-            // Released, the card would wait there for a pickup that never
-            // comes; it stays here, not started, with the reason.
-            KanbanCodeLog.warn("handover", "Not launching card=\(cardId.prefix(12)) on \(peer.name): \(problem)")
-            store.dispatch(.cardStartReported(cardId: cardId, report: .failed("Could not start it on \(peer.name): \(problem)")))
-            return
-        case .unknown(let until):
-            // This master just started, and the peer has not fetched from
-            // it yet. Released now, a card to a peer that cannot fetch from
-            // here would wait there forever, so it waits here until the
-            // peer fetches once, or the window says it cannot.
-            KanbanCodeLog.info("handover", "Waiting for \(peer.name) to fetch from here before launching card=\(cardId.prefix(12)) there")
-            peerLaunchesWaiting.insert(cardId)
-            store.dispatch(.cardStartReported(cardId: cardId, report: .handingOver("Waiting for \(peer.name) to answer before it starts there")))
-            Task { [weak self] in
-                while Date() < until, let self, case .unknown = self.peerReachBack(peer.id) {
-                    try? await Task.sleep(for: .milliseconds(500))
-                }
-                guard let self else { return }
-                self.peerLaunchesWaiting.remove(cardId)
-                guard self.store.state.links[cardId] != nil else { return }
-                self.launchOnPeer(cardId: cardId, prompt: prompt, worktree: worktree, peer: peer, images: images)
-            }
             return
         }
         // The images of the launch, else those the card keeps (a card
@@ -702,7 +655,6 @@ extension MasterEngine {
         var lastAttempt: [String: Date] = [:]
         var scannedVersion = -1
         var lastScan = Date.distantPast
-        var lastReachBackCheck = Date.distantPast
         while !Task.isCancelled {
             try? await Task.sleep(for: .milliseconds(500))
             let seq = store.state.syncSeq
@@ -717,10 +669,6 @@ extension MasterEngine {
             }
             let local = store.state.localMachineId
             guard !local.isEmpty else { continue }
-            if Date().timeIntervalSince(lastReachBackCheck) >= 5 {
-                lastReachBackCheck = Date()
-                refreshPeersNotFetching()
-            }
             // A released card stops being served once its new owner took it.
             // The cards only need a look when they changed, or when a
             // failed adoption is due for another try.

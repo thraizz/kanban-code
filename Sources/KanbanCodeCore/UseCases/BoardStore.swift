@@ -208,10 +208,6 @@ public final class AppState: @unchecked Sendable {
     /// masters) reported, by card id: its step, the transcript copy of a
     /// move, or why it failed. Transient; read through `KanbanCodeCard.sessionStatus`.
     public var cardStarts: [String: CardStartReport] = [:] { didSet { cardInputsVersion &+= 1 } }
-    /// Peer masters that have not fetched this one's cards lately, by
-    /// machine id, with the line saying so (`PeerReachBack`). A card handed
-    /// to one of them waits there unclaimed.
-    public var peersNotFetching: [String: String] = [:] { didSet { cardInputsVersion &+= 1 } }
 
     /// The step of the launch or resume of a card in flight.
     public func launchStep(_ cardId: String) -> String? {
@@ -741,7 +737,6 @@ public enum Action: Sendable {
     /// for a card another master runs, or nil to forget the last report.
     case cardStartReported(cardId: String, report: CardStartReport?)
     /// The peer masters that have not fetched this one's cards lately.
-    case peersNotFetchingChanged([String: String])
 
     // Remote machines (boxd)
     /// A card got a machine, or its machine record changed (new cwd, new status).
@@ -2035,8 +2030,6 @@ public enum Reducer {
             if state.cardStarts[cardId] != report { state.cardStarts[cardId] = report }
             return []
 
-        case .peersNotFetchingChanged(let problems):
-            if state.peersNotFetching != problems { state.peersNotFetching = problems }
             return []
 
         case .launchProgress(let cardId, let message):
@@ -2860,18 +2853,6 @@ public final class BoardStore: @unchecked Sendable {
     /// `pendingPeerPages`, and no full rewrite of links.json or
     /// tombstones.json runs, so a peer's set can never replace the file.
     public private(set) var localLinksLoaded = false
-
-    /// When each peer master last fetched this one's cards, by its machine
-    /// id ("" for peers too old to say who they are). A peer that does not
-    /// fetch from here never sees the cards handed to it. Not state: it
-    /// changes on every pull.
-    public private(set) var peerPulls: [String: Date] = [:]
-    /// Since when `peerPulls` is kept.
-    public let peerPullsSince = Date()
-
-    public func notePeerPull(machine: String?, at date: Date = .now) {
-        peerPulls[machine ?? ""] = date
-    }
     private var pendingPeerPages: [(peer: String, links: [Link])] = []
     private var localLinksLoad: Task<Bool, Never>?
 

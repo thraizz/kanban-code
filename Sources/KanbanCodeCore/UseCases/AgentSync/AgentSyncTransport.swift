@@ -112,8 +112,8 @@ public struct HTTPSyncTransport: SyncTransport {
 }
 
 /// The agent sync's transport with its change notes going over a peer's
-/// control connection when it has one (`docs/peer-connections.md`); the
-/// rest, and the notes to a peer without one, over HTTP.
+/// control connection (`docs/peer-connections.md`); the rest over HTTP, to
+/// the URL the connection gives. A peer without one is not synced with.
 public struct PeerControlSyncTransport: SyncTransport {
     private let http: any SyncTransport
     private let peerSync: PeerSync
@@ -132,8 +132,7 @@ public struct PeerControlSyncTransport: SyncTransport {
     }
 
     public func notify(peer: SyncPeer, machineId: String, what: String) async {
-        if await peerSync.announce(PeerChange(what: .sync, detail: what), toMachine: peer.machine.id) { return }
-        await http.notify(peer: peer, machineId: machineId, what: what)
+        await peerSync.announce(PeerChange(what: .sync, detail: what), toMachine: peer.machine.id)
     }
 
     public func optmemRun(peer: SyncPeer, request: OptmemRunRequest) async throws -> OptmemRunResult {
@@ -142,14 +141,16 @@ public struct PeerControlSyncTransport: SyncTransport {
 }
 
 extension PeerSync {
-    /// The peers that answered at least once and have an address, for the
-    /// agent sync.
+    /// The peers that answered at least once and can be called now (their
+    /// control connection is up), for the agent sync. The address is a real
+    /// one: the connection's, else the last one known.
     public func syncPeers() -> [SyncPeer] {
         configuredPeers().compactMap { peer in
             guard peer.enabled, let status = status(of: peer.id), let machine = status.machine,
                   let endpoint = endpoints.endpoint(forPeer: peer.id)
             else { return nil }
-            return SyncPeer(machine: machine, baseURL: endpoint.baseURL, address: endpoint.address,
+            return SyncPeer(machine: machine, baseURL: endpoint.baseURL,
+                            address: endpoint.address ?? status.url.flatMap(URL.init(string:)),
                             token: endpoint.token, online: status.reachable)
         }
     }

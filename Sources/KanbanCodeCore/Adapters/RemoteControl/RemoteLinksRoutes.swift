@@ -4,18 +4,16 @@ import KanbanCodeRemoteKit
 /// What the peer sync routes need from the master that serves them.
 public protocol PeerLinksServing: AnyObject, Sendable {
     /// `GET /v1/links`: served cards and tombstones changed after `since`
-    /// (all of them when `epoch` is not the current one). `machine` is the
-    /// machine id of the peer asking, when it says.
-    func linksPage(since: Int?, epoch: String?, machine: String?) async -> LinksPage
-    /// `POST /v1/links/changed?machine=`: a peer says its cards changed.
+    /// (all of them when `epoch` is not the current one).
+    func linksPage(since: Int?, epoch: String?) async -> LinksPage
+    /// `POST /v1/links/changed?machine=`: a peer of an older build says its
+    /// cards changed (newer ones say so on the control connection).
     func peerLinksChanged(machineId: String?) async
     /// `GET /v1/peers`: this machine and the peers it syncs with.
     func peersOverview() async -> PeersOverview
-    /// The peer master `machineId` reached this one from `host`, on one of
-    /// the routes above.
-    func peerReached(machineId: String, host: String) async
     /// `GET /v1/peer/control`: serves a peer's control connection until it
-    /// ends. `device` is the token it came with.
+    /// ends. `device` is the token it came with; a peer-scope one may pair
+    /// a peer that has no entry here.
     func servePeerControl(_ socket: PeerControlSocket, device: RemoteDevice) async
     /// Where the Remote Control server listens now, while it runs: the
     /// control connections announce it.
@@ -29,7 +27,6 @@ public protocol PeerLinksServing: AnyObject, Sendable {
 }
 
 extension PeerLinksServing {
-    public func peerReached(machineId: String, host: String) async {}
     public func servePeerControl(_ socket: PeerControlSocket, device: RemoteDevice) async {
         socket.close(reason: "this master does not sync with peers", code: 1008)
     }
@@ -55,8 +52,10 @@ public struct PeersOverview: Codable, Sendable, Equatable {
 public struct PeerOverview: Codable, Sendable, Equatable {
     public var id: String
     public var name: String
-    /// A real address of the peer, from `PeerEndpoints` (never the forward
-    /// port its calls may go to); empty when it has no address.
+    /// A real address of the peer (never the forward port its calls may go
+    /// to): the one of its connection, else the last one known, else its
+    /// first hint; empty when there is none (a peer that dials this master
+    /// and has not yet).
     public var url: String
     public var enabled: Bool
     public var status: PeerStatus?
@@ -74,17 +73,13 @@ public struct PeerOverview: Codable, Sendable, Equatable {
 /// the server calls after it authenticated the device.
 enum RemoteLinksRoutes {
     /// Answers `method` on `rest` (the path after `/v1/`), or nil when the
-    /// path is not a peer sync route. `host` is where the request came from.
+    /// path is not a peer sync route.
     static func handle(
         method: String,
         rest: [String],
         query: [String: String],
-        from host: String? = nil,
         server: any PeerLinksServing
     ) async -> RemoteHTTPResponse? {
-        if rest.first == "links", let host, let machine = query["machine"], !machine.isEmpty {
-            await server.peerReached(machineId: machine, host: host)
-        }
         switch rest {
         case ["links"]:
             guard method == "GET" else { return .error(405, "use GET") }
@@ -96,8 +91,7 @@ enum RemoteLinksRoutes {
                 since = value
             }
             let epoch = query["epoch"].flatMap { $0.isEmpty ? nil : $0 }
-            let machine = query["machine"].flatMap { $0.isEmpty ? nil : $0 }
-            return .json(await server.linksPage(since: since, epoch: epoch, machine: machine))
+            return .json(await server.linksPage(since: since, epoch: epoch))
 
         case ["links", "changed"]:
             guard method == "POST" else { return .error(405, "use POST") }
@@ -126,17 +120,13 @@ public final class BoardPeerLinksServer: PeerLinksServing {
 
     /// A peer is served this master's links only once they are loaded: an
     /// earlier page would be a full page of nothing, with a cursor past it.
-    public func linksPage(since: Int?, epoch: String?, machine: String?) async -> LinksPage {
+    public func linksPage(since: Int?, epoch: String?) async -> LinksPage {
         await store.loadLocalLinks()
-        return await MainActor.run { store.peerLinksPage(machine: machine, since: since, epoch: epoch) }
+        return await MainActor.run { store.peerLinksPage(since: since, epoch: epoch) }
     }
 
     public func peerLinksChanged(machineId: String?) async {
         await peerSync?.poke(machineId: machineId)
-    }
-
-    public func peerReached(machineId: String, host: String) async {
-        await peerSync?.noteContact(machineId: machineId, host: host)
     }
 
     public func servePeerControl(_ socket: PeerControlSocket, device: RemoteDevice) async {
@@ -144,7 +134,7 @@ public final class BoardPeerLinksServer: PeerLinksServing {
             socket.close(reason: "this master does not sync with peers", code: 1008)
             return
         }
-        await peerSync.control.serveAccepted(socket, device: device.name, deviceId: device.id)
+        await peerSync.control.serveAccepted(socket, device: device.name, deviceId: device.id, pairs: device.scope == .peer)
     }
 
     public func serverListening(_ provider: @escaping @Sendable () -> (addresses: [String], port: Int)?) {
@@ -170,8 +160,11 @@ public final class BoardPeerLinksServer: PeerLinksServing {
         var overview: [PeerOverview] = []
         for peer in peers {
             // A real address, never a forward port.
-            overview.append(PeerOverview(peer: peer, baseURL: peerSync.endpoints.endpoint(forPeer: peer.id)?.address,
-                                         status: await peerSync.status(of: peer.id)))
+            let status = await peerSync.status(of: peer.id)
+            let address = peerSync.endpoints.endpoint(forPeer: peer.id)?.address
+                ?? status?.url.flatMap(URL.init(string:))
+                ?? PeerEndpoints.configuredURL(peer)
+            overview.append(PeerOverview(peer: peer, baseURL: address, status: status))
         }
         return PeersOverview(machine: machine, peers: overview)
     }

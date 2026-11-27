@@ -431,12 +431,9 @@ public final class RemoteControlServer: Sendable {
 
         do {
             let rest = Array(seg.dropFirst())
-            // Only a paired master's address is learned: the pulls that
-            // follow carry the peer's token there.
             if let peerServer,
                let response = await RemoteLinksRoutes.handle(
-                   method: method, rest: rest, query: request.query,
-                   from: device.scope == .peer ? peer?.host : nil, server: peerServer) {
+                   method: method, rest: rest, query: request.query, server: peerServer) {
                 return .response(response)
             }
             if let syncEngine,

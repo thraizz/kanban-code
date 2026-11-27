@@ -53,11 +53,12 @@ public struct MachineIdentity: Codable, Sendable, Equatable, Hashable {
 public enum MasterRoles {
     /// The master that polls GitHub for the pull requests of every card:
     /// an always-on master when one is online, else the one with the lowest
-    /// machine id among the masters online. Both sides compute the same
+    /// machine id among the masters online. A peer is online while it can be
+    /// called (`PeerStatus.reachable`). Both sides compute the same
     /// answer from what they see, and when they see each other differently
     /// the worst case is both polling.
     public static func prPollingLeader(local: MachineIdentity, peers: [PeerStatus]) -> String {
-        let candidates = [local] + peers.filter(\.online).compactMap(\.machine)
+        let candidates = [local] + peers.filter(\.reachable).compactMap(\.machine)
         return candidates.min { a, b in
             let aOn = a.alwaysOn == true, bOn = b.alwaysOn == true
             if aOn != bOn { return aOn }
@@ -87,9 +88,15 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
     public var terminalToken: String?
     /// Base URLs of the peer's Remote Control server to try, newest success
     /// first, e.g. `http://192.168.178.230:7780`. Settings files from before
-    /// had one `url`; it decodes as the first hint.
+    /// had one `url`; it decodes as the first hint. Empty for a peer that
+    /// dials this master: this master never dials it, and reaches it through
+    /// that peer's control connection.
     public var addressHints: [String]
     public var enabled: Bool
+    /// The device this master issued for the peer when the peer asked for a
+    /// token on a control connection this master dialed ("Pairing on one
+    /// side"). A token issued again revokes it.
+    public var issuedDeviceId: String?
 
     public init(
         id: String = KSUID.generate(prefix: "peer"),
@@ -98,7 +105,8 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
         addressHints: [String],
         token: String,
         terminalToken: String? = nil,
-        enabled: Bool = true
+        enabled: Bool = true,
+        issuedDeviceId: String? = nil
     ) {
         self.id = id
         self.machineId = machineId
@@ -107,6 +115,7 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
         self.token = token
         self.terminalToken = terminalToken
         self.enabled = enabled
+        self.issuedDeviceId = issuedDeviceId
     }
 
     /// An entry with the one address the user typed.
@@ -120,16 +129,6 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
     ) {
         self.init(id: id, name: name, addressHints: url.isEmpty ? [] : [url], token: token,
                   terminalToken: terminalToken, enabled: enabled)
-    }
-
-    /// Puts `address` first among the hints: the peer answered there.
-    /// False when it was first already.
-    @discardableResult
-    public mutating func promoteHint(_ address: String) -> Bool {
-        guard !address.isEmpty, addressHints.first != address else { return false }
-        addressHints.removeAll { $0 == address }
-        addressHints.insert(address, at: 0)
-        return true
     }
 
     public init(from decoder: Decoder) throws {
@@ -146,6 +145,7 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
             addressHints = hints
         }
         enabled = (try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? true
+        issuedDeviceId = (try? c.decodeIfPresent(String.self, forKey: .issuedDeviceId)).flatMap { $0.isEmpty ? nil : $0 }
     }
 
     /// Writes the hints, and the first of them as `url` too, so a build from
@@ -160,10 +160,11 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
         try c.encode(token, forKey: .token)
         try c.encodeIfPresent(terminalToken, forKey: .terminalToken)
         try c.encode(enabled, forKey: .enabled)
+        try c.encodeIfPresent(issuedDeviceId, forKey: .issuedDeviceId)
     }
 
     private enum CodingKeys: String, CodingKey {
-        case id, machineId, name, url, addressHints, token, terminalToken, enabled
+        case id, machineId, name, url, addressHints, token, terminalToken, enabled, issuedDeviceId
     }
 }
 

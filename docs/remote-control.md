@@ -75,7 +75,10 @@ JSON bodies, up to 48 MiB. Dates are ISO 8601 with milliseconds, UTC (`2026-09-2
 | `GET /v1/cards/{id}/handover` | any | `RemoteHandoverInfo` |
 | `POST /v1/cards/{id}/offer` | full, peer | `RemoteCardOffer` → 202 `{"accepted": true}` or 409 `{"refused"}` |
 | `GET /v1/cards/{id}/transcript/raw?offset=0&limit=4194304` | any | transcript bytes, `X-Transcript-Size` header |
-| `GET /v1/links?since=&epoch=`, `POST /v1/links/changed`, `GET /v1/peers` | any | peer sync |
+| `GET /v1/links?since=&epoch=`, `GET /v1/peers` | any | peer sync |
+| `POST /v1/links/changed?machine=` | any | 204; a peer of an older build says its cards changed (newer ones say so on the control connection) |
+| `GET /v1/peer/control` (WebSocket) | full, peer | the control connection between two masters (see [`peer-connections.md`](peer-connections.md)); 403 through a tunnel |
+| `GET /v1/peer/stream?id=` (WebSocket) | full, peer | one reverse stream of a control connection this master accepted; 403 through a tunnel |
 | `GET /v1/sync/state`, `GET /v1/sync/file?entry=&path=`, `POST /v1/sync/changed?machine=&what=` | full, peer | agent sync (Settings > Sync) |
 | `POST /v1/optmem/run` | full, peer | `{"id", "argv", "date"}` → `{"status", "stdout", "stderr"}`: a memo command on the OptMem home |
 | `GET /v1/scrub/status`, `GET /v1/scrub/index`, `POST /v1/scrub/run`, `PUT /v1/scrub/schedule` | full, peer | the secret scrubber (see [`vault.md`](vault.md)) |
@@ -109,7 +112,15 @@ Behaviour:
 
 ## Several masters
 
-The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: each runs the same engine, owns the cards it launched or adopted, and syncs light card state with its peers (Settings > Remote Control > Peers: a peer's URL and a device token that peer issued, `kanban-code-server pair <name>` on a box). A card carries `machineId`/`machineName`, the master that owns it.
+The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: each runs the same engine, owns the cards it launched or adopted, and syncs light card state with its peers (Settings > Remote Control > Peers). A card carries `machineId`/`machineName`, the master that owns it.
+
+How two masters reach each other ([`peer-connections.md`](peer-connections.md)):
+
+- A peer entry is the peer's machine id, a device token the peer issued for this master, and address hints: base URLs to dial, newest success first. Only the master that can dial needs any; on a box, the entry for a laptop has none.
+- Each pair of masters keeps one control connection, `GET /v1/peer/control`, dialed by whichever master can reach the other (in practice the laptop dials the box). It carries a hello, pings every 10 s (30 s of silence closes it), and `changed` pushes (`links`, `sync`, `attention`) that make the other master pull at once; a safety pull runs every 60 s. `PeerStatus.connected` is whether the peer can be called now, and Settings > Peers shows who dialed and why a peer is not connected.
+- The master that accepted the connection calls the other one through it: a loopback forward port whose every connection becomes a reverse stream (`GET /v1/peer/stream`) the dialer serves in-process. A request that came that way is never loopback, so it gets no tokenless vault or scrub route.
+- A peer that is not connected has no URL: nothing calls it, a launch or move to it is refused at once, and its cards show offline.
+- A laptop that changes networks notices that its address went away within 2 s, closes the connections it dialed and dials again; the box takes the new connection in place of the old one at once and keeps the forward port. No setting changes on either side.
 
 - Any master answers for any card: prompts, queue, interrupt, resume, transcript and move on a card another master owns are forwarded to that master. The terminal of such a card on the Mac runs `kanban remote attach`, which bridges the owner's terminal socket with the peer's terminal token. An image dropped on the card is sent to the owner as a prompt with that image.
 - `POST /v1/tasks` with `machine` naming a peer creates the card here and hands it to that peer, which starts it. `project` may also be a repository URL: the master finds the project with that origin, or clones it into `~/Projects` (a box).
@@ -126,7 +137,7 @@ The Mac app and `kanban-code-server` (an always-on Linux box) are both masters: 
 
 The token a master holds for its peer has the `peer` scope, in both directions. It may call what pairing uses and nothing else (`RemoteScopePolicy`, an allow list: a route added later is refused until it is listed):
 
-- Card sync: `GET /v1/links`, `POST /v1/links/changed`, `GET /v1/peers`, `GET /v1/board`, `GET /v1/machines`, `GET /v1/events`, `GET /v1/me`.
+- Card sync: `GET /v1/peer/control`, `GET /v1/peer/stream`, `GET /v1/links`, `POST /v1/links/changed`, `GET /v1/peers`, `GET /v1/board`, `GET /v1/machines`, `GET /v1/events`, `GET /v1/me`.
 - What the human does to a card the peer owns: `POST /v1/tasks`, `GET /v1/cards/search`, and on `/v1/cards/{id}`: `GET`, `PATCH`, `DELETE`, `transcript`, `transcript/raw`, `prompt`, `queue/{promptId}`, `interrupt`, `resume`, `side-chat`, `slash-commands`, `pasted-image`, `files`, `discover`, `worktree/remove`.
 - Moves between masters: `POST /v1/cards/{id}/move`, `POST /v1/cards/{id}/offer`, `GET /v1/cards/{id}/handover`.
 - Approvals: `GET /v1/attention`, `POST /v1/attention/presence`, `POST /v1/attention/{id}/resolve`, `POST /v1/attention/{id}/note` (the note of a refused vault request, see [vault.md](vault.md)).
@@ -138,7 +149,7 @@ Refused with 403: the terminal socket, and every vault route that releases, list
 
 The Mac shows the terminals of the box's cards, so it holds a second token of the box, scope `terminal` (`kanban-code-server pair "<name> terminals" --scope terminal`), in the peer entry's `terminalToken` (Settings > Remote Control > Peers). The box holds no terminal token of the Mac: it never opens a terminal there.
 
-Pairing: `kanban-code-server pair <name> --scope peer` on a box, Add Device > Peer master on the Mac. A peer entry whose token is still `full` keeps working; change its `scope` in `~/.kanban-code/remote/devices.json` on the machine that issued it (the server re-reads the file).
+Pairing is done once, on one side: `kanban-code-server pair <name> --scope peer` on the box (or Add Device > Peer master on a Mac) prints a token; on the Mac, Settings > Remote Control > Peers > Add takes the box's address and that token. On the first control connection the box, which has no entry for the Mac, asks for a token in its hello; the Mac issues one (a device named `<box> (peer master)`, scope `peer`) and sends it on the connection it dialed, after the hello showed the box is the machine its entry expects. The box saves an entry for the Mac with that token and no address. Should the box lose that entry, the next connection issues a new token and revokes the old one. Only a peer-scope token pairs this way: a dialer with a full token and no entry is refused. A peer entry whose token is still `full` keeps working; change its `scope` in `~/.kanban-code/remote/devices.json` on the machine that issued it (the server re-reads the file).
 
 ## Staying awake for remote use
 
@@ -155,7 +166,7 @@ A Mac that is fully asleep gets no request and is not woken. Remote clients then
 
 ## Agent sync
 
-Settings > Sync keeps the agent setup the same on every master. The list lives in `~/.kanban-code/sync.json`; the copy with the newest `updatedAt` wins, so entries edited on the Mac reach the box. Each master only writes its own disk: it scans its entries every 5 seconds, sends `POST /v1/sync/changed` to its peers when something changed, and pulls `GET /v1/sync/state` from each online peer every minute or when poked.
+Settings > Sync keeps the agent setup the same on every master. The list lives in `~/.kanban-code/sync.json`; the copy with the newest `updatedAt` wins, so entries edited on the Mac reach the box. Each master only writes its own disk: it scans its entries every 5 seconds, tells its connected peers when something changed (a `changed` push of `sync` on the control connection; `POST /v1/sync/changed` stays for older builds), and pulls `GET /v1/sync/state` from each connected peer every minute or when poked.
 
 - `git` entries: cloned where missing (the origin URL comes from the entry or from a peer that has a clone), fetched and fast-forwarded every two minutes and when a peer says it pushed, local commits pushed. A clone that diverged from its upstream, or whose local changes block a fast-forward, is reported in Settings and left alone.
 - `mirror` entries (files or folders): a manifest per entry (`~/.kanban-code/sync/manifests/`) keeps each file's hash, mtime and origin machine. The newest version of each file wins; a deletion is a version too, so it travels. The hash is taken with the home folder replaced by a marker, so the Mac and Linux copies of one file hash the same and nothing bounces. Text files and symlink targets are rewritten to the local home (`/Users/rchaves` and `/root`). A path the two machines never agreed on is never deleted by a peer, and when a peer's newer version replaces it the local copy stays as `<name>.sync-prev` (once). Exclude patterns per entry: a name (`*.log`), a folder (`.trash/`) or a path in the entry.

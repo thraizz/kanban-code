@@ -157,12 +157,11 @@ private final class LatePeerLinksServer: PeerLinksServing, @unchecked Sendable {
 
     private var inner: BoardPeerLinksServer { BoardPeerLinksServer(store: store, peerSync: peerSync) }
 
-    func linksPage(since: Int?, epoch: String?, machine: String?) async -> LinksPage {
-        await inner.linksPage(since: since, epoch: epoch, machine: machine)
+    func linksPage(since: Int?, epoch: String?) async -> LinksPage {
+        await inner.linksPage(since: since, epoch: epoch)
     }
     func peerLinksChanged(machineId: String?) async { await inner.peerLinksChanged(machineId: machineId) }
     func peersOverview() async -> PeersOverview { await inner.peersOverview() }
-    func peerReached(machineId: String, host: String) async { await inner.peerReached(machineId: machineId, host: host) }
     func servePeerControl(_ socket: PeerControlSocket, device: RemoteDevice) async {
         await inner.servePeerControl(socket, device: device)
     }
@@ -818,46 +817,6 @@ struct MasterHandoverTests {
         #expect(box.store.state.links["card_new"]?.projectPath == "\(box.home)/Projects/widgets")
         for _ in 0..<50 where box.tmux.created.isEmpty { try await Task.sleep(for: .milliseconds(50)) }
         #expect(box.tmux.created.count == 1)
-    }
-
-    @Test("a first launch right after a start waits for the peer to fetch from here once, then hands the card over")
-    func launchOnPeerWaitsForFirstFetch() async throws {
-        let root = (NSTemporaryDirectory() as NSString).appendingPathComponent("peer-launch-wait-\(UUID().uuidString)")
-        defer { try? FileManager.default.removeItem(atPath: root) }
-        let repoA = "\(root)/mac/widgets"
-        try FileManager.default.createDirectory(atPath: repoA, withIntermediateDirectories: true)
-
-        let mac = try TestMaster(name: "mac", root: root)
-        let box = try TestMaster(name: "box", root: root)
-        try await mac.serve()
-        try await box.serve()
-        try await mac.start(peerURL: box.url, peerToken: box.tokenForPeer)
-        try await box.start(peerURL: mac.url, peerToken: mac.tokenForPeer)
-        defer { mac.server.stop(); box.server.stop() }
-        // The mac knows box, but box has not fetched from the mac yet, and
-        // the mac just started: whether box would pick a card up is not known.
-        await mac.peerSync.pullAll()
-
-        mac.store.dispatch(.createManualTask(Link(id: "card_new", name: "New work", projectPath: repoA, column: .backlog, promptBody: "do it")))
-        mac.engine.launch(cardId: "card_new", prompt: "do it now", projectPath: repoA, worktreeName: nil,
-                          runRemotely: true, machineChoice: .existing("box"))
-        #expect(mac.store.state.links["card_new"]?.ownerMachine != box.identity.id)
-        guard case .handingOver(let line) = mac.store.state.cardStarts["card_new"] else {
-            Issue.record("the card does not say what it waits for")
-            return
-        }
-        #expect(line.contains("box"))
-        // A second start while it waits hands nothing over twice.
-        mac.engine.launch(cardId: "card_new", prompt: "do it now", projectPath: repoA, worktreeName: nil,
-                          runRemotely: true, machineChoice: .existing("box"))
-        #expect(mac.store.state.links["card_new"]?.ownerMachine != box.identity.id)
-
-        await box.peerSync.pullAll()
-        for _ in 0..<40 where mac.store.state.links["card_new"]?.ownerMachine != box.identity.id {
-            try await Task.sleep(for: .milliseconds(50))
-        }
-        #expect(mac.store.state.links["card_new"]?.ownerMachine == box.identity.id)
-        #expect(mac.store.state.cardStarts["card_new"] == nil)
     }
 
     @Test("a first launch on a peer hands the prompt's images to the peer")
@@ -1541,7 +1500,7 @@ struct PeerControlConnectionTests {
     /// the first pull, pokes and pushes pull.
     private func run(_ master: TestMaster) -> Task<Void, Never> {
         let sync = master.peerSync!
-        return Task.detached { await sync.run(interval: .seconds(60), offlineInterval: .seconds(60), connectedInterval: .seconds(60)) }
+        return Task.detached { await sync.run(safetyPull: .seconds(60)) }
     }
 
     private func root(_ name: String) -> String {
@@ -1633,6 +1592,10 @@ struct PeerControlConnectionTests {
         box.server.stop()
         let reason = mac.store.state.peerStatuses["peer_box"]?.controlError ?? ""
         #expect(reason.contains("box is stopping"), "\(reason)")
+        // Not pulled without its connection: its last pull no longer counts
+        // (the pull request poller is picked from the peers online).
+        #expect(mac.store.state.peerStatuses["peer_box"]?.online == false)
+        #expect(MasterRoles.prPollingLeader(local: mac.identity, peers: Array(mac.store.state.peerStatuses.values)) == mac.identity.id)
     }
 
     @Test("when both masters dial at once, the connection the lower machine id dialed is the one left")
@@ -1895,21 +1858,20 @@ private final class ByteCount: @unchecked Sendable {
     var value: Int { lock.withLock { total } }
 }
 
-/// The Mac and the box, the Mac dialing; the box's entry for the Mac names
-/// a dead port. `peerToken` and `terminalToken` are what the Mac issued to
-/// the box.
+/// The Mac and the box, the Mac dialing; the box's entry for the Mac has no
+/// address at all. `peerToken` and `terminalToken` are what the Mac issued
+/// to the box, `boxToken` what the box issued to the Mac.
 private struct StreamPair {
     let mac: TestMaster
     let box: TestMaster
     let peerToken: String
     let terminalToken: String
+    let boxToken: String
 }
 
 @Suite("Peer reverse streams", .serialized)
 @MainActor
 struct PeerReverseStreamTests {
-    static let dead = "http://127.0.0.1:1"
-
     /// Pings slow enough that a 50 MB copy in a debug build never starves
     /// the connection; a stream not answered fails after 3 s.
     static let options = PeerControl.Options(
@@ -1920,7 +1882,8 @@ struct PeerReverseStreamTests {
         (NSTemporaryDirectory() as NSString).appendingPathComponent("\(name)-\(UUID().uuidString)")
     }
 
-    private func pair(_ root: String, vault: VaultService? = nil, scrubber: SecretScrubber? = nil) async throws -> StreamPair {
+    private func pair(_ root: String, vault: VaultService? = nil, scrubber: SecretScrubber? = nil,
+                      options: PeerControl.Options = PeerReverseStreamTests.options) async throws -> StreamPair {
         let mac = try TestMaster(name: "mac", root: root)
         let box = try TestMaster(name: "box", root: root)
         try await mac.serve(control: true, vault: vault, scrubber: scrubber)
@@ -1929,11 +1892,11 @@ struct PeerReverseStreamTests {
         let peerToken = try mac.devices.add(name: "box", scope: .peer).token
         let terminalToken = try mac.devices.add(name: "box terminals", scope: .terminal).token
         try await mac.start(peers: [PeerConfig(id: "peer_box", name: "box", url: box.url, token: boxToken)],
-                            control: Self.options)
-        try await box.start(peers: [PeerConfig(id: "peer_mac", name: "mac", url: Self.dead, token: peerToken,
+                            control: options)
+        try await box.start(peers: [PeerConfig(id: "peer_mac", name: "mac", addressHints: [], token: peerToken,
                                                terminalToken: terminalToken)],
-                            control: Self.options)
-        return StreamPair(mac: mac, box: box, peerToken: peerToken, terminalToken: terminalToken)
+                            control: options)
+        return StreamPair(mac: mac, box: box, peerToken: peerToken, terminalToken: terminalToken, boxToken: boxToken)
     }
 
     /// Runs both syncs, with the plain pull timer out of the way, until the
@@ -1941,7 +1904,7 @@ struct PeerReverseStreamTests {
     private func connect(_ pair: StreamPair) async -> [Task<Void, Never>] {
         let syncs = [pair.mac.peerSync!, pair.box.peerSync!]
         let tasks = syncs.map { sync in
-            Task.detached { await sync.run(interval: .seconds(60), offlineInterval: .seconds(60), connectedInterval: .seconds(60)) }
+            Task.detached { await sync.run(safetyPull: .seconds(60)) }
         }
         #expect(await eventually {
             pair.box.store.state.peerStatuses["peer_mac"]?.connectedVia == .accepted
@@ -1955,7 +1918,7 @@ struct PeerReverseStreamTests {
         return try #require(URL(string: "http://127.0.0.1:\(port)"))
     }
 
-    @Test("with its address for the Mac dead, the box gets the Mac's cards through the Mac's connection")
+    @Test("with no address for the Mac, the box gets the Mac's cards through the Mac's connection")
     func links() async throws {
         let dir = root("streams-links")
         defer { try? FileManager.default.removeItem(atPath: dir) }
@@ -1978,10 +1941,14 @@ struct PeerReverseStreamTests {
         })
         let status = try #require(p.box.store.state.peerStatuses["peer_mac"])
         #expect(p.box.engine.isPeerOnline(p.mac.identity.id))
-        // What the box shows as the Mac's address is a real one, never the forward port.
-        #expect(status.url == Self.dead)
+        // What the box shows as the Mac's address is a real one, never the
+        // forward port: here none, as the Mac dialed from loopback.
+        #expect(status.url == nil)
+        #expect(p.box.peerSync.endpoints.endpoint(forPeer: "peer_mac")?.address == nil)
         let overview = await BoardPeerLinksServer(store: p.box.store, peerSync: p.box.peerSync).peersOverview()
-        #expect(overview.peers.first?.url == Self.dead)
+        #expect(overview.peers.first?.url == "")
+        // Nothing the box learned about the Mac is an address.
+        #expect(await p.box.peerSync.configuredPeers().first?.addressHints == [])
         // The box's requests reach the Mac from the tunnel: nothing about it is an address.
         let hints = await p.mac.peerSync.configuredPeers().flatMap(\.addressHints)
         #expect(!hints.contains { $0.contains("tunnel") })
@@ -2279,8 +2246,8 @@ struct PeerReverseStreamTests {
         await p.mac.peerSync.setPeers([off])
         #expect(await eventually { p.box.store.state.peerStatuses["peer_mac"]?.connected == false })
         #expect(await p.box.peerSync.control.links().isEmpty)
-        // Calls fall back to the address on file, which is dead.
-        #expect(p.box.peerSync.endpoints.baseURL(forPeer: "peer_mac")?.absoluteString == Self.dead)
+        // Without its connection the Mac has no address here.
+        #expect(p.box.peerSync.endpoints.baseURL(forPeer: "peer_mac") == nil)
         #expect(!p.box.store.state.peerStatuses["peer_mac"]!.reachable)
         await #expect(throws: (any Error).self) {
             _ = try await httpStatus("GET", forward.appendingPathComponent("v1/me"), token: p.peerToken)
@@ -2318,7 +2285,7 @@ struct PeerOfferTests {
         try await box.start(peers: [PeerConfig(id: "peer_mac", name: "mac", url: mac.url, token: mac.tokenForPeer)],
                             control: Self.fast)
         let tasks = [mac.peerSync!, box.peerSync!].map { sync in
-            Task.detached { await sync.run(interval: .seconds(60), offlineInterval: .seconds(60), connectedInterval: .seconds(60)) }
+            Task.detached { await sync.run(safetyPull: .seconds(60)) }
         }
         #expect(await eventually {
             mac.store.state.peerStatuses["peer_box"]?.connected == true
@@ -2519,5 +2486,235 @@ struct PeerOfferTests {
             #expect(await mac.peerSync.control.links().isEmpty)
         }
         #expect(mac.store.state.peerStatuses["peer_box"]?.connected == false)
+    }
+}
+
+/// Addresses that change while a test runs, as a laptop's do.
+private final class Addresses: @unchecked Sendable {
+    private let lock = NSLock()
+    private var current: [String]
+    init(_ addresses: [String]) { current = addresses }
+    var value: [String] {
+        get { lock.withLock { current } }
+        set { lock.withLock { current = newValue } }
+    }
+}
+
+@Suite("Pairing on one side, and a Mac that changes networks", .serialized)
+@MainActor
+struct PeerPairingTests {
+    /// Pings slow enough that only the address check can explain a quick
+    /// reconnect; addresses are compared every 100 ms.
+    static let options = PeerControl.Options(
+        pingInterval: .seconds(2), timeout: .seconds(10), helloTimeout: .seconds(2), dialTimeout: 2,
+        firstRetry: .milliseconds(100), maxRetry: .milliseconds(400), streamTimeout: .seconds(3),
+        addressCheck: .milliseconds(100))
+
+    private func root(_ name: String) -> String {
+        (NSTemporaryDirectory() as NSString).appendingPathComponent("\(name)-\(UUID().uuidString)")
+    }
+
+    private func run(_ masters: [TestMaster]) -> [Task<Void, Never>] {
+        masters.map { master in
+            let sync = master.peerSync!
+            return Task.detached { await sync.run(safetyPull: .seconds(60)) }
+        }
+    }
+
+    /// The box with no entry at all, the Mac with an entry for the box made
+    /// from `token` (one the box issued), saved in its settings; the Mac
+    /// issues tokens from its devices, the box saves what pairing makes.
+    private func unpaired(_ dir: String, token: (TestMaster) throws -> String) async throws -> (mac: TestMaster, box: TestMaster) {
+        let mac = try TestMaster(name: "mac", root: dir)
+        let box = try TestMaster(name: "box", root: dir)
+        try await mac.serve(control: true)
+        try await box.serve(control: true)
+        let entry = PeerConfig(id: "peer_box", name: "box", url: box.url, token: try token(box))
+        var settings = Settings()
+        settings.peers = [entry]
+        try await SettingsStore(basePath: mac.home).write(settings)
+        try await mac.start(peers: [entry], control: Self.options)
+        try await box.start(peers: [], control: Self.options)
+        let issuer = PeerTokenIssuer(devices: mac.devices, settings: SettingsStore(basePath: mac.home))
+        mac.peerSync.control.setTokenIssuer { peer, machine in await issuer.issue(for: peer, machine: machine) }
+        let boxHome = box.home
+        await box.peerSync.onEntryCreated { entry in
+            _ = try? await SettingsStore(basePath: boxHome).savePairedPeer(entry)
+        }
+        return (mac, box)
+    }
+
+    @Test("a box with no entry for the Mac gets one on the Mac's first connection: its machine, a peer token, no address")
+    func pairsOnOneSide() async throws {
+        let dir = root("pair-one-side")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        // On the box: `kanban-code-server pair mac --scope peer`; on the Mac:
+        // the box's address and that token. Nothing else, on either side.
+        let (mac, box) = try await unpaired(dir) { try $0.devices.add(name: "mac", scope: .peer).token }
+        var tasks = run([mac, box])
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+
+        #expect(await eventually {
+            box.store.state.peerStatuses.values.first?.connectedVia == .accepted
+                && mac.store.state.peerStatuses["peer_box"]?.connectedVia == .dialed
+        })
+        let entry = try #require(await box.peerSync.configuredPeers().first)
+        #expect(entry.machineId == mac.identity.id)
+        #expect(entry.name == "mac")
+        #expect(entry.addressHints.isEmpty)
+        let device = try #require(mac.devices.authenticate(token: entry.token))
+        #expect(device.scope == .peer)
+        #expect(device.name == "box (peer master)")
+        #expect(await eventually { (try? await SettingsStore(basePath: box.home).read().peers) == [entry] })
+        #expect(try await SettingsStore(basePath: mac.home).read().peers.first?.issuedDeviceId == device.id)
+
+        // Cards go both ways; the box calls the Mac through its connection.
+        mac.store.dispatch(.createManualTask(Link(id: "card_mac", name: "On the Mac", projectPath: "/tmp/p", column: .backlog)))
+        await mac.peerSync.notifyPeers()
+        #expect(await eventually { box.store.state.links["card_mac"] != nil })
+        box.store.dispatch(.createManualTask(Link(id: "card_box", name: "On the box", projectPath: "/tmp/p", column: .backlog)))
+        await box.peerSync.notifyPeers()
+        #expect(await eventually { mac.store.state.links["card_box"] != nil })
+        #expect(box.engine.isPeerOnline(mac.identity.id))
+        #expect(box.peerSync.endpoints.baseURL(forPeer: entry.id)?.host == "127.0.0.1")
+
+        // Connecting again issues nothing.
+        let devices = mac.devices.list().count
+        tasks[0].cancel()
+        #expect(await eventually { box.store.state.peerStatuses[entry.id]?.connected == false })
+        mac.peerSync = nil
+        try await mac.start(peers: [PeerConfig(id: "peer_box", name: "box", url: box.url,
+                                               token: try #require(await SettingsStore(basePath: mac.home).read().peers.first?.token))],
+                            control: Self.options)
+        mac.peerSync.control.setTokenIssuer { peer, machine in
+            await PeerTokenIssuer(devices: mac.devices, settings: SettingsStore(basePath: mac.home)).issue(for: peer, machine: machine)
+        }
+        tasks[0] = run([mac])[0]
+        #expect(await eventually { box.store.state.peerStatuses[entry.id]?.connected == true })
+        #expect(mac.devices.list().count == devices)
+
+        // The box lost its entry: it asks again, and the token issued before
+        // is revoked.
+        try await SettingsStore(basePath: box.home).write(Settings())
+        await box.peerSync.setPeers([])
+        #expect(await eventually {
+            await box.peerSync.configuredPeers().first.map { $0.token != entry.token } == true
+                && box.store.state.peerStatuses.values.contains { $0.connected }
+        })
+        let again = try #require(await box.peerSync.configuredPeers().first)
+        #expect(again.machineId == mac.identity.id)
+        #expect(!mac.devices.contains(id: device.id))
+        #expect(mac.devices.authenticate(token: again.token)?.scope == .peer)
+        #expect(mac.devices.list().count == devices)
+    }
+
+    @Test("a dialer with no entry on the box pairs only with a peer token, and only with a master that can issue one")
+    func pairsOnlyWithAPeerToken() async throws {
+        let dir = root("pair-full-token")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        // A full token (a setup from before the peer scope) opens a control
+        // connection to an existing entry, but makes none.
+        let (mac, box) = try await unpaired(dir) { $0.tokenForPeer }
+        let tasks = run([mac, box])
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+        #expect(await eventually { mac.store.state.peerStatuses["peer_box"]?.controlError?.contains("has no peer entry") == true })
+        #expect(await box.peerSync.configuredPeers().isEmpty)
+        #expect(mac.devices.list().count == 1)
+
+        // A peer token, but the Mac cannot issue one: refused with the reason.
+        let other = root("pair-no-issuer")
+        defer { try? FileManager.default.removeItem(atPath: other) }
+        let (mac2, box2) = try await unpaired(other) { try $0.devices.add(name: "mac", scope: .peer).token }
+        mac2.peerSync.control.setTokenIssuer(nil)
+        let tasks2 = run([mac2, box2])
+        defer { tasks2.forEach { $0.cancel() }; mac2.server.stop(); box2.server.stop() }
+        #expect(await eventually {
+            mac2.store.state.peerStatuses["peer_box"]?.controlError?.contains("cannot issue it a token") == true
+        })
+        #expect(await box2.peerSync.configuredPeers().isEmpty)
+        #expect(mac2.store.state.peerStatuses["peer_box"]?.connected != true)
+    }
+
+    @Test("a Mac whose address went away redials at once, well before the ping timeout, and the box keeps its forward port")
+    func networkChange() async throws {
+        let dir = root("pair-network")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let mac = try TestMaster(name: "mac", root: dir)
+        let box = try TestMaster(name: "box", root: dir)
+        try await mac.serve(control: true)
+        try await box.serve(control: true)
+        let boxToken = try box.devices.add(name: "mac", scope: .peer).token
+        let peerToken = try mac.devices.add(name: "box", scope: .peer).token
+        try await mac.start(peers: [PeerConfig(id: "peer_box", name: "box", url: box.url, token: boxToken)], control: Self.options)
+        try await box.start(peers: [PeerConfig(id: "peer_mac", name: "mac", addressHints: [], token: peerToken)], control: Self.options)
+        let addresses = Addresses(["192.168.178.202"])
+        mac.peerSync.control.setLocalAddressesForTesting { addresses.value }
+        let tasks = run([mac, box])
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+        #expect(await eventually { box.store.state.peerStatuses["peer_mac"]?.connectedVia == .accepted })
+        let before = try #require(await box.peerSync.control.links().first)
+
+        // The Mac leaves the dock's network for the Wi-Fi.
+        let clock = ContinuousClock()
+        let changed = clock.now
+        addresses.value = ["192.168.178.59"]
+        #expect(await eventually(within: .seconds(5)) {
+            await box.peerSync.control.links().first.map { $0.since > changed } == true
+        })
+        let took = clock.now - changed
+        #expect(took < .seconds(2), "took \(took)")
+        let after = try #require(await box.peerSync.control.links().first)
+        #expect(after.forwardPort == before.forwardPort)
+
+        // Calls go through the new connection.
+        mac.store.dispatch(.createManualTask(Link(id: "card_after", name: "After", projectPath: "/tmp/p", column: .backlog)))
+        await mac.peerSync.notifyPeers()
+        #expect(await eventually { box.store.state.links["card_after"] != nil })
+
+        // An address added (a VPN coming up) changes nothing.
+        let stable = try #require(await box.peerSync.control.links().first)
+        addresses.value = ["192.168.178.59", "10.8.0.2"]
+        try await Task.sleep(for: .milliseconds(500))
+        #expect(await box.peerSync.control.links().first?.since == stable.since)
+    }
+
+    @Test("a new connection from the same Mac takes the place of one the box still holds, at once, with the same forward port")
+    func newConnectionReplacesADeadOne() async throws {
+        let dir = root("pair-replace")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let mac = try TestMaster(name: "mac", root: dir)
+        let box = try TestMaster(name: "box", root: dir)
+        try await mac.serve(control: true)
+        try await box.serve(control: true)
+        let boxToken = try box.devices.add(name: "mac", scope: .peer).token
+        let peerToken = try mac.devices.add(name: "box", scope: .peer).token
+        try await mac.start(peers: [PeerConfig(id: "peer_box", name: "box", url: box.url, token: boxToken)], control: Self.options)
+        try await box.start(peers: [PeerConfig(id: "peer_mac", name: "mac", addressHints: [], token: peerToken)], control: Self.options)
+        let tasks = run([mac, box])
+        defer { tasks.forEach { $0.cancel() }; mac.server.stop(); box.server.stop() }
+        #expect(await eventually { box.store.state.peerStatuses["peer_mac"]?.connectedVia == .accepted })
+        let before = try #require(await box.peerSync.control.links().first)
+
+        // The Mac's old connection is gone without a word (it left that
+        // network), and the Mac dials again from its new address.
+        mac.peerSync.control.goSilentForTesting()
+        let clock = ContinuousClock()
+        let start = clock.now
+        let socket = PeerControlSocket(try await RemoteWebSocketClient.connect(
+            baseURL: try #require(URL(string: box.url)), path: PeerControl.path, token: boxToken, timeout: 2))
+        defer { socket.close(reason: "done") }
+        try await socket.send(PeerControlMessage(hello: PeerHello(
+            machine: mac.identity, version: "test", addresses: [], port: nil, expect: box.identity.id)))
+        var answer: PeerHello?
+        while answer == nil, let message = try await socket.receive() { answer = message.hello }
+        #expect(answer?.machine.id == box.identity.id)
+        #expect(answer?.needsToken == nil)
+        #expect(await eventually(within: .seconds(2)) {
+            await box.peerSync.control.links().first.map { $0.since > before.since } == true
+        })
+        #expect(clock.now - start < .seconds(2), "took \(clock.now - start)")
+        #expect(await box.peerSync.control.links().count == 1)
+        #expect(await box.peerSync.control.links().first?.forwardPort == before.forwardPort)
+        #expect(box.store.state.peerStatuses["peer_mac"]?.connected == true)
     }
 }

@@ -112,12 +112,14 @@ extension AppState {
             guard let id else { return "another master" }
             return peerStatuses.values.first { $0.machine?.id == id }?.machine?.name ?? id
         }
-        if !isOwnedLocally(link), let owner = link.ownerMachine, let problem = peersNotFetching[owner] {
-            return "Not picked up by \(name(owner)) yet. \(problem)"
-        }
         var text = isOwnedLocally(link)
             ? "Moving here from \(name(link.ownerRev?.machine))"
             : "Moving to \(name(link.ownerMachine))"
+        // It took the card; it picks it up once it is connected again.
+        if !isOwnedLocally(link), let owner = link.ownerMachine,
+           let status = peerStatuses.values.first(where: { $0.machine?.id == owner }), !status.reachable {
+            return text + ", once it is connected again"
+        }
         if case .moving(let progress) = cardStarts[cardId], progress.totalBytes > 0 {
             text += ", copying the transcript (\(progress.label))"
         }

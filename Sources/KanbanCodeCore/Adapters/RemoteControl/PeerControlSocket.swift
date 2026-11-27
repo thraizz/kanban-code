@@ -9,7 +9,9 @@ import Synchronization
 /// ignored, so a later version can add messages.
 public struct PeerControlMessage: Codable, Sendable, Equatable {
     /// Who this side is and where it listens. The dialer sends it first;
-    /// the listener answers with its own once it took the connection.
+    /// the listener answers with its own once it took the connection. A
+    /// dialer whose Remote Control server started after it dialed sends it
+    /// again, so the listener learns its port.
     public var hello: PeerHello?
     /// Something on the sending master changed: the receiver pulls it now.
     public var changed: PeerChange?
@@ -23,15 +25,19 @@ public struct PeerControlMessage: Codable, Sendable, Equatable {
     /// The dialer cannot serve stream `id`: the listener drops the local
     /// connection at once instead of when the wait for it runs out.
     public var refused: PeerStreamRefusal?
+    /// The dialer's answer to a hello with `needsToken`: a peer-scope token
+    /// it issued for the listener ("Pairing on one side").
+    public var token: String?
 
     public init(hello: PeerHello? = nil, changed: PeerChange? = nil, ping: Int? = nil, pong: Int? = nil,
-                open: Int? = nil, refused: PeerStreamRefusal? = nil) {
+                open: Int? = nil, refused: PeerStreamRefusal? = nil, token: String? = nil) {
         self.hello = hello
         self.changed = changed
         self.ping = ping
         self.pong = pong
         self.open = open
         self.refused = refused
+        self.token = token
     }
 }
 
@@ -55,13 +61,20 @@ public struct PeerHello: Codable, Sendable, Equatable {
     /// The dialer's: the machine id its entry for the listener is saved
     /// with. A listener that is another machine refuses the connection.
     public var expect: String?
+    /// The listener's: it has no entry for the dialer. The dialer answers
+    /// with a `token` it issued for the listener, and the listener saves an
+    /// entry for the dialer with it (`docs/peer-connections.md`, "Pairing on
+    /// one side").
+    public var needsToken: Bool?
 
-    public init(machine: MachineIdentity, version: String, addresses: [String], port: Int?, expect: String? = nil) {
+    public init(machine: MachineIdentity, version: String, addresses: [String], port: Int?, expect: String? = nil,
+                needsToken: Bool? = nil) {
         self.machine = machine
         self.version = version
         self.addresses = addresses
         self.port = port
         self.expect = expect
+        self.needsToken = needsToken
     }
 
     /// The base URLs `addresses` and `port` make, as address hints.
@@ -124,6 +137,12 @@ public final class PeerControlSocket: Sendable {
     /// Closes with `reason`, which the other side logs and shows.
     func close(reason: String, code: UInt16 = 1000) {
         ws.close(code: code, reason: reason)
+    }
+
+    /// Drops the connection without waiting for the close frame to leave:
+    /// for one whose network is gone, where that send may never finish.
+    func abort() {
+        ws.connection.cancel()
     }
 
     /// The reason the other side gave when it closed, if it did.
