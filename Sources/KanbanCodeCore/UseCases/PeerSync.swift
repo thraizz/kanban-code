@@ -110,7 +110,7 @@ public actor PeerSync {
     private var repoSlugs: [String: [String: String]] = [:]
     private var pokedAll = false
     /// Wakes the pull loop for a poke instead of at its next check.
-    private var wake: AsyncStream<Void>.Continuation?
+    private let wake = PokeSignal()
     /// Failed pulls since each peer last answered: an online peer turns
     /// offline only once they span `offlineGrace`.
     private var reachability: [String: RemoteReachability] = [:]
@@ -178,7 +178,7 @@ public actor PeerSync {
         for id in controlStates.keys where !ids.contains(id) { controlStates[id] = nil }
         peers = newPeers
         pokedAll = true
-        wake?.yield()
+        wake.poke()
         await control.peersChanged(newPeers)
     }
 
@@ -286,10 +286,10 @@ public actor PeerSync {
     public func poke(machineId: String? = nil) {
         if let machineId, let peer = peer(forMachine: machineId) {
             pokedPeers.insert(peer.id)
-            wake?.yield()
+            wake.poke()
         } else {
             pokedAll = true
-            wake?.yield()
+            wake.poke()
         }
     }
 
@@ -335,7 +335,7 @@ public actor PeerSync {
             endpoints.noteMachine(machine.id, forPeer: peerId)
             // What changed while it was not connected was not pushed.
             pokedPeers.insert(peerId)
-            wake?.yield()
+            wake.poke()
             await reportControl(peerId)
             await changeHandler?(machine.id, PeerChange(what: .sync))
             await changeHandler?(machine.id, PeerChange(what: .attention))
@@ -357,7 +357,7 @@ public actor PeerSync {
         case let .changed(peerId, machineId, change):
             if change.what == .links {
                 pokedPeers.insert(peerId)
-                wake?.yield()
+                wake.poke()
             } else {
                 await changeHandler?(machineId, change)
             }
@@ -400,8 +400,6 @@ public actor PeerSync {
     }
 
     private func pullLoop(safetyPull: Duration) async {
-        let (wakes, wake) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        self.wake = wake
         var nextPull: [String: ContinuousClock.Instant] = [:]
         let clock = ContinuousClock()
         while !Task.isCancelled {
@@ -427,15 +425,7 @@ public actor PeerSync {
                     }
                 }
             }
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { try? await Task.sleep(for: .milliseconds(250)) }
-                group.addTask {
-                    var next = wakes.makeAsyncIterator()
-                    _ = await next.next()
-                }
-                await group.next()
-                group.cancelAll()
-            }
+            await wake.wait(timeout: .milliseconds(250))
         }
     }
 

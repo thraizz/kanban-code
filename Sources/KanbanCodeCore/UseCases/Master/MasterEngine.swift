@@ -46,7 +46,7 @@ public final class MasterEngine {
     public var peerSync: PeerSync?
     /// Wakes the attention peer sync before its next round: a peer said its
     /// requests changed.
-    var attentionPeerPoke: AsyncStream<Void>.Continuation?
+    let attentionPeerPoke = PokeSignal()
 
     /// Delivers attention requests to the Mac and the phone; nil until the
     /// app or the server sets it up.

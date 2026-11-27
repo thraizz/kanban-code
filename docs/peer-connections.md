@@ -436,6 +436,15 @@ Where the code differs from the plan above, and why:
 - **Settings › Peers** shows per entry who dialed and where, or why it is
   not connected ("waits for it to dial this Mac" for an entry without an
   address), the addresses this Mac dials, and the machine id.
+- **Found while checking it live: two loops spun since step 2.** The pull
+  loop and the attention mirror waited for their next round by racing a
+  sleep against a new iterator of one `AsyncStream` in a task group.
+  Cancelling a task that awaits an `AsyncStream` iterator ends the stream,
+  so after the first timeout every wait returned at once: the Mac and
+  osaka called each other's `GET /v1/attention` about 240 times a second
+  (2.3 million times on 2026-11-27, 14,000 the day before), the app at
+  2.5 cores and the server at 4. Both wait on `PokeSignal` now, a poke or a
+  timeout with no stream to cancel.
 - **Tests changed.** The step 3 tests run with the box's entry for the Mac
   holding no address at all (they had a dead port); the box then shows no
   address for the Mac, as the Mac dials from loopback. Deleted with what

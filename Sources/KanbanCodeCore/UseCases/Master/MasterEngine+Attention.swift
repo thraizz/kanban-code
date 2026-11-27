@@ -385,8 +385,6 @@ extension MasterEngine {
     /// masters, and tells them where the Mac user is.
     public func runAttentionPeerSync(interval: Duration = .seconds(4), presence: (@Sendable () async -> MacPresence?)? = nil) async {
         var lastPresenceSent = Date.distantPast
-        let (pokes, poke) = AsyncStream<Void>.makeStream(bufferingPolicy: .bufferingNewest(1))
-        attentionPeerPoke = poke
         while !Task.isCancelled {
             let peers = store.state.peerStatuses.values.compactMap { status -> String? in
                 guard status.reachable, let id = status.machine?.id, id != store.state.localMachineId else { return nil }
@@ -402,21 +400,13 @@ extension MasterEngine {
                 mergePeerAttention(machineId: machineId, remote: remote)
             }
             // The next round, or sooner when a peer says its requests changed.
-            await withTaskGroup(of: Void.self) { group in
-                group.addTask { try? await Task.sleep(for: interval) }
-                group.addTask {
-                    var next = pokes.makeAsyncIterator()
-                    _ = await next.next()
-                }
-                await group.next()
-                group.cancelAll()
-            }
+            await attentionPeerPoke.wait(timeout: interval)
         }
     }
 
     /// A peer said its open attention requests changed: mirror them now.
     public func pokeAttentionPeerSync() {
-        attentionPeerPoke?.yield()
+        attentionPeerPoke.poke()
     }
 
     /// The open attention requests raised on this master, to tell the peers
