@@ -139,7 +139,7 @@ public actor SecretScrubber {
     public let kanbanHome: String
     public let machine: String
     let index: ScrubIndexStore
-    private let peers: @Sendable () async -> [PeerConfig]
+    private let peers: @Sendable () async -> [PeerEndpoint]
     private var running = false
     private var progress: String?
     private var lastScheduledDay: String?
@@ -151,7 +151,7 @@ public actor SecretScrubber {
     static let freeDiskFloor = 1 << 30
 
     public init(vault: VaultService, home: String = NSHomeDirectory(), kanbanHome: String? = nil, machine: String,
-                peers: @escaping @Sendable () async -> [PeerConfig] = { [] }) {
+                peers: @escaping @Sendable () async -> [PeerEndpoint] = { [] }) {
         self.vault = vault
         self.home = home
         self.kanbanHome = kanbanHome ?? vault.kanbanHome
@@ -229,8 +229,8 @@ public actor SecretScrubber {
         }
     }
 
-    private static func call(_ peer: PeerConfig, _ method: String, _ path: String, body: Data? = nil) async throws -> Data {
-        guard let url = URL(string: peer.url.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + path) else {
+    private static func call(_ peer: PeerEndpoint, _ method: String, _ path: String, body: Data? = nil) async throws -> Data {
+        guard let url = peer.apiURL(path) else {
             throw URLError(.badURL)
         }
         var request = URLRequest(url: url, timeoutInterval: 10)

@@ -370,8 +370,8 @@ private final class LoopbackTransport: SyncTransport, @unchecked Sendable {
         await engines[peer.machine.id]?.poke(machineId: machineId, what: what)
     }
 
-    func optmemRun(url: String, token: String, request: OptmemRunRequest) async throws -> OptmemRunResult {
-        guard engines[url] != nil else { throw SyncTransportError.http(502, "down") }
+    func optmemRun(peer: SyncPeer, request: OptmemRunRequest) async throws -> OptmemRunResult {
+        guard engines[peer.machine.id] != nil else { throw SyncTransportError.http(502, "down") }
         runs.append(request)
         return OptmemRunResult(status: 0, stdout: "Saved as #\(runs.count).", stderr: "")
     }
@@ -388,7 +388,7 @@ struct AgentSyncEngineTests {
         options.scanInterval = 0
         options.pullInterval = 0
         options.gitInterval = 1e9
-        let peerRef = SyncPeer(machine: peer, url: peer.id, token: "t", online: true)
+        let peerRef = SyncPeer(machine: peer, baseURL: URL(string: "http://\(peer.name):7780")!, token: "t", online: true)
         return AgentSyncEngine(home: home, kanbanHome: kanban, identity: identity,
                                peers: { [peerRef] }, transport: transport, options: options)
     }

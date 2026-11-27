@@ -559,7 +559,7 @@ public actor AgentSyncEngine {
                 if queued > 0, peer.online, homeConfigured(rootPath) {
                     let transport = self.transport
                     let result = await spool.replay { request in
-                        try await transport.optmemRun(url: peer.url, token: peer.token, request: request)
+                        try await transport.optmemRun(peer: peer, request: request)
                     }
                     if result.sent > 0 {
                         KanbanCodeLog.info("sync", "replayed \(result.sent) memo commands to \(peer.machine.name)")
@@ -595,7 +595,7 @@ public actor AgentSyncEngine {
     }
 
     private func writeHomeConfig(_ rootPath: String, entry: SyncEntry, peer: SyncPeer) {
-        let wanted = HomeConfig(machine: peer.machine.name, url: peer.url, token: peer.token,
+        let wanted = HomeConfig(machine: peer.machine.name, url: peer.baseURL.absoluteString, token: peer.token,
                                 ssh: entry.ssh.flatMap { $0.isEmpty ? nil : $0 })
         let path = Self.homeConfigPath(rootPath)
         if let data = FileManager.default.contents(atPath: path),

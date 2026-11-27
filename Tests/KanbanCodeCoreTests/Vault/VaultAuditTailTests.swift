@@ -59,7 +59,7 @@ struct VaultAuditTailTests {
         let mac = VaultStore(directory: dir + "/mac", keys: MemoryVaultKeyProvider())
         let sent = PushCounts()
         let sync = VaultAuditSync(store: box, machine: "box", peers: {
-            [PeerConfig(id: "mac", name: "Mac", url: "http://mac", token: "t", enabled: true)]
+            PeerEndpoints(peers: [PeerConfig(id: "mac", name: "Mac", url: "http://mac", token: "t", enabled: true)]).all()
         }) { request in
             if request.httpMethod == "GET" {
                 return (try JSONEncoder().encode(await mac.mirrorTail(machine: "box")), 200)

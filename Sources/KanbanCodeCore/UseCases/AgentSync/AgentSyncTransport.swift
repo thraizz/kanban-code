@@ -7,13 +7,14 @@ import KanbanCodeRemoteKit
 /// A peer master as the agent sync sees it.
 public struct SyncPeer: Sendable, Equatable {
     public var machine: MachineIdentity
-    public var url: String
+    /// Where the peer answers, from `PeerEndpoints` when the round began.
+    public var baseURL: URL
     public var token: String
     public var online: Bool
 
-    public init(machine: MachineIdentity, url: String, token: String, online: Bool) {
+    public init(machine: MachineIdentity, baseURL: URL, token: String, online: Bool) {
         self.machine = machine
-        self.url = url
+        self.baseURL = baseURL
         self.token = token
         self.online = online
     }
@@ -41,7 +42,7 @@ public protocol SyncTransport: Sendable {
     func state(peer: SyncPeer) async throws -> SyncStateResponse
     func file(peer: SyncPeer, entryId: String, path: String) async throws -> Data
     func notify(peer: SyncPeer, machineId: String, what: String) async
-    func optmemRun(url: String, token: String, request: OptmemRunRequest) async throws -> OptmemRunResult
+    func optmemRun(peer: SyncPeer, request: OptmemRunRequest) async throws -> OptmemRunResult
 }
 
 public struct HTTPSyncTransport: SyncTransport {
@@ -66,9 +67,9 @@ public struct HTTPSyncTransport: SyncTransport {
         return components.url
     }
 
-    private func send(_ base: String, _ path: String, token: String, query: [String: String] = [:],
+    private func send(_ base: URL, _ path: String, token: String, query: [String: String] = [:],
                       method: String = "GET", body: Data? = nil, timeout: TimeInterval = 20) async throws -> Data {
-        guard let url = Self.url(base, path, query) else { throw SyncTransportError.badURL(base) }
+        guard let url = Self.url(base.absoluteString, path, query) else { throw SyncTransportError.badURL(base.absoluteString) }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
@@ -85,32 +86,35 @@ public struct HTTPSyncTransport: SyncTransport {
     }
 
     public func state(peer: SyncPeer) async throws -> SyncStateResponse {
-        let data = try await send(peer.url, "/v1/sync/state", token: peer.token)
+        let data = try await send(peer.baseURL, "/v1/sync/state", token: peer.token)
         return try JSONDecoder.remote.decode(SyncStateResponse.self, from: data)
     }
 
     public func file(peer: SyncPeer, entryId: String, path: String) async throws -> Data {
-        try await send(peer.url, "/v1/sync/file", token: peer.token, query: ["entry": entryId, "path": path], timeout: 60)
+        try await send(peer.baseURL, "/v1/sync/file", token: peer.token, query: ["entry": entryId, "path": path], timeout: 60)
     }
 
     public func notify(peer: SyncPeer, machineId: String, what: String) async {
-        _ = try? await send(peer.url, "/v1/sync/changed", token: peer.token,
+        _ = try? await send(peer.baseURL, "/v1/sync/changed", token: peer.token,
                             query: ["machine": machineId, "what": what], method: "POST", timeout: 5)
     }
 
-    public func optmemRun(url: String, token: String, request: OptmemRunRequest) async throws -> OptmemRunResult {
+    public func optmemRun(peer: SyncPeer, request: OptmemRunRequest) async throws -> OptmemRunResult {
         let body = try JSONEncoder().encode(request)
-        let data = try await send(url, "/v1/optmem/run", token: token, method: "POST", body: body, timeout: 30)
+        let data = try await send(peer.baseURL, "/v1/optmem/run", token: peer.token, method: "POST", body: body, timeout: 30)
         return try JSONDecoder().decode(OptmemRunResult.self, from: data)
     }
 }
 
 extension PeerSync {
-    /// The peers that answered at least once, for the agent sync.
+    /// The peers that answered at least once and have an address, for the
+    /// agent sync.
     public func syncPeers() -> [SyncPeer] {
         configuredPeers().compactMap { peer in
-            guard peer.enabled, let status = status(of: peer.id), let machine = status.machine else { return nil }
-            return SyncPeer(machine: machine, url: peer.url, token: peer.token, online: status.online)
+            guard peer.enabled, let status = status(of: peer.id), let machine = status.machine,
+                  let endpoint = endpoints.endpoint(forPeer: peer.id)
+            else { return nil }
+            return SyncPeer(machine: machine, baseURL: endpoint.baseURL, token: endpoint.token, online: status.online)
         }
     }
 }

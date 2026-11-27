@@ -39,16 +39,16 @@ public struct VaultCardTokenQuery: Codable, Sendable, Equatable {
 public actor VaultPeerTokenVerifier {
     /// What one peer says: its card, `.some(nil)` for "not mine", nil when
     /// it could not be reached.
-    public typealias Ask = @Sendable (PeerConfig, String) async -> VaultPeerCard??
+    public typealias Ask = @Sendable (PeerEndpoint, String) async -> VaultPeerCard??
 
-    private let peers: @Sendable () async -> [PeerConfig]
+    private let peers: @Sendable () async -> [PeerEndpoint]
     private let ask: Ask
     private let now: @Sendable () -> Date
     public var positiveLifetime: TimeInterval = 60
     public var negativeLifetime: TimeInterval = 15
     private var known: [String: (card: VaultPeerCard?, until: Date)] = [:]
 
-    public init(peers: @escaping @Sendable () async -> [PeerConfig], ask: @escaping Ask = VaultPeerTokenVerifier.http,
+    public init(peers: @escaping @Sendable () async -> [PeerEndpoint], ask: @escaping Ask = VaultPeerTokenVerifier.http,
                 now: @escaping @Sendable () -> Date = { Date() }) {
         self.peers = peers
         self.ask = ask
@@ -82,7 +82,7 @@ public actor VaultPeerTokenVerifier {
 
     /// `POST /v1/vault/card-token` on the peer, with its device token.
     public static let http: Ask = { peer, hash in
-        guard let url = URL(string: peer.url.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/v1/vault/card-token") else {
+        guard let url = peer.apiURL("/v1/vault/card-token") else {
             return nil
         }
         var request = URLRequest(url: url, timeoutInterval: 4)

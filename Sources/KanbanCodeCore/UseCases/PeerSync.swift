@@ -7,20 +7,23 @@ import KanbanCodeRemoteKit
 /// Fetches a peer's cards. The live one is HTTP; tests pass their own.
 public protocol PeerLinksTransport: Sendable {
     /// `machineId` is this machine's, so the peer knows who reaches it.
-    func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage
+    func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage
     /// Tells a peer this machine's cards changed, so it pulls now instead of
     /// at its next tick. Best effort.
-    func notifyChanged(peer: PeerConfig, machineId: String) async
+    func notifyChanged(peer: PeerEndpoint, machineId: String) async
 }
 
 public enum PeerSyncError: Error, Equatable, LocalizedError {
     case badURL(String)
+    /// The peer has no address to reach it at: its name.
+    case noAddress(String)
     case http(Int, String)
     case selfPeer
 
     public var errorDescription: String? {
         switch self {
         case .badURL(let url): "bad peer URL \(url)"
+        case .noAddress(let name): "no usable address for \(name)"
         case .http(let status, let body): "HTTP \(status): \(body)"
         case .selfPeer: "this peer is the local machine"
         }
@@ -55,9 +58,9 @@ public struct HTTPPeerLinksTransport: PeerLinksTransport {
         return components.url
     }
 
-    public func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
-        guard let url = Self.linksURL(base: peer.url, since: since, epoch: epoch, machine: machineId) else {
-            throw PeerSyncError.badURL(peer.url)
+    public func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
+        guard let url = Self.linksURL(base: peer.baseURL.absoluteString, since: since, epoch: epoch, machine: machineId) else {
+            throw PeerSyncError.badURL(peer.baseURL.absoluteString)
         }
         var request = URLRequest(url: url, timeoutInterval: timeout)
         request.setValue("Bearer \(peer.token)", forHTTPHeaderField: "Authorization")
@@ -70,8 +73,8 @@ public struct HTTPPeerLinksTransport: PeerLinksTransport {
         return try JSONDecoder.remote.decode(LinksPage.self, from: data)
     }
 
-    public func notifyChanged(peer: PeerConfig, machineId: String) async {
-        guard let links = Self.linksURL(base: peer.url, since: nil, epoch: nil),
+    public func notifyChanged(peer: PeerEndpoint, machineId: String) async {
+        guard let links = Self.linksURL(base: peer.baseURL.absoluteString, since: nil, epoch: nil),
               var components = URLComponents(url: links.appendingPathComponent("changed"), resolvingAgainstBaseURL: false)
         else { return }
         components.queryItems = [URLQueryItem(name: "machine", value: machineId)]
@@ -100,7 +103,11 @@ public actor PeerSync {
     private let identity: MachineIdentity
     private let transport: any PeerLinksTransport
     private let dispatch: Dispatch
-    private var peers: [PeerConfig]
+    /// Where each peer answers. Every change of `peers` goes there.
+    public nonisolated let endpoints: PeerEndpoints
+    private var peers: [PeerConfig] {
+        didSet { endpoints.setPeers(peers) }
+    }
     private var cursors: [String: Cursor] = [:]
     private var statuses: [String: PeerStatus] = [:]
     /// When each status was last dispatched, to send `lastSeen` about once a
@@ -121,9 +128,9 @@ public actor PeerSync {
     /// When a pull last tried a peer at an address learned from its
     /// requests, by peer id and URL, so a wrong one is not tried every tick.
     private var relocationsTried: [String: Date] = [:]
-    /// Saves a peer's new address, so Settings › Peers shows it and the
-    /// next start reaches the peer at once.
-    private var addressLearned: (@Sendable (PeerConfig) async -> Void)?
+    /// Saves a peer's new address (peer id, address), so Settings › Peers
+    /// shows it and the next start reaches the peer at once.
+    private var addressLearned: (@Sendable (String, String) async -> Void)?
 
     /// A contact older than this says nothing about where the peer is now.
     static let contactWindow: TimeInterval = 120
@@ -139,6 +146,7 @@ public actor PeerSync {
     ) {
         self.identity = identity
         self.peers = peers
+        self.endpoints = PeerEndpoints(peers: peers)
         self.transport = transport
         self.offlineGrace = offlineGrace
         self.dispatch = dispatch
@@ -146,11 +154,11 @@ public actor PeerSync {
 
     // MARK: - Configuration
 
-    /// Replaces the peer list (Settings > Peers changed). A peer whose URL
-    /// changed starts over with a full pull.
+    /// Replaces the peer list (Settings > Peers changed). A peer whose
+    /// address changed starts over with a full pull.
     public func setPeers(_ newPeers: [PeerConfig]) {
         let old = Dictionary(peers.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        for peer in newPeers where old[peer.id]?.url != peer.url {
+        for peer in newPeers where old[peer.id]?.addressHints.first != peer.addressHints.first {
             cursors[peer.id] = nil
         }
         let ids = Set(newPeers.map(\.id))
@@ -174,8 +182,9 @@ public actor PeerSync {
         peers.first { statuses[$0.id]?.machine?.id == machineId }
     }
 
-    /// Sets what saves a peer's address once a pull learned a new one.
-    public func onAddressLearned(_ handler: @escaping @Sendable (PeerConfig) async -> Void) {
+    /// Sets what saves a peer's address once a pull learned a new one: it
+    /// gets the peer id and the address.
+    public func onAddressLearned(_ handler: @escaping @Sendable (_ peerId: String, _ address: String) async -> Void) {
         addressLearned = handler
     }
 
@@ -198,12 +207,14 @@ public actor PeerSync {
     public func pull(peerId: String) async -> Bool {
         guard let peer = peers.first(where: { $0.id == peerId }), peer.enabled else { return false }
         let cursor = cursors[peer.id]
+        let endpoint = endpoints.endpoint(forPeer: peer.id)
         do {
-            let page = try await transport.fetchLinks(peer: peer, since: cursor?.seq, epoch: cursor?.epoch, machineId: identity.id)
-            try await accept(page, from: peer)
+            guard let endpoint else { throw PeerSyncError.noAddress(peer.name) }
+            let page = try await transport.fetchLinks(from: endpoint, since: cursor?.seq, epoch: cursor?.epoch, machineId: identity.id)
+            try await accept(page, from: endpoint)
             return true
         } catch {
-            if (error as? PeerSyncError) != .selfPeer, await relocate(peer, cursor: cursor) {
+            if (error as? PeerSyncError) != .selfPeer, let endpoint, await relocate(endpoint, cursor: cursor) {
                 return true
             }
             var reach = reachability[peer.id] ?? RemoteReachability(grace: offlineGrace)
@@ -212,15 +223,16 @@ public actor PeerSync {
             var status = statuses[peer.id] ?? PeerStatus(peerId: peer.id)
             status.online = status.online && !reach.isOffline()
             status.lastError = error.localizedDescription
-            status.url = peer.url
+            status.url = endpoint?.baseURL.absoluteString
             await report(status)
             return false
         }
     }
 
     /// Takes in a page `peer` answered with.
-    private func accept(_ page: LinksPage, from peer: PeerConfig) async throws {
+    private func accept(_ page: LinksPage, from peer: PeerEndpoint) async throws {
         guard page.machine.id != identity.id else { throw PeerSyncError.selfPeer }
+        endpoints.noteMachine(page.machine.id, forPeer: peer.id)
         if !page.links.isEmpty {
             await dispatch(.peerLinksMerged(peer: page.machine.id, links: page.links))
         }
@@ -230,7 +242,8 @@ public actor PeerSync {
         }
         cursors[peer.id] = Cursor(epoch: page.epoch, seq: page.seq)
         reachability[peer.id] = nil
-        await report(PeerStatus(peerId: peer.id, machine: page.machine, online: true, lastSeen: .now, url: peer.url))
+        await report(PeerStatus(peerId: peer.id, machine: page.machine, online: true, lastSeen: .now,
+                                url: peer.baseURL.absoluteString))
     }
 
     /// Tries `peer`, which did not answer at its address, at the one it
@@ -238,8 +251,9 @@ public actor PeerSync {
     /// answered as before, else one that reached this master and is no
     /// other peer. It moves there only when it answers there, with its
     /// token, as that machine. Whether it answered there.
-    private func relocate(_ peer: PeerConfig, cursor: Cursor?) async -> Bool {
+    private func relocate(_ peer: PeerEndpoint, cursor: Cursor?) async -> Bool {
         let now = Date()
+        let current = peer.baseURL.absoluteString
         let known = statuses[peer.id]?.machine?.id
         let others = Set(peers.filter { $0.id != peer.id }.compactMap { statuses[$0.id]?.machine?.id })
         let candidates = contacts
@@ -248,25 +262,27 @@ public actor PeerSync {
                     && (known.map { $0 == id } ?? !others.contains(id))
             }
             .sorted { $0.value.at > $1.value.at }
-        let oldHost = PeerAddress.host(of: peer.url)
+        let oldHost = PeerAddress.host(of: current)
         for (machineId, contact) in candidates where contact.host != oldHost {
-            guard let url = PeerAddress.replacingHost(of: peer.url, with: contact.host) else { continue }
+            guard let url = PeerAddress.replacingHost(of: current, with: contact.host),
+                  let base = URL(string: url)
+            else { continue }
             let key = peer.id + " " + url
             if let last = relocationsTried[key], now.timeIntervalSince(last) < Self.relocationRetry { continue }
             relocationsTried[key] = now
-            var moved = peer
-            moved.url = url
+            let moved = PeerEndpoint(peer: peer.peer, baseURL: base)
             guard let page = try? await transport.fetchLinks(
-                      peer: moved, since: cursor?.seq, epoch: cursor?.epoch, machineId: identity.id),
+                      from: moved, since: cursor?.seq, epoch: cursor?.epoch, machineId: identity.id),
                   page.machine.id == machineId,
                   // Settings › Peers may have changed it meanwhile.
-                  let index = peers.firstIndex(where: { $0.id == peer.id }), peers[index].url == peer.url
+                  let index = peers.firstIndex(where: { $0.id == peer.id }),
+                  endpoints.baseURL(forPeer: peer.id) == peer.baseURL
             else { continue }
-            peers[index].url = url
+            peers[index].promoteHint(url)
             relocationsTried[key] = nil
-            KanbanCodeLog.info("sync", "\(peer.name) moved from \(peer.url) to \(url): it reached this machine from \(contact.host)")
+            KanbanCodeLog.info("sync", "\(peer.name) moved from \(current) to \(url): it reached this machine from \(contact.host)")
             try? await accept(page, from: moved)
-            await addressLearned?(moved)
+            await addressLearned?(peer.id, url)
             return true
         }
         return false
@@ -295,6 +311,7 @@ public actor PeerSync {
     /// Tells every online peer this machine's cards changed.
     public func notifyPeers() async {
         let online = peers.filter { $0.enabled && statuses[$0.id]?.online == true }
+            .compactMap { endpoints.endpoint(forPeer: $0.id) }
         let machineId = identity.id
         let transport = transport
         await withTaskGroup(of: Void.self) { group in

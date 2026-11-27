@@ -89,7 +89,7 @@ struct PeersSettingsSection: View {
     }
 
     private func detail(_ peer: PeerConfig, _ status: PeerStatus?) -> String {
-        var parts = [peer.url]
+        var parts = [peer.addressHints.first ?? "no address"]
         if !peer.enabled {
             parts.append("off")
         } else if status?.online == true {

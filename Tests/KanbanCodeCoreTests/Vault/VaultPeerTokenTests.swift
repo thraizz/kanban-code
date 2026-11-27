@@ -27,7 +27,7 @@ private let mac = PeerConfig(name: "Studio", url: "http://100.0.0.1:7780", token
 private let studioCard = VaultPeerCard(cardId: "card_mac", title: "Deploy the docs site", machine: "Studio")
 
 private func verifier(_ script: PeerScript, peers: [PeerConfig] = [mac]) -> VaultPeerTokenVerifier {
-    VaultPeerTokenVerifier(peers: { peers }, ask: { _, hash in script.answer(hash) }, now: { script.now })
+    VaultPeerTokenVerifier(peers: { PeerEndpoints(peers: peers).all() }, ask: { _, hash in script.answer(hash) }, now: { script.now })
 }
 
 private func tempDir() -> String {

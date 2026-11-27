@@ -134,7 +134,7 @@ final class ServerMaster {
             },
             cardFamily: { [weak store] id in await MainActor.run { store?.vaultCardFamily(id) ?? [] } },
             cardSessions: { [weak store] in await MainActor.run { store?.vaultCardSessions() ?? [:] } },
-            peers: { [peerSync] in await peerSync.configuredPeers() }
+            peers: { [peerSync] in peerSync.endpoints.all() }
         )
         engine.cardSessionEnvironment = { [vault] cardId in await vault.sessionEnvironment(cardId: cardId) }
         engine.cardTokenOwner = { [vault] token in await vault.cardTokens.issuedCard(of: token) }
@@ -178,8 +178,8 @@ final class ServerMaster {
         // A peer that moved to another address is saved there, so the
         // settings and the next start know it.
         let home = self.home
-        await peerSync.onAddressLearned { peer in
-            _ = try? await SettingsStore(basePath: home).setPeerURL(peerId: peer.id, url: peer.url)
+        await peerSync.onAddressLearned { peerId, address in
+            _ = try? await SettingsStore(basePath: home).promotePeerAddress(peerId: peerId, address: address)
         }
         Task.detached { await peerSync.run() }
         let agentSync = self.agentSync

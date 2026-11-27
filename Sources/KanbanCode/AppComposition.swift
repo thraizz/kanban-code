@@ -194,8 +194,8 @@ final class AppComposition {
         Task.detached {
             // A peer that moved to another address is saved there, so
             // Settings › Peers and the next start know it.
-            await peerSync.onAddressLearned { peer in
-                guard (try? await SettingsStore().setPeerURL(peerId: peer.id, url: peer.url)) == true else { return }
+            await peerSync.onAddressLearned { peerId, address in
+                guard (try? await SettingsStore().promotePeerAddress(peerId: peerId, address: address)) == true else { return }
                 await MainActor.run { NotificationCenter.default.post(name: .kanbanCodeSettingsChanged, object: nil) }
             }
             await peerSync.run()
@@ -228,7 +228,7 @@ final class AppComposition {
             },
             cardFamily: { [weak boardStore] id in await MainActor.run { boardStore?.vaultCardFamily(id) ?? [] } },
             cardSessions: { [weak boardStore] in await MainActor.run { boardStore?.vaultCardSessions() ?? [:] } },
-            peers: { await peerSync.configuredPeers() },
+            peers: { peerSync.endpoints.all() },
             deviceApprovals: (MacVaultDevice.approvals, MacVaultDevice.deviceName)
         )
         engine.cardSessionEnvironment = { [vault] cardId in await vault.sessionEnvironment(cardId: cardId) }
@@ -297,7 +297,7 @@ final class AppComposition {
                 return false
             }
         }
-        let scrubber = SecretScrubber(vault: vault, machine: identity.name) { await peerSync.configuredPeers() }
+        let scrubber = SecretScrubber(vault: vault, machine: identity.name) { peerSync.endpoints.all() }
         Task.detached(priority: .utility) { await scrubber.runSchedule() }
         RemoteControlController.shared.scrubber = scrubber
         RemoteControlController.shared.attach(

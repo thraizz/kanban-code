@@ -261,7 +261,7 @@ struct VaultAuditMirrorTests {
         await box.setAuditLimits(segmentLimit: 1_200)
         let sent = Pushes()
         let sync = VaultAuditSync(store: box, machine: "box", peers: {
-            [PeerConfig(id: "mac", name: "Mac", url: "http://mac", token: "t", enabled: true)]
+            PeerEndpoints(peers: [PeerConfig(id: "mac", name: "Mac", url: "http://mac", token: "t", enabled: true)]).all()
         }) { request in
             if request.httpMethod == "GET" {
                 return (try JSONEncoder().encode(await mac.mirrorTail(machine: "box")), 200)

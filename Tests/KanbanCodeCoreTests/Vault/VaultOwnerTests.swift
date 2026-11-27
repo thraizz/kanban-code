@@ -575,8 +575,8 @@ struct VaultAuditChainTests {
         }
         let macPeer = PeerConfig(id: "mac", name: "Mac", url: "http://mac", token: "t", enabled: true)
         let boxPeer = PeerConfig(id: "box", name: "box", url: "http://box", token: "t", enabled: true)
-        let boxSync = VaultAuditSync(store: box, machine: "box", peers: { [macPeer] }, fetch: serve(mac, machine: "Mac"))
-        let macSync = VaultAuditSync(store: mac, machine: "Mac", peers: { [boxPeer] },
+        let boxSync = VaultAuditSync(store: box, machine: "box", peers: { PeerEndpoints(peers: [macPeer]).all() }, fetch: serve(mac, machine: "Mac"))
+        let macSync = VaultAuditSync(store: mac, machine: "Mac", peers: { PeerEndpoints(peers: [boxPeer]).all() },
                                      deviceApprovals: deviceApprovals.map { ($0, "mac") }, fetch: serve(box, machine: "box"))
         return (box, mac, boxSync, macSync)
     }
@@ -609,7 +609,7 @@ struct VaultAuditChainTests {
 
         let (_, _, _, _) = (box, mac, boxSync, macSync)
         let macPeer = PeerConfig(id: "box", name: "box", url: "http://box", token: "t", enabled: true)
-        let check = VaultAuditSync(store: mac, machine: "Mac", peers: { [macPeer] }) { request in
+        let check = VaultAuditSync(store: mac, machine: "Mac", peers: { PeerEndpoints(peers: [macPeer]).all() }) { request in
             (try JSONEncoder().encode(VaultAuditHashes(machine: "box", hashes: await rewritten.auditLines().map(AuditChain.hash))), 200)
         }
         let report = await check.check()

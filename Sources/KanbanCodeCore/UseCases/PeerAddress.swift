@@ -43,15 +43,15 @@ public enum PeerAddress {
 }
 
 extension SettingsStore {
-    /// Saves the address the peer `peerId` answers at now. False when there
-    /// is no such peer or it already has that address.
+    /// Saves `address` as the first address hint of the peer `peerId`: it
+    /// answers there now. False when there is no such peer or that hint is
+    /// first already.
     @discardableResult
-    public func setPeerURL(peerId: String, url: String) throws -> Bool {
+    public func promotePeerAddress(peerId: String, address: String) throws -> Bool {
         var settings = try read()
         guard let index = settings.peers.firstIndex(where: { $0.id == peerId }),
-              settings.peers[index].url != url
+              settings.peers[index].promoteHint(address)
         else { return false }
-        settings.peers[index].url = url
         try write(settings)
         return true
     }

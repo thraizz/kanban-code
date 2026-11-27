@@ -25,7 +25,7 @@ public final class VaultService: Sendable {
         cardPrompts: @escaping @Sendable (String) async -> CardPrompts? = { _ in nil },
         cardFamily: @escaping @Sendable (String) async -> [String] = { _ in [] },
         cardSessions: @escaping @Sendable () async -> [String: String],
-        peers: (@Sendable () async -> [PeerConfig])?,
+        peers: (@Sendable () async -> [PeerEndpoint])?,
         deviceApprovals: (log: VaultDeviceApprovals, name: String)? = nil
     ) {
         self.kanbanHome = kanbanHome
@@ -96,11 +96,11 @@ public final class VaultService: Sendable {
 /// copy, merges it, and pushes back when the peer is behind.
 public actor VaultReplicaSync {
     public let store: VaultStore
-    public let peers: @Sendable () async -> [PeerConfig]
+    public let peers: @Sendable () async -> [PeerEndpoint]
     public var interval: TimeInterval = 60
     private var wake: CheckedContinuation<Void, Never>?
 
-    public init(store: VaultStore, peers: @escaping @Sendable () async -> [PeerConfig]) {
+    public init(store: VaultStore, peers: @escaping @Sendable () async -> [PeerEndpoint]) {
         self.store = store
         self.peers = peers
     }
@@ -135,8 +135,8 @@ public actor VaultReplicaSync {
         }
     }
 
-    private func sync(with peer: PeerConfig) async {
-        guard let url = URL(string: peer.url.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/v1/vault/replica") else { return }
+    private func sync(with peer: PeerEndpoint) async {
+        guard let url = peer.apiURL("/v1/vault/replica") else { return }
         var get = URLRequest(url: url, timeoutInterval: 15)
         get.setValue("Bearer \(peer.token)", forHTTPHeaderField: "Authorization")
         do {

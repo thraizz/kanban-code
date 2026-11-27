@@ -67,13 +67,12 @@ extension MasterEngine {
         store.state.peerStatuses.values.contains { $0.machine?.id == machineId && $0.online }
     }
 
-    /// A client of the peer master with this machine id, with the token
-    /// this master holds for it.
+    /// A client of the peer master with this machine id, at the address
+    /// `PeerEndpoints` has for it now, with the token this master holds for
+    /// it. Make one per use: the address can change.
     public func peerClient(machineId: String) async -> RemoteClient? {
-        guard let peerSync, let peer = await peerSync.peer(forMachine: machineId),
-              let url = URL(string: peer.url.trimmingCharacters(in: .whitespacesAndNewlines))
-        else { return nil }
-        return RemoteClient(baseURL: url, token: peer.token)
+        guard let endpoint = peerSync?.endpoints.endpoint(forMachine: machineId) else { return nil }
+        return RemoteClient(baseURL: endpoint.baseURL, token: endpoint.token)
     }
 
     /// The owner's client when another master owns the card.

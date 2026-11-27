@@ -125,7 +125,7 @@ let host = MasterRemoteControlHost(engine: master.engine)
 let peerServer = BoardPeerLinksServer(store: master.store, peerSync: master.peerSync)
 
 let scrubber = SecretScrubber(vault: master.vault, machine: await master.vault.broker.machine) { [peerSync = master.peerSync] in
-    await peerSync.configuredPeers()
+    peerSync.endpoints.all()
 }
 Task.detached(priority: .utility) { await scrubber.runSchedule() }
 Task.detached(priority: .utility) { await ProcessMemory.runMaintenance() }

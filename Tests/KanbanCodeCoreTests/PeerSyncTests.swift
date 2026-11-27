@@ -186,7 +186,7 @@ struct PeerSyncEntityTests {
         #expect(decoded.peers.isEmpty)
         let partial = #"{"peers":[{"name":"box","url":"http://h:1","token":"t"}]}"#
         let peer = try JSONDecoder().decode(Settings.self, from: Data(partial.utf8)).peers[0]
-        #expect(peer.enabled && peer.id.hasPrefix("peer") && peer.url == "http://h:1")
+        #expect(peer.enabled && peer.id.hasPrefix("peer") && peer.addressHints == ["http://h:1"])
     }
 
     @Test("tombstones persist next to links.json without touching it")
@@ -629,7 +629,7 @@ private final class FakeTransport: PeerLinksTransport, @unchecked Sendable {
     var requests: [(peer: String, since: Int?, epoch: String?)] = []
     var notified: [String] = []
 
-    func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
+    func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
         try lock.withLock {
             requests.append((peer.id, since, epoch))
             if failing.contains(peer.id) { throw PeerSyncError.http(502, "down") }
@@ -638,7 +638,7 @@ private final class FakeTransport: PeerLinksTransport, @unchecked Sendable {
         }
     }
 
-    func notifyChanged(peer: PeerConfig, machineId: String) async {
+    func notifyChanged(peer: PeerEndpoint, machineId: String) async {
         lock.withLock { notified.append(peer.id) }
     }
 }
@@ -738,7 +738,7 @@ struct PeerSyncLoopTests {
         let sync = PeerSync(identity: me, peers: [peer], transport: transport) { _ in }
         await sync.pull(peerId: "peer_box")
         var moved = peer
-        moved.url = "http://elsewhere:7780"
+        moved.addressHints = ["http://elsewhere:7780"]
         await sync.setPeers([moved])
         await sync.pull(peerId: "peer_box")
         #expect(transport.requests.map(\.since) == [nil, nil])
@@ -807,7 +807,7 @@ struct PeerSyncLoopTests {
         }
         func peerLinksChanged(machineId: String?) async { changed.append(machineId) }
         func peersOverview() async -> PeersOverview {
-            PeersOverview(machine: page.machine, peers: [PeerOverview(peer: PeerConfig(name: "b", url: "u", token: "secret"), status: nil)])
+            PeersOverview(machine: page.machine, peers: [PeerOverview(peer: PeerConfig(name: "b", url: "u", token: "secret"), baseURL: nil, status: nil)])
         }
     }
 
@@ -847,20 +847,20 @@ private final class AddressTransport: PeerLinksTransport, @unchecked Sendable {
     var pages: [String: LinksPage] = [:]
     var asked: [String] = []
 
-    func fetchLinks(peer: PeerConfig, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
+    func fetchLinks(from peer: PeerEndpoint, since: Int?, epoch: String?, machineId: String?) async throws -> LinksPage {
         try lock.withLock {
-            asked.append(peer.url)
-            guard let page = pages[peer.url] else { throw URLError(.timedOut) }
+            asked.append(peer.baseURL.absoluteString)
+            guard let page = pages[peer.baseURL.absoluteString] else { throw URLError(.timedOut) }
             return page
         }
     }
 
-    func notifyChanged(peer: PeerConfig, machineId: String) async {}
+    func notifyChanged(peer: PeerEndpoint, machineId: String) async {}
 }
 
 private actor Learned {
-    var peers: [PeerConfig] = []
-    func append(_ peer: PeerConfig) { peers.append(peer) }
+    var addresses: [String] = []
+    func append(_ address: String) { addresses.append(address) }
 }
 
 @Suite("Peer sync: a peer that moved to another address")
@@ -881,17 +881,19 @@ struct PeerAddressTests {
         transport.pages[old] = page(mac)
         let learned = Learned()
         let sync = PeerSync(identity: me, peers: [peer], transport: transport) { _ in }
-        await sync.onAddressLearned { await learned.append($0) }
+        await sync.onAddressLearned { _, address in await learned.append(address) }
         #expect(await sync.pull(peerId: "peer_mac"))
 
         // The mac moved from the dock's Ethernet to Wi-Fi.
         transport.lock.withLock { transport.pages = [new: page(mac)] }
         await sync.noteContact(machineId: "MAC", host: "192.168.178.59")
         #expect(await sync.pull(peerId: "peer_mac"))
-        #expect(await sync.configuredPeers().first?.url == new)
+        // The address it left stays as a hint behind the new one.
+        #expect(await sync.configuredPeers().first?.addressHints == [new, old])
+        #expect(sync.endpoints.baseURL(forPeer: "peer_mac")?.absoluteString == new)
         #expect(await sync.status(of: "peer_mac")?.url == new)
         #expect(await sync.status(of: "peer_mac")?.online == true)
-        #expect(await learned.peers.map(\.url) == [new])
+        #expect(await learned.addresses == [new])
 
         // From then on it is pulled there first.
         #expect(await sync.pull(peerId: "peer_mac"))
@@ -905,7 +907,7 @@ struct PeerAddressTests {
         let sync = PeerSync(identity: me, peers: [peer], transport: transport) { _ in }
         await sync.noteContact(machineId: "MAC", host: "::ffff:192.168.178.59")
         #expect(await sync.pull(peerId: "peer_mac"))
-        #expect(await sync.configuredPeers().first?.url == new)
+        #expect(await sync.configuredPeers().first?.addressHints.first == new)
         #expect(await sync.status(of: "peer_mac")?.machine == mac)
     }
 
@@ -915,14 +917,14 @@ struct PeerAddressTests {
         transport.pages[old] = page(mac)
         let learned = Learned()
         let sync = PeerSync(identity: me, peers: [peer], transport: transport) { _ in }
-        await sync.onAddressLearned { await learned.append($0) }
+        await sync.onAddressLearned { _, address in await learned.append(address) }
         #expect(await sync.pull(peerId: "peer_mac"))
 
         transport.lock.withLock { transport.pages = [new: page(MachineIdentity(id: "BOX", name: "box"))] }
         await sync.noteContact(machineId: "MAC", host: "192.168.178.59")
         #expect(await sync.pull(peerId: "peer_mac") == false)
-        #expect(await sync.configuredPeers().first?.url == old)
-        #expect(await learned.peers.isEmpty)
+        #expect(await sync.configuredPeers().first?.addressHints == [old])
+        #expect(await learned.addresses.isEmpty)
         #expect(await sync.pull(peerId: "peer_mac") == false)
         #expect(transport.lock.withLock { transport.asked.filter { $0 == new }.count } == 1)
     }
@@ -931,22 +933,22 @@ struct PeerAddressTests {
     func ignoredContacts() async {
         let transport = AddressTransport()
         let box = PeerConfig(id: "peer_box", name: "box", url: "http://192.168.178.230:7780", token: "kc_b")
-        transport.pages[box.url] = page(MachineIdentity(id: "BOX", name: "box"))
+        transport.pages[box.addressHints[0]] = page(MachineIdentity(id: "BOX", name: "box"))
         let sync = PeerSync(identity: me, peers: [peer, box], transport: transport) { _ in }
         #expect(await sync.pull(peerId: "peer_box"))
 
         // box reached this machine; the mac peer, never answered, is not box.
         await sync.noteContact(machineId: "BOX", host: "192.168.178.230")
         #expect(await sync.pull(peerId: "peer_mac") == false)
-        #expect(transport.lock.withLock { transport.asked.filter { $0 == box.url }.count } == 1)
-        #expect(await sync.configuredPeers().first?.url == old)
+        #expect(transport.lock.withLock { transport.asked.filter { $0 == box.addressHints[0] }.count } == 1)
+        #expect(await sync.configuredPeers().first?.addressHints == [old])
 
         transport.lock.withLock { transport.pages[new] = page(mac) }
         await sync.noteContact(machineId: "MAC", host: "127.0.0.1")
         #expect(await sync.pull(peerId: "peer_mac") == false)
         await sync.noteContact(machineId: "MAC", host: "192.168.178.59", at: Date().addingTimeInterval(-600))
         #expect(await sync.pull(peerId: "peer_mac") == false)
-        #expect(await sync.configuredPeers().first?.url == old)
+        #expect(await sync.configuredPeers().first?.addressHints == [old])
     }
 
     @Test("request sources: loopback, link-local and tunnels are not addresses; IPv6 keeps its brackets in a URL")
@@ -971,11 +973,11 @@ struct PeerAddressTests {
         settings.peers = [peer, PeerConfig(id: "peer_box", name: "box", url: "http://box:7780", token: "kc_b")]
         try await store.write(settings)
 
-        #expect(try await store.setPeerURL(peerId: "peer_mac", url: new))
-        #expect(try await store.setPeerURL(peerId: "peer_mac", url: new) == false)
-        #expect(try await store.setPeerURL(peerId: "peer_gone", url: new) == false)
+        #expect(try await store.promotePeerAddress(peerId: "peer_mac", address: new))
+        #expect(try await store.promotePeerAddress(peerId: "peer_mac", address: new) == false)
+        #expect(try await store.promotePeerAddress(peerId: "peer_gone", address: new) == false)
         let read = try await SettingsStore(basePath: home).read()
-        #expect(read.peers.map(\.url) == [new, "http://box:7780"])
+        #expect(read.peers.map(\.addressHints) == [[new, old], ["http://box:7780"]])
         #expect(read.peers.first?.token == "kc_t")
     }
 }

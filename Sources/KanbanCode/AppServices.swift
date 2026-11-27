@@ -106,21 +106,18 @@ enum AppServices {
     }
 
     /// The shell script a terminal of a card another master owns runs: the
-    /// kanban CLI bridges it to the owner's terminal socket, with the
-    /// terminal token this Mac holds for that peer, and reconnects when the
-    /// link drops.
+    /// kanban CLI bridges it to the owner's terminal socket, at the address
+    /// `PeerEndpoints` has for that peer now, with the terminal token this
+    /// Mac holds for it, and reconnects when the link drops.
     @MainActor
     static func peerAttachScript(machineId: String, cardId: String, session: String) -> String? {
-        let settings = FileManager.default.contents(atPath: NSHomeDirectory() + "/.kanban-code/settings.json")
-            .flatMap { try? JSONDecoder().decode(Settings.self, from: $0) }
-        let state = AppComposition.shared.store.state
-        let peerId = state.peerStatuses.values.first { $0.machine?.id == machineId }?.peerId
-        guard let peer = settings?.peers.first(where: { $0.id == peerId }) else { return nil }
+        guard let endpoint = AppComposition.shared.peerSync.endpoints.endpoint(forMachine: machineId) else { return nil }
         let quote = { (value: String) in "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'" }
         let cli = cliBundlePath.map { "\($0)/dist/kanban.js" }
             ?? (NSHomeDirectory() + "/Projects/kanban/cli/dist/kanban.js")
         let node = findNode() ?? "node"
-        let attach = "KANBAN_REMOTE_URL=\(quote(peer.url)) KANBAN_REMOTE_TOKEN=\(quote(peer.terminalToken ?? peer.token)) "
+        let token = endpoint.peer.terminalToken ?? endpoint.token
+        let attach = "KANBAN_REMOTE_URL=\(quote(endpoint.baseURL.absoluteString)) KANBAN_REMOTE_TOKEN=\(quote(token)) "
             + "\(quote(node)) \(quote(cli)) remote attach \(quote(cardId)) --session \(quote(session))"
         return "while :; do \(attach) && break; sleep 2; done; echo 'Session ended.'"
     }

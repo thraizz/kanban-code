@@ -70,19 +70,46 @@ public enum MasterRoles {
 // MARK: - Peers
 
 /// Another master this one syncs cards with, from Settings > Peers.
+///
+/// Where the peer answers is not read from here: `PeerEndpoints` resolves
+/// it (see `docs/peer-connections.md`).
 public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
-    /// Local id of the entry, stable across edits of the URL or name.
+    /// Local id of the entry, stable across edits of the address or name.
     public var id: String
+    /// The peer's machine id once known: the identity of the entry, where
+    /// the addresses are only hints.
+    public var machineId: String?
     public var name: String
-    /// Base URL of the peer's Remote Control server, e.g. `http://100.114.220.85:7780`.
-    public var url: String
     /// A device token the peer issued for this machine, of the `peer` scope.
     public var token: String
     /// A `terminal` scope token of the peer, for showing the terminals of
     /// its cards here. The peer token cannot open terminals.
     public var terminalToken: String?
+    /// Base URLs of the peer's Remote Control server to try, newest success
+    /// first, e.g. `http://192.168.178.230:7780`. Settings files from before
+    /// had one `url`; it decodes as the first hint.
+    public var addressHints: [String]
     public var enabled: Bool
 
+    public init(
+        id: String = KSUID.generate(prefix: "peer"),
+        machineId: String? = nil,
+        name: String,
+        addressHints: [String],
+        token: String,
+        terminalToken: String? = nil,
+        enabled: Bool = true
+    ) {
+        self.id = id
+        self.machineId = machineId
+        self.name = name
+        self.addressHints = addressHints
+        self.token = token
+        self.terminalToken = terminalToken
+        self.enabled = enabled
+    }
+
+    /// An entry with the one address the user typed.
     public init(
         id: String = KSUID.generate(prefix: "peer"),
         name: String,
@@ -91,26 +118,52 @@ public struct PeerConfig: Codable, Sendable, Equatable, Identifiable {
         terminalToken: String? = nil,
         enabled: Bool = true
     ) {
-        self.id = id
-        self.name = name
-        self.url = url
-        self.token = token
-        self.terminalToken = terminalToken
-        self.enabled = enabled
+        self.init(id: id, name: name, addressHints: url.isEmpty ? [] : [url], token: token,
+                  terminalToken: terminalToken, enabled: enabled)
+    }
+
+    /// Puts `address` first among the hints: the peer answered there.
+    /// False when it was first already.
+    @discardableResult
+    public mutating func promoteHint(_ address: String) -> Bool {
+        guard !address.isEmpty, addressHints.first != address else { return false }
+        addressHints.removeAll { $0 == address }
+        addressHints.insert(address, at: 0)
+        return true
     }
 
     public init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         id = (try? c.decodeIfPresent(String.self, forKey: .id)) ?? KSUID.generate(prefix: "peer")
+        machineId = (try? c.decodeIfPresent(String.self, forKey: .machineId)).flatMap { $0.isEmpty ? nil : $0 }
         name = (try? c.decodeIfPresent(String.self, forKey: .name)) ?? ""
-        url = (try? c.decodeIfPresent(String.self, forKey: .url)) ?? ""
         token = (try? c.decodeIfPresent(String.self, forKey: .token)) ?? ""
         terminalToken = (try? c.decodeIfPresent(String.self, forKey: .terminalToken)).flatMap { $0.isEmpty ? nil : $0 }
+        let hints = ((try? c.decodeIfPresent([String].self, forKey: .addressHints)) ?? []).filter { !$0.isEmpty }
+        if hints.isEmpty, let url = try? c.decodeIfPresent(String.self, forKey: .url), !url.isEmpty {
+            addressHints = [url]
+        } else {
+            addressHints = hints
+        }
         enabled = (try? c.decodeIfPresent(Bool.self, forKey: .enabled)) ?? true
     }
 
+    /// Writes the hints, and the first of them as `url` too, so a build from
+    /// before the hints still finds the peer in a file this one wrote.
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encodeIfPresent(machineId, forKey: .machineId)
+        try c.encode(name, forKey: .name)
+        try c.encode(addressHints.first ?? "", forKey: .url)
+        try c.encode(addressHints, forKey: .addressHints)
+        try c.encode(token, forKey: .token)
+        try c.encodeIfPresent(terminalToken, forKey: .terminalToken)
+        try c.encode(enabled, forKey: .enabled)
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case id, name, url, token, terminalToken, enabled
+        case id, machineId, name, url, addressHints, token, terminalToken, enabled
     }
 }
 

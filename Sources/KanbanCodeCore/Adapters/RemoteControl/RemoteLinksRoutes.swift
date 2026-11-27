@@ -35,14 +35,16 @@ public struct PeersOverview: Codable, Sendable, Equatable {
 public struct PeerOverview: Codable, Sendable, Equatable {
     public var id: String
     public var name: String
+    /// Where this master reaches the peer now, from `PeerEndpoints`; empty
+    /// when it has no address.
     public var url: String
     public var enabled: Bool
     public var status: PeerStatus?
 
-    public init(peer: PeerConfig, status: PeerStatus?) {
+    public init(peer: PeerConfig, baseURL: URL?, status: PeerStatus?) {
         id = peer.id
         name = peer.name
-        url = peer.url
+        url = baseURL?.absoluteString ?? ""
         enabled = peer.enabled
         self.status = status
     }
@@ -123,7 +125,8 @@ public final class BoardPeerLinksServer: PeerLinksServing {
         let peers = await peerSync.configuredPeers()
         var overview: [PeerOverview] = []
         for peer in peers {
-            overview.append(PeerOverview(peer: peer, status: await peerSync.status(of: peer.id)))
+            overview.append(PeerOverview(peer: peer, baseURL: peerSync.endpoints.baseURL(forPeer: peer.id),
+                                         status: await peerSync.status(of: peer.id)))
         }
         return PeersOverview(machine: machine, peers: overview)
     }

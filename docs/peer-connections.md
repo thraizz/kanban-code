@@ -1,6 +1,6 @@
 # Peer connections
 
-Status: **proposed** (2026-11-27). Replaces how two masters reach each other
+Status: **in progress**, step 1 done (2026-11-27). Replaces how two masters reach each other
 (the Mac app and `kanban-code-server`, see [Several masters](remote-control.md#several-masters)).
 No overlay network (Tailscale and the like), no mDNS and no DHCP reservation:
 the design works on a plain LAN where addresses change.
@@ -62,8 +62,10 @@ public struct PeerConfig {
 }
 ```
 
-`url` is decoded into `addressHints[0]` for old settings files. Hints come
-from what the user typed, from every successful connection (the URL that
+`url` is decoded into `addressHints[0]` for old settings files. A write
+keeps `url` as the first hint next to `addressHints`, so a build from
+before the hints (a rolled-back app or server) still finds the peer.
+Hints come from what the user typed, from every successful connection (the URL that
 worked moves to the front), and from the `hello` of the other side (its
 bind addresses and port, see below). A hint that failed for 7 days is
 dropped, never the last one.
@@ -139,8 +141,16 @@ control connection is up.
 
 ### 4. One place that knows a peer's URL
 
-`PeerEndpoints` (an actor beside `PeerSync`) answers
-`baseURL(forMachine:) -> URL?` and `baseURL(forPeer:) -> URL?`:
+`PeerEndpoints` (beside `PeerSync`, which owns it as `peerSync.endpoints`
+and keeps its entries and the machine id each peer answered as current)
+answers `baseURL(forMachine:) -> URL?` and `baseURL(forPeer:) -> URL?`.
+It is a class behind a `Mutex`, not an actor: the terminal of a card on a
+peer builds its attach command synchronously on the main actor
+(`AppServices.peerAttachScript`, `MasterPlatform.peerTerminalCommand`).
+`endpoint(forPeer:)`, `endpoint(forMachine:)` and `all()` return a
+`PeerEndpoint` (the entry and its base URL together); the vault, audit,
+card-token and scrub loops take `[PeerEndpoint]` from `all()` each round
+instead of `[PeerConfig]`. The base URL is:
 
 - the loopback forward port when the peer dialed this master;
 - the hint that the control connection was dialed to, when this master dialed;
@@ -217,6 +227,15 @@ The box's entry for the Mac is no longer needed for anything but the token.
 | `KanbanCode/AppServices.swift:123` | `kanban remote attach` env (`KANBAN_REMOTE_URL`, terminal token) |
 | `KanbanCode/PeersSettingsSection.swift` | the settings UI |
 | `RemoteControlServer.swift` / `RemoteLinksRoutes.swift` | address learning from `b4503edf` (deleted in step 5) |
+| `UseCases/PeerSync.swift` `PeerStatus.url`, `RemoteLinksRoutes.swift` `PeerOverview.url` | the address shown for a peer: the ssh same-host check (`MachineDirectory`), outage text (`PeerOutage`), `GET /v1/peers` |
+
+Since step 1 each row resolves its URL through `PeerEndpoints` per use;
+the line numbers above are from before it. The learned-address stopgap
+puts the new address first among the hints and keeps the old one behind it
+(`PeerConfig.promoteHint`, `SettingsStore.promotePeerAddress`) instead of
+replacing the URL. The last row must keep showing a real address once
+step 3 returns a loopback forward URL: the same-host check would never
+match `127.0.0.1`.
 
 ## Steps
 

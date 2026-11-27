@@ -82,7 +82,7 @@ public struct VaultAuditReport: Codable, Sendable, Equatable {
 public actor VaultAuditSync {
     public let store: VaultStore
     public let machine: String
-    public let peers: @Sendable () async -> [PeerConfig]
+    public let peers: @Sendable () async -> [PeerEndpoint]
     /// The record this device keeps of the approvals answered on it, and
     /// the name the audit log gives that device ("mac").
     public let deviceApprovals: (log: VaultDeviceApprovals, name: String)?
@@ -96,7 +96,7 @@ public actor VaultAuditSync {
     public typealias Fetch = @Sendable (URLRequest) async throws -> (Data, Int)
     private let fetch: Fetch
 
-    public init(store: VaultStore, machine: String, peers: @escaping @Sendable () async -> [PeerConfig],
+    public init(store: VaultStore, machine: String, peers: @escaping @Sendable () async -> [PeerEndpoint],
                 deviceApprovals: (log: VaultDeviceApprovals, name: String)? = nil,
                 fetch: @escaping Fetch = { request in
                     let (data, response) = try await URLSession.shared.data(for: request)
@@ -136,8 +136,8 @@ public actor VaultAuditSync {
         wake = nil
     }
 
-    private func request(_ peer: PeerConfig, _ method: String, _ path: String, body: Data? = nil) -> URLRequest? {
-        guard let url = URL(string: peer.url.trimmingCharacters(in: CharacterSet(charactersIn: "/")) + "/v1/vault/" + path) else { return nil }
+    private func request(_ peer: PeerEndpoint, _ method: String, _ path: String, body: Data? = nil) -> URLRequest? {
+        guard let url = peer.apiURL("/v1/vault/" + path) else { return nil }
         var request = URLRequest(url: url, timeoutInterval: 15)
         request.httpMethod = method
         request.setValue("Bearer \(peer.token)", forHTTPHeaderField: "Authorization")
@@ -158,7 +158,7 @@ public actor VaultAuditSync {
     /// Sends the lines the peer's mirror does not have yet: everything
     /// after the mirror's last line, or the whole log when that line is
     /// not in it.
-    func push(to peer: PeerConfig) async {
+    func push(to peer: PeerEndpoint) async {
         let name = machine.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? machine
         guard let get = request(peer, "GET", "audit/mirror?machine=\(name)") else { return }
         do {
@@ -201,7 +201,7 @@ public actor VaultAuditSync {
         let own = await store.auditLines()
         report.logs.append(Self.log("this machine (\(machine))", own, archived: await store.archivedSegments()))
 
-        var peerByMachine: [String: PeerConfig] = [:]
+        var peerByMachine: [String: PeerEndpoint] = [:]
         var peerHashes: [String: VaultAuditHashes] = [:]
         for peer in await peers() where peer.enabled {
             guard let get = request(peer, "GET", "audit/hashes") else { continue }
