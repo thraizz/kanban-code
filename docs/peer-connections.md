@@ -361,6 +361,12 @@ since step 2 showed:
   it stops, and the app closes its connections with "<name> quit" on
   SIGTERM before the signal ends it. The other closes in the logs had
   causes: a deploy, and the Mac's network going down ("no answer for 30 s").
+- **Seen after the install.** The app dials before its Remote Control
+  server is up, so the box's first calls through the new connection were
+  refused ("runs no Remote Control server") and its catch-up pull waited
+  for the next push or the 60 s safety pull. When the server starts, the
+  dialer now sends `changed` (links, sync, attention) on the connections
+  it dialed, and the peer calls again.
 
 ## Call sites that read a peer address today
 

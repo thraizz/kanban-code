@@ -104,7 +104,7 @@ private final class TestMaster {
 
     /// Serves the peer routes from the sync `start` makes, control
     /// connections included, when `control`; else from no sync at all.
-    private var latePeerServer: LatePeerLinksServer?
+    private(set) var latePeerServer: LatePeerLinksServer?
 
     func serve(control: Bool = false, vault: VaultService? = nil, scrubber: SecretScrubber? = nil) async throws {
         let peerServer: any PeerLinksServing
@@ -177,6 +177,9 @@ private final class LatePeerLinksServer: PeerLinksServing, @unchecked Sendable {
         lock.withLock { tunnels = acceptor }
         peerSync?.control.setTunnels(acceptor)
     }
+
+    /// Where the server takes tunnelled streams, once it started.
+    var tunnelAcceptor: PeerTunnelAcceptor? { lock.withLock { tunnels } }
 }
 
 @discardableResult
@@ -1969,8 +1972,11 @@ struct PeerReverseStreamTests {
         p.mac.store.dispatch(.createManualTask(Link(id: "card_mac", name: "On the Mac", projectPath: "/tmp/p", column: .backlog)))
         await p.mac.peerSync.notifyPeers()
         #expect(await eventually { p.box.store.state.links["card_mac"] != nil })
+        // The pull reports the status after it merged the cards.
+        #expect(await eventually {
+            p.box.store.state.peerStatuses["peer_mac"].map { $0.online && $0.reachable } == true
+        })
         let status = try #require(p.box.store.state.peerStatuses["peer_mac"])
-        #expect(status.online && status.reachable)
         #expect(p.box.engine.isPeerOnline(p.mac.identity.id))
         // What the box shows as the Mac's address is a real one, never the forward port.
         #expect(status.url == Self.dead)
@@ -2236,6 +2242,26 @@ struct PeerReverseStreamTests {
         p.mac.peerSync.control.goSilentForTesting()
         let took = try await Self.timeToClose(forward)
         #expect(took >= Self.options.streamTimeout - .milliseconds(200) && took < Self.options.streamTimeout + .seconds(1), "took \(took)")
+    }
+
+    @Test("a Mac whose server starts after it dialed tells the box to call again, which then gets its cards at once")
+    func serverStartedAfterTheDial() async throws {
+        let dir = root("streams-late-server")
+        defer { try? FileManager.default.removeItem(atPath: dir) }
+        let p = try await pair(dir)
+        let acceptor = try #require(p.mac.latePeerServer?.tunnelAcceptor)
+        // The app dials while its Remote Control server still starts.
+        p.mac.peerSync.control.setTunnels(nil)
+        p.mac.store.dispatch(.createManualTask(Link(id: "card_late", name: "Late", projectPath: "/tmp/p", column: .backlog)))
+        let tasks = await connect(p)
+        defer { tasks.forEach { $0.cancel() }; p.mac.server.stop(); p.box.server.stop() }
+        // The box's pull at the connect went through the connection and was refused.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(p.box.store.state.links["card_late"] == nil)
+
+        // The server is up: the box pulls now, not at its next safety pull.
+        p.mac.peerSync.control.setTunnels(acceptor)
+        #expect(await eventually(within: .seconds(2)) { p.box.store.state.links["card_late"] != nil })
     }
 
     @Test("the forward port closes with the connection, and a reconnect gets the same port")

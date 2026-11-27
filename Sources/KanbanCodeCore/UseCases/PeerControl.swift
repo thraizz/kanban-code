@@ -248,7 +248,22 @@ public actor PeerControl {
     /// Sets where the streams this master dials back for its peers are
     /// served: the Remote Control server, when it starts.
     public nonisolated func setTunnels(_ acceptor: PeerTunnelAcceptor?) {
-        tunnels.withLock { $0 = acceptor }
+        let started = tunnels.withLock { current -> Bool in
+            defer { current = acceptor }
+            return current == nil && acceptor != nil
+        }
+        if started { Task { await self.serverStarted() } }
+    }
+
+    /// The Remote Control server started after connections were dialed (the
+    /// app dials while its server still starts): what their peers called
+    /// through them was refused, so they are told to call again now.
+    private func serverStarted() async {
+        for connection in connections.values where connection.direction == .dialed && !isSilent {
+            for what in [PeerChange.What.links, .sync, .attention] {
+                try? await connection.socket.send(PeerControlMessage(changed: PeerChange(what: what)))
+            }
+        }
     }
 
     /// The peer entries changed (`PeerSync.setPeers`): a connection of a
